@@ -98,6 +98,7 @@ class ResourceName(str, Enum):
     GCS = "gcs"
     EMAIL = "email"
     PAPERCLIP = "paperclip"
+    NEXTCLOUD = "nextcloud"
 
 
 @dataclass(frozen=True)
