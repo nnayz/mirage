@@ -19,6 +19,10 @@ export const DiscordResourceType = Object.freeze({
   CHANNEL: 'discord/channel',
   MEMBER: 'discord/member',
   HISTORY: 'discord/history',
+  DATE_DIR: 'discord/date_dir',
+  CHAT_JSONL: 'discord/chat_jsonl',
+  FILES_DIR: 'discord/files_dir',
+  FILE: 'discord/file',
 } as const)
 
 export type DiscordResourceType = (typeof DiscordResourceType)[keyof typeof DiscordResourceType]
@@ -37,20 +41,25 @@ export function sanitizeName(name: string): string {
   return cleaned
 }
 
+export function pathSafeName(name: string): string {
+  if (name.trim() === '') return 'unknown'
+  return name.replace(/\//g, '∕')
+}
+
 function makeIdName(name: string, id: string): string {
-  return `${sanitizeName(name)}__${id}`
+  return `${pathSafeName(name)}__${id}`
 }
 
 export function guildDirname(g: { id: string; name?: string }): string {
-  return makeIdName(g.name ?? g.id, g.id)
+  return makeIdName(g.name ?? '', g.id)
 }
 
 export function channelDirname(c: { id: string; name?: string }): string {
-  return makeIdName(c.name ?? c.id, c.id)
+  return makeIdName(c.name ?? '', c.id)
 }
 
 export function memberFilename(m: { id: string; name?: string }): string {
-  return `${makeIdName(m.name ?? m.id, m.id)}.json`
+  return `${makeIdName(m.name ?? '', m.id)}.json`
 }
 
 export const DiscordIndexEntry = {

@@ -47,6 +47,9 @@ REGISTRY: dict[str, ResourceEntry] = {
     "gcs":
     ResourceEntry("mirage.resource.gcs:GCSResource",
                   "mirage.resource.gcs:GCSConfig"),
+    "hf_buckets":
+    ResourceEntry("mirage.resource.hf_buckets:HfBucketsResource",
+                  "mirage.resource.hf_buckets:HfBucketsConfig"),
     "github":
     ResourceEntry("mirage.resource.github:GitHubResource",
                   "mirage.resource.github:GitHubConfig"),
@@ -101,9 +104,9 @@ REGISTRY: dict[str, ResourceEntry] = {
     "email":
     ResourceEntry("mirage.resource.email:EmailResource",
                   "mirage.resource.email:EmailConfig"),
-    "paperclip":
-    ResourceEntry("mirage.resource.paperclip:PaperclipResource",
-                  "mirage.resource.paperclip:PaperclipConfig"),
+    "databricks_volume":
+    ResourceEntry("mirage.resource.databricks_volume:DatabricksVolumeResource",
+                  "mirage.resource.databricks_volume:DatabricksVolumeConfig"),
     "nextcloud":
     ResourceEntry("mirage.resource.nextcloud:NextcloudResource",
                   "mirage.resource.nextcloud:NextcloudConfig"),

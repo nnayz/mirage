@@ -33,7 +33,7 @@ async def copy(accessor: S3Accessor, src: PathSpec, dst: PathSpec) -> None:
             Bucket=config.bucket,
             CopySource={
                 "Bucket": config.bucket,
-                "Key": _key(src)
+                "Key": _key(src, config)
             },
-            Key=_key(dst),
+            Key=_key(dst, config),
         )

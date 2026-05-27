@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 
 from mirage.accessor.ssh import SSHAccessor
 from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.ssh._provision import file_read_provision
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -23,6 +24,7 @@ from mirage.core.ssh.glob import resolve_glob
 from mirage.core.ssh.stat import stat
 from mirage.core.ssh.stream import read_stream
 from mirage.io.async_line_iterator import AsyncLineIterator
+from mirage.io.cachable_iterator import CachableAsyncIterator
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -35,7 +37,10 @@ async def _number_lines_stream(
         num += 1
 
 
-@command("cat", resource="ssh", spec=SPECS["cat"])
+@command("cat",
+         resource="ssh",
+         spec=SPECS["cat"],
+         provision=file_read_provision)
 async def cat(
     accessor: SSHAccessor,
     paths: list[PathSpec],
@@ -47,13 +52,14 @@ async def cat(
 ) -> tuple[ByteSource | None, IOResult]:
     if paths:
         paths = await resolve_glob(accessor, paths, index)
-        p = paths[0]
-        await stat(accessor, p)
-        source = read_stream(accessor, p)
-        io = IOResult(reads={p.strip_prefix: source}, cache=[p.strip_prefix])
+        await stat(accessor, paths[0], index)
+        source = read_stream(accessor, paths[0])
+        cachable = CachableAsyncIterator(source)
+        io = IOResult(reads={paths[0].strip_prefix: cachable},
+                      cache=[paths[0].strip_prefix])
         if n:
-            return _number_lines_stream(source), io
-        return source, io
+            return _number_lines_stream(cachable), io
+        return cachable, io
     source = _resolve_source(stdin, "cat: missing operand")
     if n:
         return _number_lines_stream(source), IOResult()

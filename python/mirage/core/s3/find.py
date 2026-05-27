@@ -15,7 +15,8 @@
 import fnmatch
 
 from mirage.accessor.s3 import S3Accessor
-from mirage.core.s3._client import _client_kwargs, _prefix, async_session
+from mirage.core.s3._client import (_client_kwargs, _prefix, _strip_prefix,
+                                    async_session)
 from mirage.types import PathSpec
 
 
@@ -58,7 +59,7 @@ async def find(
     if isinstance(path, PathSpec):
         path = path.strip_prefix
     config = accessor.config
-    pfx = _prefix(path)
+    pfx = _prefix(path, config)
     results: list[str] = []
     session = async_session(config)
     async with session.client(**_client_kwargs(config)) as client:
@@ -69,9 +70,10 @@ async def find(
                 if key == pfx:
                     continue
                 relative = key[len(pfx):]
-                if maxdepth is not None and relative.count("/") > maxdepth:
+                depth = relative.count("/") + 1
+                if maxdepth is not None and depth > maxdepth:
                     continue
-                if mindepth is not None and relative.count("/") < mindepth:
+                if mindepth is not None and depth < mindepth:
                     continue
                 entry_name = key.rsplit("/", 1)[-1]
                 if or_names:
@@ -83,7 +85,7 @@ async def find(
                 if iname is not None and not fnmatch.fnmatch(
                         entry_name.lower(), iname.lower()):
                     continue
-                full_path = "/" + key
+                full_path = "/" + _strip_prefix(key, config)
                 if path_pattern is not None and not fnmatch.fnmatch(
                         full_path, path_pattern):
                     continue

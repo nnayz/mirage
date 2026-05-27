@@ -25,4 +25,5 @@ async def unlink(accessor: S3Accessor, path: PathSpec) -> None:
     config = accessor.config
     session = async_session(config)
     async with session.client(**_client_kwargs(config)) as client:
-        await client.delete_object(Bucket=config.bucket, Key=_key(path))
+        await client.delete_object(Bucket=config.bucket,
+                                   Key=_key(path, config))

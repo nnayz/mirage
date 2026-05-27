@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 from mirage.io.cachable_iterator import CachableAsyncIterator
+from mirage.types import CommandSafeguard
 
 ByteSource = bytes | AsyncIterator[bytes]
 
@@ -42,6 +43,12 @@ class IOResult:
         reads (dict[str, ByteSource]): Paths read with content or streams.
         writes (dict[str, ByteSource]): Paths written with content or streams.
         cache (list[str]): Paths worth caching (from reads or writes).
+        safeguard (CommandSafeguard | None): Output cap for the command
+            that produced this result, resolved at dispatch time and
+            applied to the final output at the workspace boundary.
+            TODO: hoist this and any future finalization-policy fields
+            off IOResult (output data) into a separate
+            FinalizationContext returned alongside (stream, io).
         _stream_source (IOResult | None): Reference to the original IOResult
             that owns the lazy stream. Needed because streaming commands
             (e.g. grep) set exit_code lazily via exit_on_empty — the
@@ -68,7 +75,18 @@ class IOResult:
     reads: dict[str, ByteSource] = field(default_factory=dict)
     writes: dict[str, ByteSource] = field(default_factory=dict)
     cache: list[str] = field(default_factory=list)
+    safeguard: CommandSafeguard | None = None
     _stream_source: "IOResult | None" = field(default=None, repr=False)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        object.__setattr__(self, name, value)
+        # An explicit write to exit_code wins over any lazy _stream_source
+        # mirror. Without this, fan-out's aggregated exit code gets
+        # clobbered by sync_exit_code() following _stream_source from the
+        # last merged sub-IO (issue #43).
+        if name == "exit_code" and getattr(self, "_stream_source",
+                                           None) is not None:
+            object.__setattr__(self, "_stream_source", None)
 
     async def materialize_stdout(self) -> bytes:
         self.stdout = await materialize(self.stdout)
@@ -120,6 +138,7 @@ class IOResult:
                 **other.writes
             },
             cache=self.cache + other.cache,
+            safeguard=other.safeguard,
         )
         result._stream_source = other
         return result

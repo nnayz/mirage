@@ -18,7 +18,10 @@ export const SlackResourceType = Object.freeze({
   CHANNEL: 'slack/channel',
   DM: 'slack/dm',
   USER: 'slack/user',
-  HISTORY: 'slack/history',
+  DATE_DIR: 'slack/date_dir',
+  CHAT_JSONL: 'slack/chat_jsonl',
+  FILES_DIR: 'slack/files_dir',
+  FILE: 'slack/file',
 } as const)
 
 export type SlackResourceType = (typeof SlackResourceType)[keyof typeof SlackResourceType]
@@ -37,12 +40,17 @@ export function sanitizeName(name: string): string {
   return cleaned
 }
 
+export function pathSafeName(name: string): string {
+  if (name.trim() === '') return 'unknown'
+  return name.replace(/\//g, '∕')
+}
+
 function makeIdName(name: string, id: string): string {
-  return `${sanitizeName(name)}__${id}`
+  return `${pathSafeName(name)}__${id}`
 }
 
 export function channelDirname(ch: { id: string; name?: string }): string {
-  return makeIdName(ch.name ?? ch.id, ch.id)
+  return makeIdName(ch.name ?? '', ch.id)
 }
 
 export function dmDirname(
@@ -55,7 +63,30 @@ export function dmDirname(
 }
 
 export function userFilename(u: { id: string; name?: string }): string {
-  return `${sanitizeName(u.name ?? u.id)}__${u.id}.json`
+  return `${makeIdName(u.name ?? '', u.id)}.json`
+}
+
+export function fileBlobName(file: { id?: string; name?: string; title?: string }): string {
+  const raw = file.name ?? file.title ?? 'file'
+  const fid = file.id ?? ''
+  const dot = raw.lastIndexOf('.')
+  if (dot >= 0) {
+    const stem = raw.slice(0, dot)
+    const ext = raw.slice(dot + 1)
+    return `${pathSafeName(stem)}__${fid}.${ext}`
+  }
+  return `${pathSafeName(raw)}__${fid}`
+}
+
+interface SlackFileMeta {
+  id: string
+  name?: string
+  title?: string
+  size?: number
+  mimetype?: string
+  filetype?: string
+  url_private_download?: string
+  timestamp?: number | string
 }
 
 export const SlackIndexEntry = {
@@ -93,12 +124,54 @@ export const SlackIndexEntry = {
     })
   },
 
-  history(channelId: string, date: string): IndexEntry {
+  dateDir(channelId: string, date: string): IndexEntry {
     return new IndexEntry({
       id: `${channelId}:${date}`,
       name: date,
-      resourceType: SlackResourceType.HISTORY,
-      vfsName: `${date}.jsonl`,
+      resourceType: SlackResourceType.DATE_DIR,
+      vfsName: date,
+    })
+  },
+
+  chatJsonl(channelId: string, date: string): IndexEntry {
+    return new IndexEntry({
+      id: `${channelId}:${date}:chat`,
+      name: 'chat.jsonl',
+      resourceType: SlackResourceType.CHAT_JSONL,
+      vfsName: 'chat.jsonl',
+    })
+  },
+
+  filesDir(channelId: string, date: string): IndexEntry {
+    return new IndexEntry({
+      id: `${channelId}:${date}:files`,
+      name: 'files',
+      resourceType: SlackResourceType.FILES_DIR,
+      vfsName: 'files',
+    })
+  },
+
+  file(file: SlackFileMeta, channelId: string, date: string, messageTs: string): IndexEntry {
+    const blob = fileBlobName({
+      id: file.id,
+      ...(file.name !== undefined ? { name: file.name } : {}),
+      ...(file.title !== undefined ? { title: file.title } : {}),
+    })
+    return new IndexEntry({
+      id: file.id,
+      name: file.title ?? file.name ?? '',
+      resourceType: SlackResourceType.FILE,
+      vfsName: blob,
+      size: file.size ?? null,
+      remoteTime: String(file.timestamp ?? ''),
+      extra: {
+        mimetype: file.mimetype ?? '',
+        url_private_download: file.url_private_download ?? '',
+        filetype: file.filetype ?? '',
+        ts: messageTs,
+        channel_id: channelId,
+        date,
+      },
     })
   },
 }

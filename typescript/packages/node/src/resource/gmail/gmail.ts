@@ -13,15 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   GMAIL_COMMANDS,
   GMAIL_PROMPT,
   GMAIL_WRITE_PROMPT,
   GMAIL_VFS_OPS,
   GmailAccessor,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -36,12 +35,10 @@ import { redactGmailConfig, type GmailConfig, type GmailConfigRedacted } from '.
 
 export interface GmailResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: GmailConfigRedacted
 }
 
-export class GmailResource implements Resource {
+export class GmailResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GMAIL
   readonly isRemote: boolean = true
   readonly indexTtl: number = 86_400
@@ -49,17 +46,12 @@ export class GmailResource implements Resource {
   readonly writePrompt: string = GMAIL_WRITE_PROMPT
   readonly config: GmailConfig
   readonly accessor: GmailAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: GmailConfig) {
+    super()
     this.config = config
-    const tm = new TokenManager({
-      clientId: config.clientId,
-      clientSecret: config.clientSecret,
-      refreshToken: config.refreshToken,
-    })
+    const tm = new TokenManager(config)
     this.accessor = new GmailAccessor({ tokenManager: tm })
-    this.index = new RAMIndexCacheStore({ ttl: 86_400 })
   }
 
   open(): Promise<void> {
@@ -116,8 +108,6 @@ export class GmailResource implements Resource {
   getState(): Promise<GmailResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['clientSecret', 'refreshToken'],
       config: redactGmailConfig(this.config),
     })
   }

@@ -13,9 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   HttpLangfuseTransport,
-  type IndexCacheStore,
   LANGFUSE_COMMANDS,
   LANGFUSE_PROMPT,
   LANGFUSE_VFS_OPS,
@@ -24,7 +24,6 @@ import {
   langfuseReaddir,
   langfuseStat,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -35,21 +34,19 @@ import { redactLangfuseConfig, type LangfuseConfig, type LangfuseConfigRedacted 
 
 export interface LangfuseResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: LangfuseConfigRedacted
 }
 
-export class LangfuseResource implements Resource {
+export class LangfuseResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.LANGFUSE
   readonly isRemote: boolean = true
   readonly indexTtl: number = 600
   readonly prompt: string = LANGFUSE_PROMPT
   readonly config: LangfuseConfig
   readonly accessor: LangfuseAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: LangfuseConfig) {
+    super()
     this.config = config
     const transportOpts: { publicKey: string; secretKey: string; host?: string } = {
       publicKey: config.publicKey,
@@ -71,7 +68,6 @@ export class LangfuseResource implements Resource {
       accessorConfig.defaultFromTimestamp = config.defaultFromTimestamp
     }
     this.accessor = new LangfuseAccessor(new HttpLangfuseTransport(transportOpts), accessorConfig)
-    this.index = new RAMIndexCacheStore({ ttl: this.indexTtl })
   }
 
   open(): Promise<void> {
@@ -127,8 +123,6 @@ export class LangfuseResource implements Resource {
   getState(): Promise<LangfuseResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['secretKey'],
       config: redactLangfuseConfig(this.config),
     })
   }

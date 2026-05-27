@@ -29,9 +29,25 @@ config = S3Config(
     aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
 )
 
-resource = S3Resource(config)
+deep_config = S3Config(
+    bucket=os.environ["AWS_S3_BUCKET"],
+    region=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+    aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    key_prefix="subdata/subsubdata/",
+)
 
-with Workspace({"/s3/": resource}, mode=MountMode.READ, fuse=True) as ws:
+resource = S3Resource(config)
+deep_resource = S3Resource(deep_config)
+
+with Workspace(
+    {
+        "/s3/": resource,
+        "/deep/": deep_resource
+    },
+        mode=MountMode.READ,
+        fuse=True,
+) as ws:
     time.sleep(1)
     mp = ws.fuse_mountpoint
 
@@ -53,12 +69,35 @@ with Workspace({"/s3/": resource}, mode=MountMode.READ, fuse=True) as ws:
     size = os.path.getsize(f"{mp}/s3/data/example.jsonl")
     print(f"  size: {size} bytes")
 
+    print("\n=== KEY_PREFIX MOUNT (/deep → subdata/subsubdata/) ===")
+    print(f"  key_prefix = {deep_config.key_prefix!r}\n")
+
+    print(f"--- os.listdir({mp}/deep) ---")
+    for e in os.listdir(f"{mp}/deep"):
+        print(f"  {e}")
+
+    print(f"\n--- open({mp}/deep/example.jsonl) + read 3 lines ---")
+    with open(f"{mp}/deep/example.jsonl") as f:
+        for i, line in enumerate(f):
+            if i >= 3:
+                break
+            print(f"  [{i}] {line.strip()[:100]}...")
+
+    print(f"\n--- os.path.getsize({mp}/deep/example.jsonl) ---")
+    deep_size = os.path.getsize(f"{mp}/deep/example.jsonl")
+    print(f"  size: {deep_size} bytes")
+    print("  (resolves to s3://bucket/subdata/subsubdata/example.jsonl)")
+
     print(f"\n>>> FUSE mounted at: {mp}")
     print(">>> Open another terminal and run:")
     print(f">>>   ls {mp}/s3/data/")
-    print(f">>>   cat {mp}/s3/data/example.json")
+    print(f">>>   ls {mp}/deep/")
+    print(f">>>   cat {mp}/deep/example.json")
     print(">>> Press Enter to unmount and exit...")
-    input()
+    try:
+        input()
+    except EOFError:
+        pass
 
     records = ws.ops.records
     total = sum(r.bytes for r in records)

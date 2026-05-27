@@ -81,7 +81,8 @@
               "home/architecture",
               "home/shell",
               "home/resource-matrix",
-              "home/snapshot"
+              "home/snapshot",
+              "home/auth"
             ]
           },
           {
@@ -109,7 +110,8 @@
                   "home/setup/r2",
                   "home/setup/gcs",
                   "home/setup/oci",
-                  "home/setup/supabase"
+                  "home/setup/supabase",
+                  "home/setup/hf_buckets"
                 ]
               },
               {
@@ -167,7 +169,6 @@
                 "icon": "ellipsis",
                 "pages": [
                   "home/setup/trello",
-                  "home/setup/paperclip",
                   "home/setup/sscholar"
                 ]
               }
@@ -223,7 +224,8 @@
                   "python/resource/r2",
                   "python/resource/gcs",
                   "python/resource/supabase",
-                  "python/resource/oci"
+                  "python/resource/oci",
+                  "python/resource/hf_buckets"
                 ]
               },
               {
@@ -276,8 +278,7 @@
                 "group": "Others",
                 "icon": "ellipsis",
                 "pages": [
-                  "python/resource/trello",
-                  "python/resource/paperclip"
+                  "python/resource/trello"
                 ]
               },
               "python/resource/new"

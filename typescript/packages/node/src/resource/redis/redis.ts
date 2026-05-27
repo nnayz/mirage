@@ -13,13 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   type FindOptions,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
+  REDACTED_SECRET,
   type Resource,
   ResourceName,
 } from '@struktoai/mirage-core'
@@ -60,14 +60,16 @@ export interface RedisModule {
 
 export interface RedisResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: string[]
+  config: {
+    url: typeof REDACTED_SECRET
+    keyPrefix: string
+  }
   keyPrefix: string
   files: Record<string, Uint8Array>
   dirs: string[]
 }
 
-export class RedisResource implements Resource {
+export class RedisResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.REDIS
   readonly isRemote: boolean = false
   readonly indexTtl: number = 0
@@ -76,7 +78,6 @@ export class RedisResource implements Resource {
   readonly keyPrefix: string
   readonly store: RedisStore
   readonly accessor: RedisAccessor
-  readonly index: IndexCacheStore
 
   readonly opsMap: Record<string, unknown> = {
     read_bytes: readCore,
@@ -100,11 +101,11 @@ export class RedisResource implements Resource {
   }
 
   constructor(options: RedisResourceOptions = {}) {
+    super()
     this.url = options.url ?? 'redis://localhost:6379/0'
     this.keyPrefix = options.keyPrefix ?? 'mirage:fs:'
     this.store = new RedisStore({ url: this.url, keyPrefix: this.keyPrefix })
     this.accessor = new RedisAccessor(this.store)
-    this.index = new RAMIndexCacheStore({ ttl: this.indexTtl })
   }
 
   async open(): Promise<void> {
@@ -221,8 +222,10 @@ export class RedisResource implements Resource {
     const dirs = [...(await this.store.listDirs())].sort()
     return {
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['url'],
+      config: {
+        url: REDACTED_SECRET,
+        keyPrefix: this.keyPrefix,
+      },
       keyPrefix: this.keyPrefix,
       files,
       dirs,

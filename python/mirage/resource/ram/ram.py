@@ -65,7 +65,7 @@ _RAM_OPS = {
 class RAMResource(BaseResource):
 
     name: str = ResourceName.RAM
-    _index_ttl: float = 0
+    index_ttl: float = 0
     _ops: dict = _RAM_OPS
     PROMPT: str = PROMPT
 
@@ -90,8 +90,6 @@ class RAMResource(BaseResource):
     def get_state(self) -> dict:
         return {
             "type": self.name,
-            "needs_override": False,
-            "redacted_fields": [],
             "files": dict(self._store.files),
             "dirs": list(self._store.dirs),
             "modified": dict(self._store.modified),

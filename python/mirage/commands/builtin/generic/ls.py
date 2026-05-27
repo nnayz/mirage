@@ -1,0 +1,257 @@
+from collections.abc import Awaitable, Callable
+
+from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.utils.formatting import format_ls_long
+from mirage.io.types import IOResult
+from mirage.types import FileStat, FileType, LsSortBy, PathSpec
+
+
+def get_extension(name: str) -> str | None:
+    dot = name.rfind(".")
+    if dot == -1 or "/" in name[dot:]:
+        return None
+    return name[dot:]
+
+
+def format_simple(entries: list[FileStat],
+                  *,
+                  classify: bool = False) -> list[str]:
+    out: list[str] = []
+    for e in entries:
+        is_dir = classify and e.type == FileType.DIRECTORY
+        out.append(e.name + "/" if is_dir else e.name)
+    return out
+
+
+async def _file_entry(
+    path: PathSpec,
+    stat: Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]],
+    index: IndexCacheStore | None,
+) -> FileStat | None:
+    try:
+        s = await stat(path, index)
+    except (FileNotFoundError, ValueError):
+        return None
+    return s if s.type != FileType.DIRECTORY else None
+
+
+async def walk(
+    path: PathSpec,
+    *,
+    readdir: Callable[[PathSpec, IndexCacheStore | None],
+                      Awaitable[list[str]]],
+    stat: Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]],
+    all_files: bool = False,
+    sort_by: LsSortBy = LsSortBy.NAME,
+    reverse: bool = False,
+    recursive: bool = False,
+    list_dir: bool = False,
+    index: IndexCacheStore | None = None,
+) -> tuple[list[FileStat], list[str]]:
+    warnings: list[str] = []
+    if list_dir:
+        try:
+            return [await stat(path, index)], warnings
+        except (FileNotFoundError, ValueError) as exc:
+            warnings.append(f"ls: cannot access '{path.original}': {exc}")
+            return [], warnings
+
+    try:
+        entries = await readdir(path, index)
+    except (FileNotFoundError, ValueError, NotADirectoryError) as exc:
+        file_entry = await _file_entry(path, stat, index)
+        if file_entry is not None:
+            return [file_entry], warnings
+        warnings.append(f"ls: cannot access '{path.original}': {exc}")
+        return [], warnings
+
+    if not entries:
+        file_entry = await _file_entry(path, stat, index)
+        if file_entry is not None:
+            return [file_entry], warnings
+
+    stats: list[FileStat] = []
+    for entry in entries:
+        entry_spec = PathSpec(original=entry,
+                              directory=entry,
+                              resolved=False,
+                              prefix=path.prefix)
+        try:
+            s = await stat(entry_spec, index)
+        except (FileNotFoundError, ValueError) as exc:
+            warnings.append(f"ls: cannot access '{entry}': {exc}")
+            continue
+        if not all_files and s.name.startswith("."):
+            continue
+        stats.append(s)
+
+    if sort_by is LsSortBy.TIME:
+        stats.sort(key=lambda s: s.modified or "", reverse=not reverse)
+    elif sort_by is LsSortBy.SIZE:
+        stats.sort(key=lambda s: s.size or 0, reverse=not reverse)
+    else:
+        stats.sort(key=lambda s: s.name, reverse=reverse)
+
+    if recursive:
+        nested: list[FileStat] = []
+        for s in stats:
+            nested.append(s)
+            if s.type == FileType.DIRECTORY:
+                child_path = path.child(s.name)
+                child_spec = PathSpec(original=child_path,
+                                      directory=child_path,
+                                      resolved=False,
+                                      prefix=path.prefix)
+                sub, sub_ws = await walk(child_spec,
+                                         readdir=readdir,
+                                         stat=stat,
+                                         all_files=all_files,
+                                         sort_by=sort_by,
+                                         reverse=reverse,
+                                         recursive=True,
+                                         list_dir=False,
+                                         index=index)
+                nested.extend(sub)
+                warnings.extend(sub_ws)
+        stats = nested
+
+    return stats, warnings
+
+
+async def walk_grouped(
+    path: PathSpec,
+    *,
+    readdir: Callable[[PathSpec, IndexCacheStore | None],
+                      Awaitable[list[str]]],
+    stat: Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]],
+    all_files: bool = False,
+    sort_by: LsSortBy = LsSortBy.NAME,
+    reverse: bool = False,
+    index: IndexCacheStore | None = None,
+) -> tuple[list[tuple[PathSpec, list[FileStat]]], list[str]]:
+    """Recursive walk that returns one (dir, entries) group per directory
+    visited, in pre-order. Mirrors GNU `ls -R` output structure.
+    """
+    groups: list[tuple[PathSpec, list[FileStat]]] = []
+    warnings: list[str] = []
+    here, sub_ws = await walk(path,
+                              readdir=readdir,
+                              stat=stat,
+                              all_files=all_files,
+                              sort_by=sort_by,
+                              reverse=reverse,
+                              recursive=False,
+                              list_dir=False,
+                              index=index)
+    warnings.extend(sub_ws)
+    groups.append((path, here))
+    for s in here:
+        if s.type == FileType.DIRECTORY:
+            child_path = path.child(s.name)
+            child_spec = PathSpec(original=child_path,
+                                  directory=child_path,
+                                  resolved=False,
+                                  prefix=path.prefix)
+            sub_groups, sub_ws2 = await walk_grouped(child_spec,
+                                                     readdir=readdir,
+                                                     stat=stat,
+                                                     all_files=all_files,
+                                                     sort_by=sort_by,
+                                                     reverse=reverse,
+                                                     index=index)
+            groups.extend(sub_groups)
+            warnings.extend(sub_ws2)
+    return groups, warnings
+
+
+def _render_group(
+    results: list[str],
+    entries: list[FileStat],
+    *,
+    long: bool,
+    one_per_line: bool,
+    human: bool,
+    classify: bool,
+) -> None:
+    if long and not one_per_line:
+        results.extend(format_ls_long(entries, human=human))
+    else:
+        results.extend(format_simple(entries, classify=classify))
+
+
+async def ls(
+    paths: list[PathSpec],
+    *,
+    readdir: Callable[[PathSpec, IndexCacheStore | None],
+                      Awaitable[list[str]]],
+    stat: Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]],
+    long: bool = False,
+    one_per_line: bool = False,
+    all_files: bool = False,
+    human: bool = False,
+    sort_by: LsSortBy = LsSortBy.NAME,
+    reverse: bool = False,
+    recursive: bool = False,
+    list_dir: bool = False,
+    classify: bool = False,
+    index: IndexCacheStore | None = None,
+    trailing_newline: bool = False,
+) -> tuple[bytes, IOResult]:
+    results: list[str] = []
+    warnings: list[str] = []
+
+    if recursive and not list_dir:
+        for p_idx, p in enumerate(paths):
+            groups, sub_ws = await walk_grouped(p,
+                                                readdir=readdir,
+                                                stat=stat,
+                                                all_files=all_files,
+                                                sort_by=sort_by,
+                                                reverse=reverse,
+                                                index=index)
+            warnings.extend(sub_ws)
+            for g_idx, (dir_spec, entries) in enumerate(groups):
+                if p_idx > 0 or g_idx > 0:
+                    results.append("")
+                results.append(f"{dir_spec.original}:")
+                _render_group(results,
+                              entries,
+                              long=long,
+                              one_per_line=one_per_line,
+                              human=human,
+                              classify=classify)
+    else:
+        for p in paths:
+            entries, sub_ws = await walk(p,
+                                         readdir=readdir,
+                                         stat=stat,
+                                         all_files=all_files,
+                                         sort_by=sort_by,
+                                         reverse=reverse,
+                                         recursive=False,
+                                         list_dir=list_dir,
+                                         index=index)
+            warnings.extend(sub_ws)
+            _render_group(results,
+                          entries,
+                          long=long,
+                          one_per_line=one_per_line,
+                          human=human,
+                          classify=classify)
+
+    body = "\n".join(results)
+    if trailing_newline and results:
+        body += "\n"
+    output = body.encode() if results else b""
+    stderr = "\n".join(warnings).encode() if warnings else None
+    exit_code = 1 if warnings and not results else 0
+    return output, IOResult(stderr=stderr, exit_code=exit_code)
+
+
+__all__ = [
+    "format_simple",
+    "get_extension",
+    "ls",
+    "walk",
+    "walk_grouped",
+]

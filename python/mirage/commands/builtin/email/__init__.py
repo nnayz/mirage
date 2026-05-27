@@ -22,7 +22,7 @@ from mirage.commands.builtin.email.email_reply_all import email_reply_all
 from mirage.commands.builtin.email.email_send import email_send
 from mirage.commands.builtin.email.email_triage import email_triage
 from mirage.commands.builtin.email.find import find
-from mirage.commands.builtin.email.grep import COMMANDS as _GREP_COMMANDS
+from mirage.commands.builtin.email.grep import grep
 from mirage.commands.builtin.email.head import head
 from mirage.commands.builtin.email.jq import jq
 from mirage.commands.builtin.email.ls import ls
@@ -33,8 +33,13 @@ from mirage.commands.builtin.email.stat import stat
 from mirage.commands.builtin.email.tail import tail
 from mirage.commands.builtin.email.tree import tree
 from mirage.commands.builtin.email.wc import wc
+from mirage.commands.builtin.filetype_factory import make_filetype_commands
+from mirage.core.email.glob import resolve_glob as _ft_resolve_glob
+from mirage.core.email.read import read as _ft_read
 
 COMMANDS = [
+    *make_filetype_commands(
+        "email", _ft_resolve_glob, _ft_read, read_takes_index=True),
     basename,
     cat,
     dirname,
@@ -55,5 +60,5 @@ COMMANDS = [
     email_forward,
     email_triage,
     email_read,
-    *_GREP_COMMANDS,
+    grep,
 ]

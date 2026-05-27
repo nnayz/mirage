@@ -12,11 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.commands.builtin.filetype_factory import make_filetype_commands
 from mirage.commands.builtin.slack.basename import basename
 from mirage.commands.builtin.slack.cat import cat
 from mirage.commands.builtin.slack.dirname import dirname
 from mirage.commands.builtin.slack.find import find
-from mirage.commands.builtin.slack.grep import COMMANDS as _GREP_COMMANDS
+from mirage.commands.builtin.slack.grep import grep
 from mirage.commands.builtin.slack.head import head
 from mirage.commands.builtin.slack.jq import jq
 from mirage.commands.builtin.slack.ls import ls
@@ -33,13 +34,17 @@ from mirage.commands.builtin.slack.stat import stat
 from mirage.commands.builtin.slack.tail import tail
 from mirage.commands.builtin.slack.tree import tree
 from mirage.commands.builtin.slack.wc import wc
+from mirage.core.slack.glob import resolve_glob as _ft_resolve_glob
+from mirage.core.slack.read import read as _ft_read
 
 COMMANDS = [
+    *make_filetype_commands(
+        "slack", _ft_resolve_glob, _ft_read, read_takes_index=True),
     basename,
     cat,
     dirname,
     find,
-    *_GREP_COMMANDS,
+    grep,
     head,
     jq,
     ls,

@@ -29,7 +29,7 @@ async def du(accessor: S3Accessor, path: PathSpec) -> int:
     if isinstance(path, PathSpec):
         path = path.strip_prefix
     config = accessor.config
-    pfx = _prefix(path)
+    pfx = _prefix(path, config)
     total = 0
     session = async_session(config)
     async with session.client(**_client_kwargs(config)) as client:
@@ -53,7 +53,7 @@ async def du_all(accessor: S3Accessor,
     if isinstance(path, PathSpec):
         path = path.strip_prefix
     config = accessor.config
-    pfx = _prefix(path)
+    pfx = _prefix(path, config)
     results: list[tuple[str, int]] = []
     total = 0
     session = async_session(config)

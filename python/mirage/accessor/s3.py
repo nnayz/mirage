@@ -12,10 +12,34 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
+
 from mirage.accessor.base import Accessor
+from mirage.utils import key_prefix as kp
+
+
+class S3Config(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    bucket: str
+    region: str | None = None
+    endpoint_url: str | None = None
+    aws_access_key_id: SecretStr | None = None
+    aws_secret_access_key: SecretStr | None = None
+    aws_session_token: SecretStr | None = None
+    aws_profile: str | None = None
+    path_style: bool = False
+    timeout: int = 30
+    proxy: str | None = None
+    key_prefix: str | None = None
+
+    @field_validator("key_prefix")
+    @classmethod
+    def _normalize_key_prefix(cls, v: str | None) -> str | None:
+        return kp.normalize(v) or None
 
 
 class S3Accessor(Accessor):
 
-    def __init__(self, config) -> None:
+    def __init__(self, config: S3Config) -> None:
         self.config = config

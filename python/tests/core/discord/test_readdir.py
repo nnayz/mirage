@@ -50,7 +50,7 @@ async def test_readdir_root(accessor, index):
         result = await readdir(accessor, PathSpec(original="/", directory="/"),
                                index)
 
-    assert "/My Server" in result
+    assert "/My Server__G001" in result
 
 
 @pytest.mark.asyncio
@@ -69,9 +69,7 @@ async def test_readdir_root_with_slash_in_name(accessor, index):
         result = await readdir(accessor, PathSpec(original="/", directory="/"),
                                index)
 
-    assert len(result) == 1
-    assert "/" not in result[0].lstrip("/").split(
-        "\u2215")[0] or "\u2215" in result[0]
+    assert result == ["/A∕B Test Server__G001"]
 
 
 @pytest.mark.asyncio
@@ -90,7 +88,7 @@ async def test_readdir_root_with_apostrophe(accessor, index):
         result = await readdir(accessor, PathSpec(original="/", directory="/"),
                                index)
 
-    assert "/Zecheng's Server" in result
+    assert "/Zecheng's Server__G001" in result
 
 
 @pytest.mark.asyncio
@@ -148,8 +146,8 @@ async def test_readdir_channels(accessor, index):
             PathSpec(original="/My Server/channels",
                      directory="/My Server/channels"), index)
 
-    assert "/My Server/channels/general" in result
-    assert "/My Server/channels/random" in result
+    assert "/My Server/channels/general__C001" in result
+    assert "/My Server/channels/random__C002" in result
 
 
 @pytest.mark.asyncio
@@ -179,5 +177,7 @@ async def test_readdir_channel_dates(accessor, index):
                  directory="/My Server/channels/general"), index)
 
     assert len(result) >= 1
-    assert all(r.endswith(".jsonl") for r in result)
-    assert all(r.startswith("/My Server/channels/general/") for r in result)
+    # New layout: date directories (no extension)
+    import re
+    date_re = re.compile(r"^/My Server/channels/general/\d{4}-\d{2}-\d{2}$")
+    assert all(date_re.match(r) for r in result)

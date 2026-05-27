@@ -121,6 +121,7 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-c", value_kind=OperandKind.TEXT),
             Option(short="-q"),
             Option(short="-v"),
+            Option(short="-f", long="--follow"),
         ),
         rest=Operand(kind=OperandKind.PATH),
     ),
@@ -161,12 +162,12 @@ SPECS: dict[str, CommandSpec] = {
     "python":
     CommandSpec(
         options=(Option(short="-c", value_kind=OperandKind.TEXT), ),
-        rest=Operand(kind=OperandKind.PATH),
+        rest=Operand(kind=OperandKind.TEXT),
     ),
     "python3":
     CommandSpec(
         options=(Option(short="-c", value_kind=OperandKind.TEXT), ),
-        rest=Operand(kind=OperandKind.PATH),
+        rest=Operand(kind=OperandKind.TEXT),
     ),
     "nl":
     CommandSpec(

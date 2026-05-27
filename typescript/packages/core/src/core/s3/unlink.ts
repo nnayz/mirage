@@ -23,7 +23,7 @@ export async function unlink(accessor: S3Accessor, path: PathSpec): Promise<void
     await client.send(
       new DeleteObjectCommand({
         Bucket: accessor.config.bucket,
-        Key: s3Key(raw),
+        Key: s3Key(raw, accessor.config),
       }),
     )
   })

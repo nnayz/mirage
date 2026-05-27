@@ -19,7 +19,7 @@ import { loadS3Module, rawPathOf, s3Prefix, withClient } from './_client.ts'
 export async function du(accessor: S3Accessor, path: PathSpec): Promise<number> {
   const { ListObjectsV2Command } = await loadS3Module(accessor.config)
   const raw = rawPathOf(path)
-  const pfx = s3Prefix(raw)
+  const pfx = s3Prefix(raw, accessor.config)
   let total = 0
   await withClient(accessor.config, async (client) => {
     let continuationToken: string | undefined
@@ -50,7 +50,7 @@ export async function du(accessor: S3Accessor, path: PathSpec): Promise<number> 
 export async function duAll(accessor: S3Accessor, path: PathSpec): Promise<[string, number][]> {
   const { ListObjectsV2Command } = await loadS3Module(accessor.config)
   const raw = rawPathOf(path)
-  const pfx = s3Prefix(raw)
+  const pfx = s3Prefix(raw, accessor.config)
   const entries: [string, number][] = []
   let total = 0
   await withClient(accessor.config, async (client) => {

@@ -25,7 +25,9 @@ from mirage.core.mongodb.glob import resolve_glob
 from mirage.core.mongodb.read import read as mongodb_read
 from mirage.core.mongodb.readdir import readdir as _readdir
 from mirage.core.mongodb.scope import detect_scope
-from mirage.core.mongodb.search import format_grep_results, search_database
+from mirage.core.mongodb.search import (format_grep_results, search_collection,
+                                        search_database)
+from mirage.core.mongodb.types import ScopeLevel
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -84,17 +86,25 @@ async def rg(
     pat = compile_pattern(pattern_str, i, F, w)
 
     config = accessor.config
-    single_db = config.databases is not None and len(config.databases) == 1
-    single_db_name = config.databases[0] if single_db else None
     limit = config.default_search_limit
 
     if paths:
-        scope = detect_scope(paths[0],
-                             single_db=single_db,
-                             single_db_name=single_db_name)
+        scope = detect_scope(paths[0])
 
-        if scope.level in ("database", "root"):
-            if scope.level == "database" and scope.database:
+        if scope.level in (ScopeLevel.ENTITY, ScopeLevel.DATABASE,
+                           ScopeLevel.ROOT):
+            entity_match = (scope.level == ScopeLevel.ENTITY and scope.database
+                            and scope.name)
+            if entity_match:
+                docs = await search_collection(
+                    accessor.client,
+                    scope.database,
+                    scope.name,
+                    pattern_str,
+                    limit=limit,
+                )
+                results = [(scope.database, scope.name, docs)] if docs else []
+            elif scope.level == ScopeLevel.DATABASE and scope.database:
                 results = await search_database(
                     accessor.client,
                     scope.database,

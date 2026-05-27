@@ -51,6 +51,8 @@ dependencies = [
     "pillow>=12.2.0",
     "jq>=1.11.0",
     "mfusepy>=1.0.0",
+    "pyjwt[crypto]>=2.10",
+    "dulwich>=1.2.4",
 ]
 
 [project.urls]
@@ -75,6 +77,10 @@ s3       = ["aioboto3>=13.0"]
 r2       = ["aioboto3>=13.0"]
 gcs      = ["aioboto3>=13.0"]
 oci      = ["aioboto3>=13.0"]
+databricks = ["databricks-sdk>=0.72.0"]
+
+# --- huggingface ---
+hf_buckets = ["huggingface_hub>=1.5.0"]
 
 # --- network / remote ---
 ssh      = ["asyncssh>=2.22.0", "paramiko>=4.0.0"]
@@ -127,12 +133,17 @@ openhands   = ["openhands-sdk>=1.18.0", "openhands-tools>=1.18.0"]
 # --- camel ---
 camel       = ["camel-ai>=0.2.40,<0.3", "markitdown>=0.1.5"]
 
+# --- sandboxes ---
+daytona     = ["daytona>=0.176.0"]
+
 # --- meta: install everything ---
 all = [
     "mirage-ai[s3]",
     "mirage-ai[r2]",
     "mirage-ai[gcs]",
     "mirage-ai[oci]",
+    "mirage-ai[databricks]",
+    "mirage-ai[hf_buckets]",
     "mirage-ai[ssh]",
     "mirage-ai[fuse]",
     "mirage-ai[mongodb]",
@@ -149,6 +160,7 @@ all = [
     "mirage-ai[pydantic-ai]",
     "mirage-ai[deepagents]",
     "mirage-ai[openhands]",
+    "mirage-ai[daytona]",
 ]
 
 [tool.uv]
@@ -173,9 +185,10 @@ conflicts = [
 
 [dependency-groups]
 dev = [
+    "aioresponses>=0.7.6",
     "grpcio>=1.78.0",
     "grpcio-tools>=1.78.0",
-    "moto[s3]>=5.1.22",
+    "moto[s3,server]>=5.1.22",
     "pre-commit",
     "pytest",
     "pytest-asyncio>=0.24.0",
@@ -194,4 +207,6 @@ testpaths = ["tests"]
 addopts = "--cov=mirage --cov-report=term-missing -q --import-mode=importlib"
 markers = [
     "network: tests that require network access",
+    "no_host_override: skip the tests/server/conftest autouse MIRAGE_ALLOWED_HOSTS=* override",
+    "no_auth_override: skip the tests/server/conftest autouse MIRAGE_AUTH_MODE=local-with-no-token override",
 ]

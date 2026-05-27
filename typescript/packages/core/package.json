@@ -52,6 +52,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "hyparquet-writer": "^0.13.0",
     "pyodide": "^0.29.3",
+    "redis": "^5.0.0",
     "tree-sitter-bash": "^0.25.1",
     "tsup": "^8.5.0",
     "typescript": "^6.0.0",
@@ -61,16 +62,22 @@
     "@aws-sdk/client-s3": "^3.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "apache-arrow": "^21.1.0",
+    "bson": "^6.10.4",
     "h5wasm": "^0.10.1",
     "hyparquet": "^1.25.6",
     "jq-wasm": "1.1.0-jq-1.8.1",
-    "web-tree-sitter": "^0.26.8"
+    "web-tree-sitter": "^0.26.8",
+    "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "pyodide": "^0.29.0"
+    "pyodide": "^0.29.0",
+    "redis": "^5.0.0"
   },
   "peerDependenciesMeta": {
     "pyodide": {
+      "optional": true
+    },
+    "redis": {
       "optional": true
     }
   }

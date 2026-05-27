@@ -13,14 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   GDRIVE_COMMANDS,
   GDRIVE_PROMPT,
   GDRIVE_VFS_OPS,
   GDriveAccessor,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -35,21 +34,19 @@ import { redactGDriveConfig, type GDriveConfig, type GDriveConfigRedacted } from
 
 export interface GDriveResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: GDriveConfigRedacted
 }
 
-export class GDriveResource implements Resource {
+export class GDriveResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GDRIVE
   readonly isRemote: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = GDRIVE_PROMPT
   readonly config: GDriveConfig
   readonly accessor: GDriveAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: GDriveConfig) {
+    super()
     this.config = config
     const tm = new TokenManager({
       clientId: config.clientId,
@@ -57,7 +54,6 @@ export class GDriveResource implements Resource {
       refreshToken: config.refreshToken,
     })
     this.accessor = new GDriveAccessor({ tokenManager: tm })
-    this.index = new RAMIndexCacheStore({ ttl: 86_400 })
   }
 
   open(): Promise<void> {
@@ -114,8 +110,6 @@ export class GDriveResource implements Resource {
   getState(): Promise<GDriveResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['clientSecret', 'refreshToken'],
       config: redactGDriveConfig(this.config),
     })
   }

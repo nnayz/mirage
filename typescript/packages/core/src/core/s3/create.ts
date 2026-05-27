@@ -23,7 +23,7 @@ export async function create(accessor: S3Accessor, path: PathSpec): Promise<void
     await client.send(
       new PutObjectCommand({
         Bucket: accessor.config.bucket,
-        Key: s3Key(raw),
+        Key: s3Key(raw, accessor.config),
         Body: new Uint8Array(),
       }),
     )

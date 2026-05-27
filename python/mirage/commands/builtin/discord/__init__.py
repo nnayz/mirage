@@ -12,7 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.commands.builtin.discord.basename import basename
 from mirage.commands.builtin.discord.cat import cat
+from mirage.commands.builtin.discord.dirname import dirname
 from mirage.commands.builtin.discord.discord_add_reaction import \
     discord_add_reaction
 from mirage.commands.builtin.discord.discord_get_server_info import \
@@ -22,23 +24,32 @@ from mirage.commands.builtin.discord.discord_list_members import \
 from mirage.commands.builtin.discord.discord_send_message import \
     discord_send_message
 from mirage.commands.builtin.discord.find import find
-from mirage.commands.builtin.discord.grep import COMMANDS as _GREP_COMMANDS
+from mirage.commands.builtin.discord.grep import grep
 from mirage.commands.builtin.discord.head import head
 from mirage.commands.builtin.discord.jq import jq
 from mirage.commands.builtin.discord.ls import ls
+from mirage.commands.builtin.discord.realpath import realpath
 from mirage.commands.builtin.discord.rg import rg
 from mirage.commands.builtin.discord.stat import stat
 from mirage.commands.builtin.discord.tail import tail
 from mirage.commands.builtin.discord.tree import tree
 from mirage.commands.builtin.discord.wc import wc
+from mirage.commands.builtin.filetype_factory import make_filetype_commands
+from mirage.core.discord.glob import resolve_glob as _ft_resolve_glob
+from mirage.core.discord.read import read as _ft_read
 
 COMMANDS = [
+    *make_filetype_commands(
+        "discord", _ft_resolve_glob, _ft_read, read_takes_index=True),
+    basename,
     cat,
+    dirname,
     find,
-    *_GREP_COMMANDS,
+    grep,
     head,
     jq,
     ls,
+    realpath,
     rg,
     stat,
     tail,

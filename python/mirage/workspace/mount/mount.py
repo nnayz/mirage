@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from mirage.commands.config import RegisteredCommand
 from mirage.commands.resolve import get_extension
+from mirage.commands.safeguard import CommandSafeguard, resolve_safeguard
 from mirage.commands.spec import CommandSpec
 from mirage.io.types import ByteSource, IOResult
 from mirage.observe.context import (push_mount_prefix, push_revisions,
@@ -112,6 +113,7 @@ class Mount:
         self._cmds: dict[tuple, RegisteredCommand] = {}
         self._general_cmds: dict[str, RegisteredCommand] = {}
         self._cmd_specs: dict[str, CommandSpec] = {}
+        self.command_safeguards: dict[str, CommandSafeguard] = {}
         self._ops: dict[tuple, RegisteredOp] = {}
         self._general_ops: dict[str, RegisteredOp] = {}
         # key: (cmd_name, target_resource_type)
@@ -373,6 +375,8 @@ class Mount:
         dispatch: Callable | None = None,
         history: Any = None,
         session_id: str | None = None,
+        env: dict[str, str] | None = None,
+        exec_allowed: bool = True,
     ) -> tuple[ByteSource | None, IOResult]:
         """Execute a command on this mount's resource.
 
@@ -429,6 +433,9 @@ class Mount:
             kw["history"] = history
         if session_id is not None:
             kw["session_id"] = session_id
+        if env is not None:
+            kw["env"] = env
+        kw["exec_allowed"] = exec_allowed
 
         prev_prefix = push_mount_prefix(mount_prefix)
         revs_token = push_revisions(self.revisions or None)
@@ -442,8 +449,14 @@ class Mount:
                 result = await cmd.fn(self.resource.accessor, paths, *texts,
                                       **kw)
                 if result is not None:
-                    return _wrap_cmd_streams(result, mount_prefix,
-                                             self.revisions or None)
+                    stream, io = _wrap_cmd_streams(result, mount_prefix,
+                                                   self.revisions or None)
+                    # TODO: hand back a finalization context separately
+                    # instead of stamping policy onto io.safeguard.
+                    io.safeguard = resolve_safeguard(
+                        cmd_name, cmd.safeguard,
+                        self.command_safeguards.get(cmd_name))
+                    return stream, io
             return None, IOResult()
         finally:
             reset_revisions(revs_token)

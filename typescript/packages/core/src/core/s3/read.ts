@@ -52,8 +52,8 @@ export async function read(
     prefix !== '' && virtual.startsWith(prefix) ? virtual.slice(prefix.length) || '/' : virtual
   // `virtual` retains the mount prefix (e.g. /s3/foo) for snapshot records;
   // `rawPath` is the backend-relative key used for the actual S3 call.
-  const key = s3Key(rawPath)
   const { config } = accessor
+  const key = s3Key(rawPath, config)
   const { GetObjectCommand } = await loadS3Module(config)
   const client = await createS3Client(config)
   const input: Record<string, unknown> = { Bucket: config.bucket, Key: key }

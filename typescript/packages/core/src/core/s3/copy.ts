@@ -18,8 +18,8 @@ import { loadS3Module, rawPathOf, s3Key, withClient } from './_client.ts'
 
 export async function copy(accessor: S3Accessor, src: PathSpec, dst: PathSpec): Promise<void> {
   const { CopyObjectCommand } = await loadS3Module(accessor.config)
-  const srcKey = s3Key(rawPathOf(src))
-  const dstKey = s3Key(rawPathOf(dst))
+  const srcKey = s3Key(rawPathOf(src), accessor.config)
+  const dstKey = s3Key(rawPathOf(dst), accessor.config)
   const { bucket } = accessor.config
   await withClient(accessor.config, async (client) => {
     await client.send(

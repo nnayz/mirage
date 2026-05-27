@@ -15,7 +15,14 @@
 import type { FindOptions } from '../../resource/base.ts'
 import type { PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
-import { fnmatch, loadS3Module, rawPathOf, s3Prefix, withClient } from './_client.ts'
+import {
+  fnmatch,
+  loadS3Module,
+  rawPathOf,
+  s3Prefix,
+  stripKeyPrefix,
+  withClient,
+} from './_client.ts'
 
 export async function find(
   accessor: S3Accessor,
@@ -24,7 +31,7 @@ export async function find(
 ): Promise<string[]> {
   const { ListObjectsV2Command } = await loadS3Module(accessor.config)
   const raw = rawPathOf(path)
-  const pfx = s3Prefix(raw)
+  const pfx = s3Prefix(raw, accessor.config)
   const results: string[] = []
   await withClient(accessor.config, async (client) => {
     let continuationToken: string | undefined
@@ -71,7 +78,7 @@ export async function find(
         if (options.iname !== null && options.iname !== undefined) {
           if (!fnmatch(entryName.toLowerCase(), options.iname.toLowerCase())) continue
         }
-        const fullPath = '/' + key
+        const fullPath = '/' + stripKeyPrefix(key, accessor.config)
         if (options.pathPattern !== null && options.pathPattern !== undefined) {
           if (!fnmatch(fullPath, options.pathPattern)) continue
         }

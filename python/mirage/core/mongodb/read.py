@@ -12,24 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import json
-
-from bson.json_util import default
+from bson.json_util import RELAXED_JSON_OPTIONS, dumps
 
 from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.core.mongodb._client import find_documents
+from mirage.core.mongodb._client import database_exists, entity_exists
+from mirage.core.mongodb._schema_json import (build_collection_schema_json,
+                                              build_database_json)
+from mirage.core.mongodb.scope import detect_scope
+from mirage.core.mongodb.stream import read_stream
+from mirage.core.mongodb.types import ScopeLevel
 from mirage.types import PathSpec
-
-
-def _parse_collection_path(key: str, config) -> tuple[str, str]:
-    single_db = config.databases is not None and len(config.databases) == 1
-    parts = key.split("/")
-    if single_db and len(parts) == 1 and parts[0].endswith(".jsonl"):
-        return config.databases[0], parts[0].removesuffix(".jsonl")
-    if len(parts) == 2 and parts[1].endswith(".jsonl"):
-        return parts[0], parts[1].removesuffix(".jsonl")
-    raise FileNotFoundError(key)
 
 
 async def read(
@@ -37,40 +30,32 @@ async def read(
     path: PathSpec,
     index: IndexCacheStore = None,
 ) -> bytes:
-    """Read a collection as JSONL.
-
-    Args:
-        accessor (MongoDBAccessor): mongodb accessor.
-        path (str): resource-relative path.
-        index (IndexCacheStore | None): index cache.
-        prefix (str): mount prefix for virtual index keys.
-    """
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
-    if isinstance(path, PathSpec):
-        prefix = path.prefix
-        path = path.original
-
-    if prefix and path.startswith(prefix):
-        path = path[len(prefix):] or "/"
-    key = path.strip("/")
-
-    if any(p.startswith(".") for p in key.split("/")):
-        raise FileNotFoundError(path)
-
-    db_name, col_name = _parse_collection_path(key, accessor.config)
-    limit = accessor.config.default_doc_limit
-    docs = await find_documents(
-        accessor.client,
-        db_name,
-        col_name,
-        sort=[("_id", 1)],
-        limit=limit,
-    )
-    lines = []
-    for doc in docs:
-        doc["_id"] = str(doc["_id"])
-        lines.append(json.dumps(doc, ensure_ascii=False, default=default))
-    if not lines:
-        return b""
-    return ("\n".join(lines) + "\n").encode()
+    scope = detect_scope(path)
+    if scope.level == ScopeLevel.DOCUMENTS:
+        if not await entity_exists(accessor.client, accessor.config,
+                                   scope.database, scope.name, scope.kind,
+                                   accessor):
+            raise FileNotFoundError(path.original)
+        chunks: list[bytes] = []
+        async for chunk in read_stream(accessor, path, index):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    if scope.level == ScopeLevel.SCHEMA_JSON:
+        if not await entity_exists(accessor.client, accessor.config,
+                                   scope.database, scope.name, scope.kind,
+                                   accessor):
+            raise FileNotFoundError(path.original)
+        payload = await build_collection_schema_json(accessor, scope.database,
+                                                     scope.name)
+        return (dumps(payload, json_options=RELAXED_JSON_OPTIONS) +
+                "\n").encode()
+    if scope.level == ScopeLevel.DATABASE_JSON:
+        if not await database_exists(accessor.client, accessor.config,
+                                     scope.database, accessor):
+            raise FileNotFoundError(path.original)
+        payload = await build_database_json(accessor, scope.database)
+        return (dumps(payload, json_options=RELAXED_JSON_OPTIONS) +
+                "\n").encode()
+    raise FileNotFoundError(path.original)

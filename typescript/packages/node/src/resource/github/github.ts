@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   fetchGitHubRepoInfo,
   fetchGitHubTree,
   type FileStat,
@@ -41,25 +42,23 @@ import { redactGitHubConfig, type GitHubConfig, type GitHubConfigRedacted } from
 
 export interface GitHubResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: GitHubConfigRedacted
   defaultBranch: string
   truncated: boolean
 }
 
-export class GitHubResource implements Resource {
+export class GitHubResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GITHUB
   readonly isRemote: boolean = true
   readonly indexTtl: number = 86_400
   readonly config: GitHubConfig
   readonly accessor: GitHubAccessor
-  readonly index: IndexCacheStore
 
   private constructor(config: GitHubConfig, accessor: GitHubAccessor, index: IndexCacheStore) {
+    super()
     this.config = config
     this.accessor = accessor
-    this.index = index
+    this._index = index
   }
 
   static async create(config: GitHubConfig): Promise<GitHubResource> {
@@ -139,8 +138,6 @@ export class GitHubResource implements Resource {
   getState(): Promise<GitHubResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['token'],
       config: redactGitHubConfig(this.config),
       defaultBranch: this.accessor.defaultBranch,
       truncated: this.accessor.truncated,

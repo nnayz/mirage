@@ -259,3 +259,11 @@ await ws.execute('cat /s3/data/log.jsonl | wc -l')
 // 4. File hit → 0 network calls.
 await ws.execute('grep alert /s3/data/log.jsonl')
 ```
+
+## Contributors
+
+Thanks to everyone who has contributed to Mirage.
+
+<a href="https://github.com/strukto-ai/mirage/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=strukto-ai/mirage" alt="Mirage contributors" />
+</a>

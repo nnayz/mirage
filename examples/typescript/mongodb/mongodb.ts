@@ -13,11 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { setServers } from 'node:dns'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import dotenv from 'dotenv'
 import { MongoDBResource, MountMode, Workspace } from '@struktoai/mirage-node'
 
+const __HERE = fileURLToPath(new URL('.', import.meta.url))
 setServers(['8.8.8.8', '1.1.1.1'])
-dotenv.config({ path: '.env.development' })
+dotenv.config({ path: resolve(__HERE, '../../../.env.development') })
 
 const uri = process.env.MONGODB_URI
 if (uri === undefined) {
@@ -25,53 +28,112 @@ if (uri === undefined) {
   process.exit(1)
 }
 
-const resource = new MongoDBResource({ uri })
-const ws = new Workspace({ '/mongodb/': resource }, { mode: MountMode.READ })
+const DB = 'mirage_test'
+const COLL_HET = 'heterogeneous'
+const COLL_EMB = 'embeddings'
+const COLL_TXT = 'text_indexed'
+const VIEW = 'high_rated_films'
+
+const resource = new MongoDBResource({
+  uri,
+  databases: [DB],
+  elideFields: { [`${DB}.${COLL_EMB}`]: ['vector'] },
+})
+const ws = new Workspace({ '/mongodb': resource }, { mode: MountMode.READ })
 
 const DEC = new TextDecoder()
 
-async function run(label: string, cmd: string): Promise<void> {
-  console.log(`\n=== ${label} ===`)
+async function run(cmd: string): Promise<void> {
+  console.log(`\n>>> ${cmd}`)
   const r = await ws.execute(cmd)
-  if (r.exitCode !== 0) {
-    console.log(`(exit=${String(r.exitCode)})`)
-    if (r.stderr.byteLength > 0) console.log(DEC.decode(r.stderr))
-    if (r.stdout.byteLength > 0) console.log(DEC.decode(r.stdout))
-    return
+  const out = DEC.decode(r.stdout).trimEnd()
+  const err = DEC.decode(r.stderr).trimEnd()
+  if (out !== '') {
+    const lines = out.split('\n')
+    for (const ln of lines.slice(0, 8)) console.log(`  ${ln.slice(0, 160)}`)
+    if (lines.length > 8) console.log(`  ... (${String(lines.length)} lines total)`)
   }
-  process.stdout.write(DEC.decode(r.stdout))
-  if (!DEC.decode(r.stdout).endsWith('\n')) process.stdout.write('\n')
+  if (err !== '') console.log(`  [stderr] ${err.slice(0, 160)}`)
+  if (out === '' && err === '') console.log(`  (empty, exit=${String(r.exitCode)})`)
 }
 
+const collDoc = `/mongodb/${DB}/collections/${COLL_HET}/documents.jsonl`
+const collSchema = `/mongodb/${DB}/collections/${COLL_HET}/schema.json`
+const embDoc = `/mongodb/${DB}/collections/${COLL_EMB}/documents.jsonl`
+const textDoc = `/mongodb/${DB}/collections/${COLL_TXT}/documents.jsonl`
+const viewDoc = `/mongodb/${DB}/views/${VIEW}/documents.jsonl`
+const viewSchema = `/mongodb/${DB}/views/${VIEW}/schema.json`
+const dbJson = `/mongodb/${DB}/database.json`
+
 try {
-  await run('ls /mongodb', 'ls /mongodb')
+  console.log('='.repeat(60))
+  console.log('DIRECTORY LISTING')
+  console.log('='.repeat(60))
+  await run('ls /mongodb/')
+  await run(`ls /mongodb/${DB}/`)
+  await run(`ls /mongodb/${DB}/collections/`)
+  await run(`ls /mongodb/${DB}/views/`)
+  await run(`ls /mongodb/${DB}/collections/${COLL_HET}/`)
+  await run(`tree -L 3 /mongodb/${DB}/`)
 
-  const dbsOut = await ws.execute('ls /mongodb')
-  const dbs = DEC.decode(dbsOut.stdout).split('\n').filter((s) => s.length > 0)
-  if (dbs.length === 0) {
-    console.log('\nno databases visible; stopping')
-    process.exit(0)
-  }
-  const target = dbs[0]!
-  await run(`ls /mongodb/${target}`, `ls /mongodb/${target}`)
+  console.log('\n' + '='.repeat(60))
+  console.log('CAT (database.json, schema.json, documents.jsonl)')
+  console.log('='.repeat(60))
+  await run(`cat "${dbJson}"`)
+  await run(`cat "${collSchema}"`)
+  await run(`cat "${viewSchema}"`)
 
-  const colsOut = await ws.execute(`ls /mongodb/${target}`)
-  const cols = DEC.decode(colsOut.stdout).split('\n').filter((s) => s.endsWith('.jsonl'))
-  if (cols.length === 0) {
-    console.log(`\nno collections in ${target}; stopping`)
-    process.exit(0)
-  }
-  const col = cols[0]!
-  const path = `/mongodb/${target}/${col}`
+  console.log('\n' + '='.repeat(60))
+  console.log('HEAD / TAIL / WC / STAT')
+  console.log('='.repeat(60))
+  await run(`head -n 3 "${collDoc}"`)
+  await run(`tail -n 3 "${collDoc}"`)
+  await run(`wc -l "${collDoc}"`)
+  await run(`stat "${collDoc}"`)
+  await run(`head -n 2 "${viewDoc}"`)
 
-  await run(`stat ${path}`, `stat ${path}`)
-  await run(`head -n 3 ${path}`, `head -n 3 ${path}`)
-  await run(`tail -n 2 ${path}`, `tail -n 2 ${path}`)
-  await run(`wc -l ${path}`, `wc -l ${path}`)
-  await run(`cat ${path} | head -n 1`, `cat ${path} | head -n 1`)
-  await run(`jq -s ".[0]" ${path}`, `jq -s ".[0]" ${path}`)
-  await run(`find /mongodb/${target} -maxdepth 1`, `find /mongodb/${target} -maxdepth 1`)
-  await run(`tree -L 2 /mongodb/${target}`, `tree -L 2 /mongodb/${target}`)
+  console.log('\n' + '='.repeat(60))
+  console.log('ELIDE_FIELDS in action (embedding dropped from output)')
+  console.log('='.repeat(60))
+  await run(`head -n 1 "${embDoc}"`)
+
+  console.log('\n' + '='.repeat(60))
+  console.log('GREP at every scope')
+  console.log('='.repeat(60))
+  await run(`grep -c title "${collDoc}"`)
+  await run(`grep -m 3 title "${collDoc}"`)
+  await run(`grep mongodb "/mongodb/${DB}/collections/${COLL_TXT}/"`)
+  await run(`grep mongodb "/mongodb/${DB}/"`)
+  await run('grep mongodb "/mongodb/"')
+
+  console.log('\n' + '='.repeat(60))
+  console.log('RG at db / root scope')
+  console.log('='.repeat(60))
+  await run(`rg database "/mongodb/${DB}/"`)
+  await run('rg database "/mongodb/"')
+
+  console.log('\n' + '='.repeat(60))
+  console.log('JQ on documents.jsonl')
+  console.log('='.repeat(60))
+  await run(`jq -r ".[] | .title" "${collDoc}" | head -n 5`)
+  await run(`jq -r '.[] | ._id["$oid"]' "${collDoc}" | head -n 5`)
+  await run(`jq -r ".[] | select(.year >= 2024) | .title" "${collDoc}" | head -n 5`)
+  await run(`jq -r ".[] | .body" "${textDoc}" | head -n 3`)
+
+  console.log('\n' + '='.repeat(60))
+  console.log('FIND')
+  console.log('='.repeat(60))
+  await run(`find "/mongodb/${DB}/" -name "schema.json"`)
+  await run(`find "/mongodb/${DB}/" -name "documents.jsonl"`)
+  await run(`find "/mongodb/${DB}/" -maxdepth 2`)
+
+  console.log('\n' + '='.repeat(60))
+  console.log('CD + pwd + ls + relative path read')
+  console.log('='.repeat(60))
+  await ws.execute(`cd "/mongodb/${DB}/collections/${COLL_HET}"`)
+  await run('pwd')
+  await run('ls')
+  await run('head -n 1 documents.jsonl')
 } finally {
   await ws.close()
   await resource.close()

@@ -15,6 +15,8 @@
 export interface SlackResponse {
   ok: boolean
   error?: string
+  needed?: string
+  provided?: string
   [key: string]: unknown
 }
 
@@ -22,14 +24,29 @@ export class SlackApiError extends Error {
   constructor(
     public readonly endpoint: string,
     public readonly slackError: string,
+    public readonly needed: string | null = null,
+    public readonly provided: string | null = null,
   ) {
-    super(`Slack API error (${endpoint}): ${slackError}`)
+    super(formatSlackErrorMessage(endpoint, slackError, needed, provided))
     this.name = 'SlackApiError'
   }
 }
 
+function formatSlackErrorMessage(
+  endpoint: string,
+  slackError: string,
+  needed: string | null,
+  provided: string | null,
+): string {
+  const base = `Slack API error (${endpoint}): ${slackError}`
+  if (slackError !== 'missing_scope' || needed === null || needed === '') return base
+  const providedRepr = provided !== null && provided !== '' ? provided : '(none)'
+  return `${base} (needed: ${needed}; provided: ${providedRepr})`
+}
+
 export interface SlackTransport {
   call(endpoint: string, params?: Record<string, string>, body?: unknown): Promise<SlackResponse>
+  downloadFile?(url: string): Promise<Uint8Array>
 }
 
 export abstract class HttpSlackTransport implements SlackTransport {
@@ -37,7 +54,9 @@ export abstract class HttpSlackTransport implements SlackTransport {
   protected readonly fetch: typeof fetch = globalThis.fetch.bind(globalThis)
 
   protected abstract baseUrl(): string
-  protected abstract authHeaders(): Promise<Record<string, string>> | Record<string, string>
+  protected abstract authHeaders(
+    endpoint?: string,
+  ): Promise<Record<string, string>> | Record<string, string>
 
   async call(
     endpoint: string,
@@ -49,7 +68,7 @@ export abstract class HttpSlackTransport implements SlackTransport {
     if (params) {
       for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
     }
-    const auth = await this.authHeaders()
+    const auth = await this.authHeaders(endpoint)
     const init: RequestInit = {
       method: body === undefined ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8', ...auth },
@@ -58,9 +77,24 @@ export abstract class HttpSlackTransport implements SlackTransport {
     const res = await this.fetch(url, init)
     const data = (await res.json()) as SlackResponse
     if (!data.ok) {
-      throw new SlackApiError(endpoint, data.error ?? 'unknown_error')
+      throw new SlackApiError(
+        endpoint,
+        data.error ?? 'unknown_error',
+        data.needed ?? null,
+        data.provided ?? null,
+      )
     }
     return data
+  }
+
+  async downloadFile(url: string): Promise<Uint8Array> {
+    const auth = await this.authHeaders()
+    const res = await this.fetch(url, { method: 'GET', headers: auth })
+    if (!res.ok) {
+      throw new Error(`slack: download failed (${String(res.status)}): ${url}`)
+    }
+    const buf = await res.arrayBuffer()
+    return new Uint8Array(buf)
   }
 }
 
@@ -74,11 +108,13 @@ export class NodeSlackTransport extends HttpSlackTransport {
   protected baseUrl(): string {
     return 'https://slack.com/api'
   }
-  protected authHeaders(): Record<string, string> {
-    return { Authorization: `Bearer ${this.token}` }
-  }
-  // searchToken is read by core/slack/search.ts at call time, not here.
-  getSearchToken(): string | undefined {
-    return this.searchToken
+  protected authHeaders(endpoint?: string): Record<string, string> {
+    const token =
+      endpoint?.startsWith('search.') === true &&
+      this.searchToken !== undefined &&
+      this.searchToken !== ''
+        ? this.searchToken
+        : this.token
+    return { Authorization: `Bearer ${token}` }
   }
 }

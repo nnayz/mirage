@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   DISCORD_API,
   DISCORD_COMMANDS,
   DISCORD_PROMPT,
@@ -21,9 +22,7 @@ import {
   DiscordAccessor,
   type FileStat,
   HttpDiscordTransport,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -49,12 +48,10 @@ class NodeDiscordTransport extends HttpDiscordTransport {
 
 export interface DiscordResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: DiscordConfigRedacted
 }
 
-export class DiscordResource implements Resource {
+export class DiscordResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.DISCORD
   readonly isRemote: boolean = true
   readonly indexTtl: number = 600
@@ -62,12 +59,11 @@ export class DiscordResource implements Resource {
   readonly writePrompt: string = DISCORD_WRITE_PROMPT
   readonly config: DiscordConfig
   readonly accessor: DiscordAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: DiscordConfig) {
+    super()
     this.config = config
     this.accessor = new DiscordAccessor(new NodeDiscordTransport(config.token))
-    this.index = new RAMIndexCacheStore({ ttl: this.indexTtl })
   }
 
   open(): Promise<void> {
@@ -124,8 +120,6 @@ export class DiscordResource implements Resource {
   getState(): Promise<DiscordResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['token'],
       config: redactDiscordConfig(this.config),
     })
   }

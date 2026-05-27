@@ -22,11 +22,13 @@ from mirage.commands.builtin.utils.stream import _read_stdin_async
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.discord.channels import list_channels
+from mirage.core.discord.entry import channel_dirname
+from mirage.core.discord.formatters import format_grep_results
 from mirage.core.discord.glob import resolve_glob
 from mirage.core.discord.read import read as discord_read
 from mirage.core.discord.readdir import readdir as _readdir
 from mirage.core.discord.scope import coalesce_scopes, detect_scope
-from mirage.core.discord.search import format_grep_results, search_guild
+from mirage.core.discord.search import search_guild
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -86,9 +88,10 @@ async def rg(
     max_count = int(m) if m is not None else None
     pat = compile_pattern(pattern_str, i, F, w)
 
+    pushdown_warnings: list[str] = []
     if paths:
         scope = await detect_scope(paths[0], index)
-        if scope.level == "file":
+        if scope.level in ("messages", "file_blob", "date"):
             coalesced = await coalesce_scopes(paths, index)
             if coalesced is not None:
                 scope = coalesced
@@ -112,16 +115,23 @@ async def rg(
                 file_prefix = paths[0].prefix or ""
                 resource_first = scope.resource_path.split("/", 1)[0]
                 channels = await list_channels(accessor.config, scope.guild_id)
-                channel_map = {
-                    c["id"]: c.get("name", c["id"])
-                    for c in channels
-                }
+                channel_map = {c["id"]: channel_dirname(c) for c in channels}
                 lines = format_grep_results(msgs, file_prefix, resource_first,
                                             channel_map)
                 if not lines:
                     return b"", IOResult(exit_code=1)
                 return "\n".join(lines).encode(), IOResult()
             except Exception as exc:
+                msg = str(exc)
+                pushdown_warnings.append(
+                    f"discord: native search push-down failed ({msg}); "
+                    f"falling back to per-file scan")
+                if ("403" in msg or "Forbidden" in msg
+                        or "missing access" in msg.lower()):
+                    pushdown_warnings.append(
+                        "discord: hint - ensure the bot has the "
+                        "READ_MESSAGE_HISTORY permission for this guild "
+                        "and the MESSAGE CONTENT privileged intent enabled")
                 logger.warning(
                     "discord search push-down failed (%s); "
                     "falling back to per-file scan", exc)
@@ -170,9 +180,11 @@ async def rg(
                 continue
             for line in matched:
                 all_results.append(f"{bp}:{line}")
+        stderr = (("\n".join(pushdown_warnings) +
+                   "\n").encode() if pushdown_warnings else None)
         if not any_match:
-            return b"", IOResult(exit_code=1)
-        return "\n".join(all_results).encode(), IOResult()
+            return b"", IOResult(exit_code=1, stderr=stderr)
+        return "\n".join(all_results).encode(), IOResult(stderr=stderr)
 
     raw = await _read_stdin_async(stdin)
     if raw is None:

@@ -15,9 +15,12 @@
 from functools import partial
 from typing import Any, Callable
 
+from pydantic import BaseModel
+
 from mirage.accessor.base import Accessor
 from mirage.cache.index import (IndexCacheStore, IndexConfig,
                                 RAMIndexCacheStore, RedisIndexConfig)
+from mirage.resource.secrets import redacted_config_dump
 
 try:
     from mirage.cache.index import RedisIndexCacheStore
@@ -34,7 +37,7 @@ class BaseResource:
     PROMPT: str = ""
     WRITE_PROMPT: str = ""
 
-    _index_ttl: float = 600
+    index_ttl: float = 600
 
     # Whether this resource carries enough version information for
     # snapshot+replay drift detection. When True, the resource's stat()
@@ -53,7 +56,10 @@ class BaseResource:
         super().__init__(**kwargs)
         self._commands: list = []
         self._ops_list: list = []
-        cfg = index or IndexConfig(ttl=self._index_ttl)
+        self.set_index(index)
+
+    def set_index(self, config: IndexConfig | None = None) -> None:
+        cfg = config or IndexConfig(ttl=self.index_ttl)
         if isinstance(cfg, RedisIndexConfig):
             if RedisIndexCacheStore is None:
                 raise ImportError(
@@ -109,8 +115,14 @@ class BaseResource:
     def get_state(self) -> dict:
         return {
             "type": self.name,
-            "needs_override": False,
-            "redacted_fields": [],
+        }
+
+    def config_state(self, config: BaseModel, **extra: Any) -> dict:
+        cfg = redacted_config_dump(config)
+        return {
+            "type": self.name,
+            "config": cfg,
+            **extra,
         }
 
     def load_state(self, state: dict) -> None:

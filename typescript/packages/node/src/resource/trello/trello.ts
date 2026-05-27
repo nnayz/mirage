@@ -13,11 +13,10 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   HttpTrelloTransport,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -37,12 +36,10 @@ import { redactTrelloConfig, type TrelloConfig, type TrelloConfigRedacted } from
 
 export interface TrelloResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: TrelloConfigRedacted
 }
 
-export class TrelloResource implements Resource {
+export class TrelloResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.TRELLO
   readonly isRemote: boolean = true
   readonly indexTtl: number = 600
@@ -50,9 +47,9 @@ export class TrelloResource implements Resource {
   readonly writePrompt: string = TRELLO_WRITE_PROMPT
   readonly config: TrelloConfig
   readonly accessor: TrelloAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: TrelloConfig) {
+    super()
     this.config = config
     const transportOpts: { apiKey: string; apiToken: string; baseUrl?: string } = {
       apiKey: config.apiKey,
@@ -60,7 +57,6 @@ export class TrelloResource implements Resource {
     }
     if (config.baseUrl !== undefined) transportOpts.baseUrl = config.baseUrl
     this.accessor = new TrelloAccessor(new HttpTrelloTransport(transportOpts))
-    this.index = new RAMIndexCacheStore({ ttl: this.indexTtl })
   }
 
   open(): Promise<void> {
@@ -124,8 +120,6 @@ export class TrelloResource implements Resource {
   getState(): Promise<TrelloResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['apiKey', 'apiToken'],
       config: redactTrelloConfig(this.config),
     })
   }

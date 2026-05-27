@@ -17,9 +17,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from mirage.core.slack.formatters import build_query, format_file_grep_results
 from mirage.core.slack.scope import SlackScope
-from mirage.core.slack.search import (build_query, format_file_grep_results,
-                                      search_files)
+from mirage.core.slack.search import search_files
 from mirage.resource.slack.config import SlackConfig
 
 
@@ -39,7 +39,7 @@ async def test_search_files_calls_correct_endpoint():
     args, kwargs = mock.call_args
     assert args[1] == "search.files"
     assert kwargs["params"]["query"] == "report"
-    assert kwargs["token"] == "xoxp"
+    assert "token" not in kwargs
 
 
 def test_format_file_grep_results_renders_paths():
@@ -129,7 +129,7 @@ def test_format_file_grep_results_skips_when_no_scope_channel():
     assert lines == []
 
 
-def test_format_file_grep_results_sanitizes_name():
+def test_format_file_grep_results_preserves_special_chars():
     raw_payload = {
         "files": {
             "matches": [{
@@ -154,7 +154,4 @@ def test_format_file_grep_results_sanitizes_name():
     line = lines[0]
     assert "F1ABC" in line
     blob_segment = line.split("/files/")[1].split(":")[0]
-    assert " " not in blob_segment
-    assert "(" not in blob_segment
-    assert ")" not in blob_segment
-    assert blob_segment.endswith("__F1ABC.pdf")
+    assert blob_segment == "Q4 Report (final)__F1ABC.pdf"

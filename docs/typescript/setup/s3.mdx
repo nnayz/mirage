@@ -152,3 +152,27 @@ CORS is origin-exact. `http://localhost:5173` ≠ `http://localhost:5174` ≠ `h
 </Warning>
 
 See [S3 Setup](/home/setup/s3) for credential setup.
+
+## Scoping a resource to a key prefix
+
+Pass `keyPrefix` to scope every operation to a subpath of the bucket:
+
+```ts
+const s3 = new S3Resource({
+  bucket: 'app-data',
+  region: 'eu-west-1',
+  keyPrefix: `users/${userId}/`,
+})
+```
+
+When set, every read/write/list/stat/copy/rename/delete operation is transparently scoped to that bucket subpath. Agents see clean paths like `/data/notes.md`; the underlying bucket key is `users/${userId}/data/notes.md`. Useful for multi-tenant systems. Pairs naturally with STS AssumeRole session policies for AWS-side enforcement. Unset behavior is unchanged.
+
+**Normalization:** leading slashes are stripped and a trailing slash is added automatically. Both `undefined` and an empty string are treated as "no prefix."
+
+In YAML-based configs the snake-case spelling `key_prefix` is also accepted and is automatically mapped to `keyPrefix` at construction.
+
+<Warning>
+**Browser variant — security note**
+
+For `mirage-browser`'s `S3Resource` (which uses `presignedUrlProvider`), `keyPrefix` flows through the same core code path, but a client-controlled prefix is not a security boundary — a malicious client can ignore or alter it before signing. For real isolation, enforce the prefix inside your server-side `presignedUrlProvider` implementation (and in the IAM/STS session policy backing those credentials). Treat the client-side `keyPrefix` as ergonomics only.
+</Warning>

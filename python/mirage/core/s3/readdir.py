@@ -16,7 +16,8 @@ import logging
 
 from mirage.accessor.s3 import S3Accessor
 from mirage.cache.index import IndexCacheStore, IndexEntry
-from mirage.core.s3._client import _client_kwargs, _prefix, async_session
+from mirage.core.s3._client import (_client_kwargs, _prefix, _strip_prefix,
+                                    async_session)
 from mirage.core.s3.constants import SCOPE_ERROR
 from mirage.types import PathSpec
 
@@ -34,14 +35,16 @@ async def readdir(accessor: S3Accessor, path: PathSpec,
         # pass pattern=None so path.original is used.
         path = path.directory if path.pattern else path.original
     if prefix and path.startswith(prefix):
-        path = path[len(prefix):] or "/"
+        rest = path[len(prefix):]
+        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
+            path = rest or "/"
     config = accessor.config
     raw_key = prefix + path if prefix else path
     virtual_key = raw_key.rstrip("/") or "/"
     listing = await index.list_dir(virtual_key)
     if listing.entries is not None:
         return listing.entries
-    pfx = _prefix(path)
+    pfx = _prefix(path, config)
     names: list[str] = []
     dir_keys: set[str] = set()
     sizes: dict[str, int | None] = {}
@@ -54,13 +57,13 @@ async def readdir(accessor: S3Accessor, path: PathSpec,
             for cp in page.get("CommonPrefixes") or []:
                 child = cp["Prefix"].rstrip("/")
                 if child:
-                    key = "/" + child
+                    key = "/" + _strip_prefix(child, config)
                     names.append(key)
                     dir_keys.add(key)
             for obj in page.get("Contents") or []:
                 relative = obj["Key"][len(pfx):]
                 if relative and "/" not in relative:
-                    key = "/" + obj["Key"]
+                    key = "/" + _strip_prefix(obj["Key"], config)
                     names.append(key)
                     sizes[key] = obj.get("Size")
     names = sorted(names)

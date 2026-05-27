@@ -63,12 +63,12 @@ async function runLs(
 describe('discord ls', () => {
   it('lists guild dir entries (channels/members)', async () => {
     const idx = new RAMIndexCacheStore()
-    await seedGuild(idx, '/mnt/discord', 'My_Server__G1', 'G1')
+    await seedGuild(idx, '/mnt/discord', 'My Server__G1', 'G1')
     const out = await runLs(
       [
         new PathSpec({
-          original: '/mnt/discord/My_Server__G1',
-          directory: '/mnt/discord/My_Server__G1',
+          original: '/mnt/discord/My Server__G1',
+          directory: '/mnt/discord/My Server__G1',
           resolved: false,
           prefix: '/mnt/discord',
         }),
@@ -84,13 +84,13 @@ describe('discord ls', () => {
     const transport = new FakeDiscordTransport(() => {
       throw new Error('should not be called')
     })
-    await seedGuild(idx, '/mnt/discord', 'My_Server__G1', 'G1')
-    await seedChannel(idx, '/mnt/discord', 'My_Server__G1', 'general__C1', 'C1')
+    await seedGuild(idx, '/mnt/discord', 'My Server__G1', 'G1')
+    await seedChannel(idx, '/mnt/discord', 'My Server__G1', 'general__C1', 'C1')
     const out = await runLs(
       [
         new PathSpec({
-          original: '/mnt/discord/My_Server__G1/channels',
-          directory: '/mnt/discord/My_Server__G1/channels',
+          original: '/mnt/discord/My Server__G1/channels',
+          directory: '/mnt/discord/My Server__G1/channels',
           resolved: false,
           prefix: '/mnt/discord',
         }),
@@ -102,20 +102,20 @@ describe('discord ls', () => {
     expect(transport.calls).toHaveLength(0)
   })
 
-  it('walks 4-level VFS and lists date.jsonl files', async () => {
+  it('walks 4-level VFS and lists date directories', async () => {
     const idx = new RAMIndexCacheStore()
     const transport = new FakeDiscordTransport(() => {
       throw new Error('should not be called')
     })
-    await seedGuild(idx, '/mnt/discord', 'My_Server__G1', 'G1')
-    await seedChannel(idx, '/mnt/discord', 'My_Server__G1', 'general__C1', 'C1', {
+    await seedGuild(idx, '/mnt/discord', 'My Server__G1', 'G1')
+    await seedChannel(idx, '/mnt/discord', 'My Server__G1', 'general__C1', 'C1', {
       dates: ['2024-01-01', '2024-01-02'],
     })
     const out = await runLs(
       [
         new PathSpec({
-          original: '/mnt/discord/My_Server__G1/channels/general__C1',
-          directory: '/mnt/discord/My_Server__G1/channels/general__C1',
+          original: '/mnt/discord/My Server__G1/channels/general__C1',
+          directory: '/mnt/discord/My Server__G1/channels/general__C1',
           resolved: false,
           prefix: '/mnt/discord',
         }),
@@ -124,6 +124,6 @@ describe('discord ls', () => {
       { index: idx, transport },
     )
     const lines = out.stdout.split('\n').sort()
-    expect(lines).toEqual(['2024-01-01.jsonl', '2024-01-02.jsonl'])
+    expect(lines).toEqual(['2024-01-01', '2024-01-02'])
   })
 })

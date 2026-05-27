@@ -13,15 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   GSLIDES_COMMANDS,
   GSLIDES_PROMPT,
   GSLIDES_VFS_OPS,
   GSLIDES_WRITE_PROMPT,
   GSlidesAccessor,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -36,12 +35,10 @@ import { redactGSlidesConfig, type GSlidesConfig, type GSlidesConfigRedacted } f
 
 export interface GSlidesResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: GSlidesConfigRedacted
 }
 
-export class GSlidesResource implements Resource {
+export class GSlidesResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GSLIDES
   readonly isRemote: boolean = true
   readonly indexTtl: number = 86_400
@@ -49,9 +46,9 @@ export class GSlidesResource implements Resource {
   readonly writePrompt: string = GSLIDES_WRITE_PROMPT
   readonly config: GSlidesConfig
   readonly accessor: GSlidesAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: GSlidesConfig) {
+    super()
     this.config = config
     const tm = new TokenManager({
       clientId: config.clientId,
@@ -59,7 +56,6 @@ export class GSlidesResource implements Resource {
       refreshToken: config.refreshToken,
     })
     this.accessor = new GSlidesAccessor({ tokenManager: tm })
-    this.index = new RAMIndexCacheStore({ ttl: 86_400 })
   }
 
   open(): Promise<void> {
@@ -116,8 +112,6 @@ export class GSlidesResource implements Resource {
   getState(): Promise<GSlidesResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['clientSecret', 'refreshToken'],
       config: redactGSlidesConfig(this.config),
     })
   }

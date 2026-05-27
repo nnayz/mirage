@@ -13,15 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   GDOCS_COMMANDS,
   GDOCS_PROMPT,
   GDOCS_VFS_OPS,
   GDOCS_WRITE_PROMPT,
   GDocsAccessor,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -36,12 +35,10 @@ import { redactGDocsConfig, type GDocsConfig, type GDocsConfigRedacted } from '.
 
 export interface GDocsResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: GDocsConfigRedacted
 }
 
-export class GDocsResource implements Resource {
+export class GDocsResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GDOCS
   readonly isRemote: boolean = true
   readonly indexTtl: number = 86_400
@@ -49,9 +46,9 @@ export class GDocsResource implements Resource {
   readonly writePrompt: string = GDOCS_WRITE_PROMPT
   readonly config: GDocsConfig
   readonly accessor: GDocsAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: GDocsConfig) {
+    super()
     this.config = config
     const tm = new TokenManager({
       clientId: config.clientId,
@@ -59,7 +56,6 @@ export class GDocsResource implements Resource {
       refreshToken: config.refreshToken,
     })
     this.accessor = new GDocsAccessor({ tokenManager: tm })
-    this.index = new RAMIndexCacheStore({ ttl: 86_400 })
   }
 
   open(): Promise<void> {
@@ -116,8 +112,6 @@ export class GDocsResource implements Resource {
   getState(): Promise<GDocsResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['clientSecret', 'refreshToken'],
       config: redactGDocsConfig(this.config),
     })
   }

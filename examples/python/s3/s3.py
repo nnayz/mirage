@@ -35,8 +35,23 @@ config = S3Config(
     aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
 )
 
+deep_config = S3Config(
+    bucket=os.environ["AWS_S3_BUCKET"],
+    region=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+    aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    key_prefix="subdata/subsubdata/",
+)
+
 backend = S3Resource(config)
-ws = Workspace({"/s3/": backend}, mode=MountMode.READ)
+deep_backend = S3Resource(deep_config)
+ws = Workspace(
+    {
+        "/s3/": backend,
+        "/deep/": deep_backend,
+    },
+    mode=MountMode.READ,
+)
 
 
 def ops_summary() -> str:
@@ -48,8 +63,108 @@ def ops_summary() -> str:
 
 
 async def main():
+    # ── key_prefix mount: multi-segment subpath scoping ──
+    # Mounts the same bucket twice: /s3/ unscoped, /deep/ scoped to
+    # subdata/subsubdata/. Every operation against /deep/X resolves
+    # to s3://bucket/subdata/subsubdata/X with the prefix transparent
+    # to the agent.
+    print("=== KEY_PREFIX MOUNT (subdata/subsubdata/) ===\n")
+
+    print(f"  key_prefix = {deep_config.key_prefix!r}")
+    print("  /deep/X  ←→  s3://bucket/subdata/subsubdata/X\n")
+
+    async def run(cmd: str, label: str | None = None) -> str:
+        r = await ws.execute(cmd)
+        out = (await r.stdout_str()).strip()
+        tag = label or cmd
+        head = out.splitlines()[0] if out else ""
+        more = f" (+{len(out.splitlines()) - 1} more)" if "\n" in out else ""
+        print(f"  $ {tag}\n    {head[:110]}{more}  [exit={r.exit_code}]")
+        return out
+
+    # ── listings ──
+    print("[listings]")
+    await run("ls /deep")
+    await run("ls -1 /deep")
+    await run("ls -la /deep")
+
+    # ── stat ──
+    print("\n[stat]")
+    await run("stat /deep/example.jsonl")
+    await run("stat /deep/example.json")
+    await run("stat /deep")
+
+    # ── existence ──
+    print("\n[exists]")
+    await run("test -f /deep/example.jsonl && echo present || echo absent")
+    await run("test -f /deep/no-such.txt && echo present || echo absent")
+    await run("test -d /deep && echo dir-present")
+
+    # ── reads ──
+    print("\n[read]")
+    await run("head -n 1 /deep/example.jsonl")
+    await run("tail -n 1 /deep/example.jsonl")
+    await run("wc -l /deep/example.jsonl")
+    await run("wc -c /deep/example.json")
+
+    # ── grep variants ──
+    print("\n[grep]")
+    await run("grep -c mirage /deep/example.jsonl")
+    await run("grep -m 1 mirage /deep/example.jsonl")
+    await run("grep -i MIRAGE /deep/example.jsonl | wc -l")
+    await run("grep -n queue-operation /deep/example.jsonl | head -n 1")
+    await run("grep -v queue-operation /deep/example.jsonl | wc -l")
+
+    # ── rg (the formerly-broken double-prefix case) ──
+    print("\n[rg]")
+    await run("rg -l mirage /deep")
+    await run("rg -c mirage /deep/example.json")
+    await run("rg -n queue-operation /deep/example.jsonl | head -n 1")
+
+    # ── find / du ──
+    print("\n[find / du]")
+    await run("find /deep -name '*.json'")
+    await run("find /deep -name 'example.*' | wc -l")
+    await run("find /deep -type f | wc -l")
+    await run("du /deep/example.jsonl")
+
+    # ── glob expansion ──
+    print("\n[glob]")
+    await run("echo /deep/*.json")
+    await run("echo /deep/example.*")
+    await run("for f in /deep/*.json; do wc -c $f; done")
+
+    # ── jq (validates content equivalence) ──
+    print("\n[jq]")
+    await run("jq .metadata.version /deep/example.json")
+    await run("jq '.departments[].teams[].name' /deep/example.json")
+
+    # ── pipelines / control flow ──
+    print("\n[pipelines]")
+    await run("cat /deep/example.jsonl | grep mirage | wc -l")
+    await run("grep queue-operation /deep/example.jsonl"
+              " | head -n 2 | cut -d , -f 1")
+    await run("grep -m 1 mirage /deep/example.jsonl && echo found")
+    await run("grep ZZZ_NOPE /deep/example.jsonl || echo fallback")
+
+    # ── parity vs /s3/ (same bucket, same object, different mount) ──
+    print("\n[parity vs /s3/]")
+    a = await (await
+               ws.execute("grep -c mirage /deep/example.jsonl")).stdout_str()
+    b = await (await ws.execute(
+        "grep -c mirage /s3/subdata/subsubdata/example.jsonl")).stdout_str()
+    print(f"  /deep/example.jsonl                       grep -c: {a.strip()}")
+    print(f"  /s3/subdata/subsubdata/example.jsonl      grep -c: {b.strip()}")
+    print(f"  parity: {a.strip() == b.strip()}")
+
+    # ── get_state ──
+    print("\n[get_state]")
+    state = deep_backend.get_state()
+    print(f"  config.key_prefix = {state['config'].get('key_prefix')!r}")
+    print(f"  access key        = {state['config']['aws_access_key_id']}")
+
     # ── root listing (tests stat on directory prefixes) ──
-    print("=== ROOT LISTING ===\n")
+    print("\n=== ROOT LISTING ===\n")
 
     print("--- ls /s3/ ---")
     r = await ws.execute("ls /s3/")
@@ -513,8 +628,8 @@ async def main():
         print(f"  S3 read after rm: exit={r.exit_code} (expect non-zero)")
 
     # ── persistence: save / load / copy / deepcopy ──────────────────
-    # S3 has needs_override=True — creds are redacted at save time;
-    # caller must re-supply a fresh S3Resource via resources={...}.
+    # S3 with inline creds has redacted config at save time; caller must
+    # re-supply a fresh S3Resource via resources={...}.
     print("\n=== PERSISTENCE ===\n")
     with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as f:
         snap = f.name
@@ -526,7 +641,7 @@ async def main():
         # Verify creds are NOT in the raw tar bytes
         raw = open(snap, "rb").read()
         leaked = config.aws_access_key_id and (
-            config.aws_access_key_id.encode() in raw)
+            config.aws_access_key_id.get_secret_value().encode() in raw)
         print(f"  creds leaked in tar bytes: {bool(leaked)} "
               f"(expect False)")
         print(f"  '<REDACTED>' present in tar: "
@@ -540,8 +655,14 @@ async def main():
             print(f"  ✓ load() w/o resources raises: "
                   f"{str(e).splitlines()[0][:70]}…")
 
-        # Load with fresh creds
-        loaded = Workspace.load(snap, resources={"/s3/": S3Resource(config)})
+        # Load with fresh creds (both mounts were redacted)
+        loaded = Workspace.load(
+            snap,
+            resources={
+                "/s3/": S3Resource(config),
+                "/deep/": S3Resource(deep_config),
+            },
+        )
         r = await loaded.execute("ls /s3/")
         print(f"  loaded ws ls /s3/: "
               f"{(await r.stdout_str()).strip()[:60]}…")

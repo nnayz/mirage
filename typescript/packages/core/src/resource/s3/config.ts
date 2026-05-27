@@ -12,6 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { z } from 'zod'
+import { redactConfigWithSchema, secretSchema, secretStr } from '../secrets.ts'
+import * as kp from '../../utils/key_prefix.ts'
+
 export type S3BrowserOperation = 'GET' | 'PUT' | 'HEAD' | 'DELETE' | 'LIST' | 'COPY'
 
 export interface S3BrowserSignOptions {
@@ -29,6 +33,22 @@ export type S3BrowserPresignedUrlProvider = (
   options?: S3BrowserSignOptions,
 ) => Promise<string>
 
+export const S3ConfigSchema = z.object({
+  bucket: z.string(),
+  region: z.string().optional(),
+  endpoint: z.string().optional(),
+  accessKeyId: secretStr().optional(),
+  secretAccessKey: secretStr().optional(),
+  sessionToken: secretStr().optional(),
+  forcePathStyle: z.boolean().optional(),
+  timeoutMs: z.number().optional(),
+  presignedUrlProvider: secretSchema(
+    z.custom<S3BrowserPresignedUrlProvider>((value) => typeof value === 'function'),
+  ).optional(),
+  defaultContentType: z.string().optional(),
+  keyPrefix: z.string().optional(),
+})
+
 export interface S3Config {
   bucket: string
   region?: string
@@ -38,15 +58,14 @@ export interface S3Config {
   sessionToken?: string
   forcePathStyle?: boolean
   timeoutMs?: number
-  /**
-   * Browser runtime only. When set, core/s3/* skips the AWS SDK entirely
-   * and signs every request via this callback (your server-side signer),
-   * then fetches the resulting presigned URL. Mirrors Python's boto3
-   * session-behind-accessor abstraction — just with a different backend.
-   */
   presignedUrlProvider?: S3BrowserPresignedUrlProvider
-  /** Optional default Content-Type for PUT via the presigner path. */
   defaultContentType?: string
+  keyPrefix?: string
+}
+
+export function normalizeKeyPrefix(v: string | undefined): string | undefined {
+  const out = kp.normalize(v)
+  return out === '' ? undefined : out
 }
 
 export interface S3ConfigRedacted extends Omit<
@@ -60,11 +79,5 @@ export interface S3ConfigRedacted extends Omit<
 }
 
 export function redactConfig(config: S3Config): S3ConfigRedacted {
-  const { presignedUrlProvider, ...rest } = config
-  const out: S3ConfigRedacted = { ...rest }
-  if (config.accessKeyId !== undefined) out.accessKeyId = '<REDACTED>'
-  if (config.secretAccessKey !== undefined) out.secretAccessKey = '<REDACTED>'
-  if (config.sessionToken !== undefined) out.sessionToken = '<REDACTED>'
-  if (presignedUrlProvider !== undefined) out.presignedUrlProvider = '<REDACTED>'
-  return out
+  return redactConfigWithSchema(S3ConfigSchema, config) as unknown as S3ConfigRedacted
 }

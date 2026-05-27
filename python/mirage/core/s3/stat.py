@@ -75,7 +75,7 @@ async def stat(accessor: S3Accessor,
     # Slow path: no index cache available, or parent directory not yet
     # listed. Hit the network.
     config = accessor.config
-    key = _key(path)
+    key = _key(path, config)
     session = async_session(config)
     async with session.client(**_client_kwargs(config)) as client:
         # Try head_object first — works for files.

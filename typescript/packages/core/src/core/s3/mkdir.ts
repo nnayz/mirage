@@ -19,7 +19,7 @@ import { loadS3Module, rawPathOf, s3Prefix, withClient } from './_client.ts'
 export async function mkdir(accessor: S3Accessor, path: PathSpec): Promise<void> {
   const { PutObjectCommand } = await loadS3Module(accessor.config)
   const raw = rawPathOf(path)
-  const pfx = s3Prefix(raw)
+  const pfx = s3Prefix(raw, accessor.config)
   if (pfx === '') return
   await withClient(accessor.config, async (client) => {
     await client.send(

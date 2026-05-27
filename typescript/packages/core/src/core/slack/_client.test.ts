@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { HttpSlackTransport, SlackApiError } from './_client.ts'
+import { HttpSlackTransport, NodeSlackTransport, SlackApiError } from './_client.ts'
 
 class TestTransport extends HttpSlackTransport {
   constructor(
@@ -28,7 +28,7 @@ class TestTransport extends HttpSlackTransport {
   protected baseUrl(): string {
     return this.base
   }
-  protected authHeaders(): Record<string, string> {
+  protected authHeaders(_endpoint?: string): Record<string, string> {
     return this.auth
   }
 }
@@ -82,6 +82,54 @@ describe('HttpSlackTransport', () => {
     )
   })
 
+  it('missing_scope error surfaces needed and provided scopes', async () => {
+    const fakeFetch: typeof fetch = () =>
+      Promise.resolve(
+        jsonResponse({
+          ok: false,
+          error: 'missing_scope',
+          needed: 'im:read,mpim:read',
+          provided: 'channels:read,users:read',
+        }),
+      )
+    const t = new TestTransport('https://slack.com/api', {}, fakeFetch)
+    let caught: unknown = null
+    try {
+      await t.call('conversations.list')
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(SlackApiError)
+    const err = caught as SlackApiError
+    expect(err.needed).toBe('im:read,mpim:read')
+    expect(err.provided).toBe('channels:read,users:read')
+    expect(err.message).toMatch(/needed: im:read,mpim:read/)
+    expect(err.message).toMatch(/provided: channels:read,users:read/)
+  })
+
+  it('missing_scope without needed field falls back to base message', async () => {
+    const fakeFetch: typeof fetch = () =>
+      Promise.resolve(jsonResponse({ ok: false, error: 'missing_scope' }))
+    const t = new TestTransport('https://slack.com/api', {}, fakeFetch)
+    await expect(t.call('conversations.list')).rejects.toThrow(
+      /Slack API error \(conversations\.list\): missing_scope$/,
+    )
+  })
+
+  it('missing_scope with empty provided renders provided as (none)', async () => {
+    const fakeFetch: typeof fetch = () =>
+      Promise.resolve(
+        jsonResponse({
+          ok: false,
+          error: 'missing_scope',
+          needed: 'im:read',
+          provided: '',
+        }),
+      )
+    const t = new TestTransport('https://slack.com/api', {}, fakeFetch)
+    await expect(t.call('conversations.list')).rejects.toThrow(/provided: \(none\)/)
+  })
+
   it('attaches auth headers + Content-Type', async () => {
     let observedHeaders: HeadersInit | undefined
     const fakeFetch: typeof fetch = (_url, init) => {
@@ -98,5 +146,21 @@ describe('HttpSlackTransport', () => {
     expect(h.get('Authorization')).toBe('Bearer xyz')
     expect(h.get('X-User')).toBe('u1')
     expect(h.get('Content-Type')).toMatch(/application\/json/)
+  })
+
+  it('uses the configured search token only for search endpoints', async () => {
+    const observedHeaders: string[] = []
+    const fakeFetch: typeof fetch = (_url, init) => {
+      const h = new Headers(init?.headers)
+      observedHeaders.push(h.get('Authorization') ?? '')
+      return Promise.resolve(jsonResponse({ ok: true }))
+    }
+    const t = new NodeSlackTransport('main-token', 'search-token')
+    ;(t as unknown as { fetch: typeof fetch }).fetch = fakeFetch
+
+    await t.call('search.messages')
+    await t.call('conversations.list')
+
+    expect(observedHeaders).toEqual(['Bearer search-token', 'Bearer main-token'])
   })
 })

@@ -27,7 +27,7 @@ async def truncate(accessor: S3Accessor, path: PathSpec, length: int) -> None:
     async with session.client(**_client_kwargs(config)) as client:
         try:
             resp = await client.get_object(Bucket=config.bucket,
-                                           Key=_key(path))
+                                           Key=_key(path, config))
             data = await resp["Body"].read()
         except Exception as exc:
             if (hasattr(exc, "response") and exc.response.get(
@@ -37,5 +37,5 @@ async def truncate(accessor: S3Accessor, path: PathSpec, length: int) -> None:
                 raise
         result = data[:length].ljust(length, b"\0")
         await client.put_object(Bucket=config.bucket,
-                                Key=_key(path),
+                                Key=_key(path, config),
                                 Body=result)

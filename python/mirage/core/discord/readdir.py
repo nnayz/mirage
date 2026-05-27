@@ -12,46 +12,326 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
+from datetime import datetime, timedelta, timezone
+
+import aiohttp
+
 from mirage.accessor.discord import DiscordAccessor
 from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.core.discord.channels import list_channels
+from mirage.core.discord.entry import (DiscordResourceType, channel_entry,
+                                       guild_entry, history_entry,
+                                       member_entry, snowflake_to_date)
+from mirage.core.discord.files import file_blob_name
 from mirage.core.discord.guilds import list_guilds
+from mirage.core.discord.history import list_messages_for_day
 from mirage.core.discord.members import list_members
 from mirage.types import PathSpec
 
+logger = logging.getLogger(__name__)
 
-def _safe_name(name: str) -> str:
-    if not name:
-        return "unknown"
-    return name.replace("/", "\u2215")
+SOFT_HTTP_STATUSES = frozenset((403, 404, 429))
 
 
-def _guild_dirname(g: dict) -> str:
-    return _safe_name(g.get("name", g.get("id", "unknown")))
-
-
-def _channel_dirname(c: dict) -> str:
-    return _safe_name(c.get("name", c.get("id", "unknown")))
-
-
-def _member_filename(m: dict) -> str:
-    user = m.get("user", {})
-    return _safe_name(user.get("username", user.get("id",
-                                                    "unknown"))) + ".json"
-
-
-def _snowflake_to_date(snowflake: str) -> str:
-    from datetime import datetime, timezone
-    ms = (int(snowflake) >> 22) + 1420070400000
-    return datetime.fromtimestamp(ms / 1000,
-                                  tz=timezone.utc).strftime("%Y-%m-%d")
+def _is_soft_error(exc: Exception) -> bool:
+    return (isinstance(exc, aiohttp.ClientResponseError)
+            and exc.status in SOFT_HTTP_STATUSES)
 
 
 def _date_range(end_date: str, days: int = 30) -> list[str]:
-    from datetime import datetime, timedelta
     end = datetime.strptime(end_date, "%Y-%m-%d").date()
     return [(end - timedelta(days=i)).isoformat()
             for i in range(days - 1, -1, -1)]
+
+
+def _normalize_path(path: PathSpec | str) -> tuple[str, str, str]:
+    """Reduce input to (prefix, key, virtual_key)."""
+    if isinstance(path, str):
+        path = PathSpec(original=path, directory=path)
+    prefix = path.prefix
+    raw = path.directory if path.pattern else path.original
+    if prefix and raw.startswith(prefix):
+        raw = raw[len(prefix):] or "/"
+    key = raw.strip("/")
+    virtual_key = prefix + "/" + key if key else prefix or "/"
+    return prefix, key, virtual_key
+
+
+async def _readdir_root(
+    accessor: DiscordAccessor,
+    prefix: str,
+    virtual_key: str,
+    index: IndexCacheStore | None,
+) -> list[str]:
+    if index is not None:
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
+    guilds = await list_guilds(accessor.config)
+    entries = []
+    names = []
+    for g in guilds:
+        entry = guild_entry(g)
+        entries.append((entry.vfs_name, entry))
+        names.append(f"{prefix}/{entry.vfs_name}")
+    if index is not None:
+        await index.set_dir(virtual_key, entries)
+    return names
+
+
+async def _ensure_guild_id(
+    accessor: DiscordAccessor,
+    prefix: str,
+    guild_part: str,
+    index: IndexCacheStore | None,
+    raw_path: str,
+) -> str:
+    if index is None:
+        raise FileNotFoundError(raw_path)
+    guild_virtual_key = prefix + "/" + guild_part
+    lookup = await index.get(guild_virtual_key)
+    if lookup.entry is None:
+        await _readdir_root(accessor, prefix, prefix or "/", index)
+        lookup = await index.get(guild_virtual_key)
+    if lookup.entry is None:
+        raise FileNotFoundError(raw_path)
+    return lookup.entry.id
+
+
+async def _readdir_guild_top(
+    prefix: str,
+    key: str,
+) -> list[str]:
+    return [f"{prefix}/{key}/channels", f"{prefix}/{key}/members"]
+
+
+async def _readdir_channels(
+    accessor: DiscordAccessor,
+    prefix: str,
+    key: str,
+    virtual_key: str,
+    parts: list[str],
+    index: IndexCacheStore | None,
+    raw_path: str,
+) -> list[str]:
+    if index is not None:
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
+    guild_id = await _ensure_guild_id(accessor, prefix, parts[0], index,
+                                      raw_path)
+    channels = await list_channels(accessor.config, guild_id)
+    entries = []
+    names = []
+    for c in channels:
+        entry = channel_entry(c)
+        entries.append((entry.vfs_name, entry))
+        names.append(f"{prefix}/{key}/{entry.vfs_name}")
+    if index is not None:
+        await index.set_dir(virtual_key, entries)
+    return names
+
+
+async def _readdir_members(
+    accessor: DiscordAccessor,
+    prefix: str,
+    key: str,
+    virtual_key: str,
+    parts: list[str],
+    index: IndexCacheStore | None,
+    raw_path: str,
+) -> list[str]:
+    if index is not None:
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
+    guild_id = await _ensure_guild_id(accessor, prefix, parts[0], index,
+                                      raw_path)
+    members = await list_members(accessor.config, guild_id)
+    entries = []
+    names = []
+    for m in members:
+        entry = member_entry(m)
+        entries.append((entry.vfs_name, entry))
+        names.append(f"{prefix}/{key}/{entry.vfs_name}")
+    if index is not None:
+        await index.set_dir(virtual_key, entries)
+    return names
+
+
+async def _ensure_channel_lookup(
+    accessor: DiscordAccessor,
+    prefix: str,
+    parts: list[str],
+    index: IndexCacheStore,
+    raw_path: str,
+):
+    channel_vk = f"{prefix}/{'/'.join(parts[:3])}"
+    lookup = await index.get(channel_vk)
+    if lookup.entry is None:
+        await _readdir_channels(accessor, prefix, "/".join(parts[:2]),
+                                f"{prefix}/{'/'.join(parts[:2])}", parts[:2],
+                                index, raw_path)
+        lookup = await index.get(channel_vk)
+    if lookup.entry is None:
+        raise FileNotFoundError(raw_path)
+    return lookup
+
+
+async def _readdir_channel_dates(
+    accessor: DiscordAccessor,
+    prefix: str,
+    key: str,
+    virtual_key: str,
+    parts: list[str],
+    index: IndexCacheStore | None,
+    raw_path: str,
+) -> list[str]:
+    if index is None:
+        last_msg_id = ""
+    else:
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
+        lookup = await _ensure_channel_lookup(accessor, prefix, parts, index,
+                                              raw_path)
+        last_msg_id = lookup.entry.remote_time
+    if last_msg_id:
+        end_date = snowflake_to_date(last_msg_id)
+    else:
+        end_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    dates = _date_range(end_date)
+    entries = []
+    names = []
+    for d in dates:
+        entry = history_entry(key, d)
+        entry.resource_type = DiscordResourceType.HISTORY
+        entry.vfs_name = d
+        entries.append((d, entry))
+        names.append(f"{prefix}/{key}/{d}")
+    if index is not None:
+        await index.set_dir(virtual_key, entries)
+    return names
+
+
+async def _fetch_day(
+    accessor: DiscordAccessor,
+    channel_id: str,
+    date_str: str,
+    date_vkey: str,
+    index: IndexCacheStore,
+) -> None:
+    """Walk the day's history once, populate date dir and files dir
+    entries in the index. Tolerates soft HTTP errors (403/404/429) by
+    sealing an empty date dir.
+    """
+    try:
+        messages = await list_messages_for_day(accessor.config, channel_id,
+                                               date_str)
+    except aiohttp.ClientResponseError as e:
+        if _is_soft_error(e):
+            logger.debug("discord: history denied for %s/%s (%d); empty day",
+                         channel_id, date_str, e.status)
+            await index.set_dir(date_vkey, [])
+            return
+        raise
+    chat_entry = IndexEntry(
+        id=f"{channel_id}:{date_str}:chat",
+        name="chat.jsonl",
+        resource_type="discord/chat_jsonl",
+        vfs_name="chat.jsonl",
+    )
+    files_entry = IndexEntry(
+        id=f"{channel_id}:{date_str}:files",
+        name="files",
+        resource_type="discord/files_dir",
+        vfs_name="files",
+    )
+    await index.set_dir(date_vkey, [
+        ("chat.jsonl", chat_entry),
+        ("files", files_entry),
+    ])
+    file_entries: list[tuple[str, IndexEntry]] = []
+    for msg in messages:
+        for att in msg.get("attachments") or []:
+            if not att.get("id"):
+                continue
+            blob_name = file_blob_name(att)
+            file_entries.append((blob_name,
+                                 IndexEntry(
+                                     id=str(att["id"]),
+                                     name=att.get("filename") or "",
+                                     resource_type="discord/file",
+                                     vfs_name=blob_name,
+                                     size=att.get("size"),
+                                     extra={
+                                         "url":
+                                         att.get("url", ""),
+                                         "proxy_url":
+                                         att.get("proxy_url", ""),
+                                         "content_type":
+                                         att.get("content_type", ""),
+                                         "message_id":
+                                         msg.get("id", ""),
+                                         "author":
+                                         msg.get("author",
+                                                 {}).get("username", ""),
+                                         "channel_id":
+                                         channel_id,
+                                         "date":
+                                         date_str,
+                                     },
+                                 )))
+    await index.set_dir(f"{date_vkey}/files", file_entries)
+
+
+async def _readdir_date_contents(
+    accessor: DiscordAccessor,
+    prefix: str,
+    key: str,
+    virtual_key: str,
+    parts: list[str],
+    index: IndexCacheStore | None,
+    raw_path: str,
+) -> list[str]:
+    if index is None:
+        raise FileNotFoundError(raw_path)
+    cached = await index.list_dir(virtual_key)
+    if cached.entries is not None:
+        return cached.entries
+    lookup = await _ensure_channel_lookup(accessor, prefix, parts, index,
+                                          raw_path)
+    await _fetch_day(accessor, lookup.entry.id, parts[3], virtual_key, index)
+    cached = await index.list_dir(virtual_key)
+    if cached.entries is None:
+        raise FileNotFoundError(raw_path)
+    return cached.entries
+
+
+async def _readdir_files_dir(
+    accessor: DiscordAccessor,
+    prefix: str,
+    key: str,
+    virtual_key: str,
+    parts: list[str],
+    index: IndexCacheStore | None,
+    raw_path: str,
+) -> list[str]:
+    if index is None:
+        raise FileNotFoundError(raw_path)
+    cached = await index.list_dir(virtual_key)
+    if cached.entries is not None:
+        return cached.entries
+    # Date dir lookup triggers _fetch_day which populates the files dir
+    date_key = "/".join(parts[:4])
+    date_vk = f"{prefix}/{date_key}"
+    date_spec = PathSpec(original=date_vk, directory=date_vk, prefix=prefix)
+    await readdir(accessor, date_spec, index)
+    cached = await index.list_dir(virtual_key)
+    if cached.entries is None:
+        raise FileNotFoundError(raw_path)
+    return cached.entries
 
 
 async def readdir(
@@ -65,40 +345,12 @@ async def readdir(
         accessor (DiscordAccessor): discord accessor.
         path (PathSpec | str): resource-relative path.
         index (IndexCacheStore | None): index cache.
-        prefix (str): mount prefix for virtual index keys.
     """
-    if isinstance(path, str):
-        path = PathSpec(original=path, directory=path)
-    if isinstance(path, PathSpec):
-        prefix = path.prefix
-        path = path.directory if path.pattern else path.original
-    if prefix and path.startswith(prefix):
-        path = path[len(prefix):] or "/"
-    key = path.strip("/")
-    # Virtual path used as index cache key
-    virtual_key = prefix + "/" + key if key else prefix or "/"
+    prefix, key, virtual_key = _normalize_path(path)
+    raw_path = path.original if isinstance(path, PathSpec) else path
 
     if not key:
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
-        guilds = await list_guilds(accessor.config)
-        entries = []
-        names = []
-        for g in guilds:
-            dirname = _guild_dirname(g)
-            entry = IndexEntry(
-                id=g["id"],
-                name=g.get("name", ""),
-                resource_type="discord/guild",
-                vfs_name=dirname,
-            )
-            entries.append((dirname, entry))
-            names.append(f"{prefix}/{dirname}")
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
-        return names
+        return await _readdir_root(accessor, prefix, virtual_key, index)
 
     parts = key.split("/")
 
@@ -106,127 +358,27 @@ async def readdir(
         if index is not None:
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
-        return [f"{prefix}/{key}/channels", f"{prefix}/{key}/members"]
+                raise FileNotFoundError(raw_path)
+        return await _readdir_guild_top(prefix, key)
 
     if len(parts) == 2 and parts[1] == "channels":
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
-            guild_virtual_key = prefix + "/" + parts[0]
-            guild_lookup = await index.get(guild_virtual_key)
-            if guild_lookup.entry is None:
-                # Auto-bootstrap: populate guild index so glob
-                # can resolve without prior ls at root level.
-                root = PathSpec(
-                    original=prefix or "/",
-                    directory=prefix or "/",
-                    prefix=prefix,
-                )
-                await readdir(accessor, root, index)
-                guild_lookup = await index.get(guild_virtual_key)
-            if guild_lookup.entry is None:
-                raise FileNotFoundError(path)
-            guild_id = guild_lookup.entry.id
-        else:
-            raise FileNotFoundError(path)
-        channels = await list_channels(accessor.config, guild_id)
-        entries = []
-        names = []
-        for c in channels:
-            dirname = _channel_dirname(c)
-            entry = IndexEntry(
-                id=c["id"],
-                name=c.get("name", ""),
-                resource_type="discord/channel",
-                vfs_name=dirname,
-                remote_time=c.get("last_message_id", ""),
-            )
-            entries.append((dirname, entry))
-            names.append(f"{prefix}/{key}/{dirname}")
-        await index.set_dir(virtual_key, entries)
-        return names
+        return await _readdir_channels(accessor, prefix, key, virtual_key,
+                                       parts, index, raw_path)
 
     if len(parts) == 2 and parts[1] == "members":
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
-            guild_virtual_key = prefix + "/" + parts[0]
-            guild_lookup = await index.get(guild_virtual_key)
-            if guild_lookup.entry is None:
-                # Auto-bootstrap: populate guild index.
-                root = PathSpec(
-                    original=prefix or "/",
-                    directory=prefix or "/",
-                    prefix=prefix,
-                )
-                await readdir(accessor, root, index)
-                guild_lookup = await index.get(guild_virtual_key)
-            if guild_lookup.entry is None:
-                raise FileNotFoundError(path)
-            guild_id = guild_lookup.entry.id
-        else:
-            raise FileNotFoundError(path)
-        members = await list_members(accessor.config, guild_id)
-        entries = []
-        names = []
-        for m in members:
-            filename = _member_filename(m)
-            user = m.get("user", {})
-            entry = IndexEntry(
-                id=user.get("id", ""),
-                name=user.get("username", ""),
-                resource_type="discord/member",
-                vfs_name=filename,
-            )
-            entries.append((filename, entry))
-            names.append(f"{prefix}/{key}/{filename}")
-        await index.set_dir(virtual_key, entries)
-        return names
+        return await _readdir_members(accessor, prefix, key, virtual_key,
+                                      parts, index, raw_path)
 
     if len(parts) == 3 and parts[1] == "channels":
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
-            ch_lookup = await index.get(virtual_key)
-            if ch_lookup.entry is None:
-                # Auto-bootstrap: populate channel index by listing
-                # the parent guild/channels directory first.
-                parent = PathSpec(
-                    original=prefix + "/" + "/".join(parts[:2]),
-                    directory=prefix + "/" + "/".join(parts[:2]),
-                    prefix=prefix,
-                )
-                await readdir(accessor, parent, index)
-                ch_lookup = await index.get(virtual_key)
-            if ch_lookup.entry is None:
-                raise FileNotFoundError(path)
-            last_msg_id = ch_lookup.entry.remote_time
-        else:
-            last_msg_id = ""
-        if last_msg_id:
-            end_date = _snowflake_to_date(last_msg_id)
-        else:
-            from datetime import datetime, timezone
-            end_date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-        dates = _date_range(end_date)
-        entries = []
-        names = []
-        for d in dates:
-            filename = f"{d}.jsonl"
-            entry = IndexEntry(
-                id=f"{key}:{d}",
-                name=d,
-                resource_type="discord/history",
-                vfs_name=filename,
-            )
-            entries.append((filename, entry))
-            names.append(f"{prefix}/{key}/{filename}")
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
-        return names
+        return await _readdir_channel_dates(accessor, prefix, key, virtual_key,
+                                            parts, index, raw_path)
+
+    if len(parts) == 4 and parts[1] == "channels":
+        return await _readdir_date_contents(accessor, prefix, key, virtual_key,
+                                            parts, index, raw_path)
+
+    if (len(parts) == 5 and parts[1] == "channels" and parts[4] == "files"):
+        return await _readdir_files_dir(accessor, prefix, key, virtual_key,
+                                        parts, index, raw_path)
 
     return []

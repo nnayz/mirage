@@ -13,89 +13,81 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { PathSpec } from '../../types.ts'
+import type { EntityKind } from './types.ts'
+import { KIND_DIR_NAMES, ScopeLevel } from './types.ts'
 
 export interface MongoDBScope {
-  level: 'root' | 'database' | 'file' | 'invalid'
+  level: ScopeLevel
   database: string | null
-  collection: string | null
+  kind: EntityKind | null
+  name: string | null
   resourcePath: string
 }
 
-export interface DetectScopeOptions {
-  singleDb?: boolean
-  singleDbName?: string | null
+function scope(
+  level: ScopeLevel,
+  resourcePath: string,
+  database: string | null = null,
+  kind: EntityKind | null = null,
+  name: string | null = null,
+): MongoDBScope {
+  return { level, database, kind, name, resourcePath }
 }
 
-export function detectScope(
-  path: PathSpec | string,
-  options: DetectScopeOptions = {},
-): MongoDBScope {
-  const singleDb = options.singleDb === true
-  const singleDbName = options.singleDbName ?? null
+export function detectScope(path: PathSpec | string): MongoDBScope {
   const raw = path instanceof PathSpec ? path.stripPrefix : path
   const key = raw.replace(/^\/+|\/+$/g, '')
 
   if (key === '') {
-    if (singleDb) {
-      return {
-        level: 'database',
-        database: singleDbName,
-        collection: null,
-        resourcePath: '/',
-      }
-    }
-    return { level: 'root', database: null, collection: null, resourcePath: '/' }
+    return scope(ScopeLevel.ROOT, '/')
   }
 
   const parts = key.split('/')
 
-  if (singleDb) {
-    if (key.endsWith('.jsonl')) {
-      const col = key.slice(0, -'.jsonl'.length)
-      return {
-        level: 'file',
-        database: singleDbName,
-        collection: col,
-        resourcePath: raw,
-      }
-    }
-    return {
-      level: 'database',
-      database: singleDbName,
-      collection: null,
-      resourcePath: raw,
-    }
-  }
-
   if (parts.length === 1) {
-    const part = parts[0] ?? ''
-    if (part.endsWith('.jsonl')) {
-      return {
-        level: 'file',
-        database: null,
-        collection: part.slice(0, -'.jsonl'.length),
-        resourcePath: raw,
-      }
-    }
-    return {
-      level: 'database',
-      database: part,
-      collection: null,
-      resourcePath: raw,
-    }
+    return scope(ScopeLevel.DATABASE, raw, parts[0])
   }
 
   if (parts.length === 2) {
-    const second = parts[1] ?? ''
-    if (second.endsWith('.jsonl')) {
-      return {
-        level: 'file',
-        database: parts[0] ?? null,
-        collection: second.slice(0, -'.jsonl'.length),
-        resourcePath: raw,
-      }
+    const db = parts[0] ?? ''
+    const leaf = parts[1] ?? ''
+    if (leaf === 'database.json') {
+      return scope(ScopeLevel.DATABASE_JSON, raw, db)
     }
+    const dirKind = KIND_DIR_NAMES[leaf]
+    if (dirKind !== undefined) {
+      return scope(ScopeLevel.KIND_DIR, raw, db, dirKind)
+    }
+    return scope(ScopeLevel.UNKNOWN, raw)
   }
 
-  return { level: 'root', database: null, collection: null, resourcePath: raw }
+  if (parts.length === 3) {
+    const db = parts[0] ?? ''
+    const kindSeg = parts[1] ?? ''
+    const name = parts[2] ?? ''
+    const dirKind = KIND_DIR_NAMES[kindSeg]
+    if (dirKind !== undefined) {
+      return scope(ScopeLevel.ENTITY, raw, db, dirKind, name)
+    }
+    return scope(ScopeLevel.UNKNOWN, raw)
+  }
+
+  if (parts.length === 4) {
+    const db = parts[0] ?? ''
+    const kindSeg = parts[1] ?? ''
+    const name = parts[2] ?? ''
+    const leaf = parts[3] ?? ''
+    const dirKind = KIND_DIR_NAMES[kindSeg]
+    if (dirKind !== undefined) {
+      if (leaf === 'schema.json') {
+        return scope(ScopeLevel.SCHEMA_JSON, raw, db, dirKind, name)
+      }
+      if (leaf === 'documents.jsonl') {
+        return scope(ScopeLevel.DOCUMENTS, raw, db, dirKind, name)
+      }
+    }
+    return scope(ScopeLevel.UNKNOWN, raw)
+  }
+
+  return scope(ScopeLevel.UNKNOWN, raw)
 }

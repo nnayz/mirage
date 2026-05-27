@@ -13,11 +13,10 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   PathSpec,
-  RAMIndexCacheStore,
   ResourceName,
   type FileStat,
-  type IndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -34,24 +33,21 @@ import { EMAIL_PROMPT } from './prompt.ts'
 
 export interface EmailResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: EmailConfigRedacted
 }
 
-export class EmailResource implements Resource {
+export class EmailResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.EMAIL
   readonly isRemote: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = EMAIL_PROMPT
   readonly config: EmailConfig
   readonly accessor: EmailAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: EmailConfig) {
+    super()
     this.config = config
     this.accessor = new EmailAccessor(config)
-    this.index = new RAMIndexCacheStore({ ttl: 86_400 })
   }
 
   open(): Promise<void> {
@@ -108,8 +104,6 @@ export class EmailResource implements Resource {
   getState(): Promise<EmailResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['password'],
       config: redactEmailConfig(this.config),
     })
   }

@@ -66,7 +66,7 @@ Path mapping: virtual `/s3/data/file.txt` maps to S3 key `data/file.txt`.
 
 ## Cache
 
-The S3 resource uses `IndexCacheStore` with `_index_ttl = 600` (10 minutes).
+The S3 resource uses `IndexCacheStore` with `index_ttl = 600` (10 minutes).
 Directory listings are cached for up to 600 seconds before being refreshed
 from S3. This reduces API calls for repeated directory traversals.
 
@@ -253,3 +253,19 @@ for cmd in AUDIO_COMMANDS:
 - **Data pipelines**: Read and write S3 objects with shell-like commands
 - **Sandboxed cloud storage access**: Restrict agent operations to a specific bucket and prefix
 - **FUSE mounting**: Expose S3 buckets through a virtual FUSE mount for external tools
+
+## Scoping a resource to a key prefix
+
+Pass `key_prefix: str | None = None` to `S3Config` to transparently scope every operation to a subpath of the bucket:
+
+```python
+S3Resource(S3Config(
+    bucket="app-data",
+    region="eu-west-1",
+    key_prefix=f"users/{user_id}/",
+))
+```
+
+When set, every read/write/list/stat/copy/rename/delete operation is transparently scoped to that bucket subpath. Agents see clean paths like `/data/notes.md`; the underlying bucket key is `users/{user_id}/data/notes.md`. Useful for multi-tenant systems. Pairs naturally with STS AssumeRole session policies for AWS-side enforcement. Unset behavior is unchanged.
+
+**Normalization:** leading slashes are stripped and a trailing slash is added automatically. Both `None` and an empty string are treated as "no prefix."

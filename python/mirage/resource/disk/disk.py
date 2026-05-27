@@ -58,7 +58,7 @@ _DISK_OPS = {
 class DiskResource(BaseResource):
 
     name: str = ResourceName.DISK
-    _index_ttl: float = 60
+    index_ttl: float = 60
     _ops: dict = _DISK_OPS
     PROMPT: str = PROMPT
 
@@ -95,8 +95,6 @@ class DiskResource(BaseResource):
                 files[rel] = p.read_bytes()
         return {
             "type": self.name,
-            "needs_override": False,
-            "redacted_fields": [],
             "files": files,
         }
 

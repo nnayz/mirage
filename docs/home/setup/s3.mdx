@@ -31,3 +31,29 @@ AWS_SECRET_ACCESS_KEY=wJal...
 If you have `~/.aws/credentials` configured, you can use a profile name instead of explicit access keys.
 
 For the Python resource API, see the [S3 resource doc](/python/resource/s3).
+
+## Scoping a resource to a key prefix
+
+Both runtimes support a key prefix option that transparently scopes every operation to a subpath of the bucket, so agents see clean paths while the underlying S3 keys carry the full prefix.
+
+<CodeGroup>
+
+```ts TypeScript
+const s3 = new S3Resource({
+  bucket: 'app-data',
+  region: 'eu-west-1',
+  keyPrefix: `users/${userId}/`,
+})
+```
+
+```python Python
+S3Resource(S3Config(
+    bucket="app-data",
+    region="eu-west-1",
+    key_prefix=f"users/{user_id}/",
+))
+```
+
+</CodeGroup>
+
+Leading slashes are stripped and a trailing slash is added automatically. `None` / `undefined` and empty strings both mean "no prefix." For browser security considerations, see the [TypeScript S3 setup doc](/typescript/setup/s3).

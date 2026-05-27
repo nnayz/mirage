@@ -33,7 +33,17 @@ export {
   type FingerprintEntry,
   liveOnlyMountPrefixes,
 } from './workspace/snapshot/drift.ts'
-export { type FindOptions, type Resource, throwUnsupported } from './resource/base.ts'
+export { BaseResource, type FindOptions, type Resource, throwUnsupported } from './resource/base.ts'
+export {
+  hasRedactedSecret,
+  REDACTED_SECRET,
+  redactConfigWithSchema,
+  resourceStateRequiresOverride,
+  secretSchema,
+  secretStr,
+  type SecretStr,
+} from './resource/secrets.ts'
+export { z } from 'zod'
 export { RAMResource } from './resource/ram/ram.ts'
 export { RAMStore } from './resource/ram/store.ts'
 export { DevResource } from './resource/dev/dev.ts'
@@ -307,9 +317,15 @@ export {
   type IndexConfig,
   type ListResult,
   type LookupResult,
+  type RedisIndexConfig,
 } from './cache/index/config.ts'
 export { IndexCacheStore } from './cache/index/store.ts'
 export { RAMIndexCacheStore } from './cache/index/ram.ts'
+export {
+  RedisIndexCacheStore,
+  type RedisClientLike,
+  type RedisIndexCacheOptions,
+} from './cache/index/redis.ts'
 export { ExecutionHistory, type ExecutionHistoryOptions } from './workspace/history.ts'
 export {
   ExecutionNode,
@@ -440,7 +456,9 @@ export { expandTestExpr } from './workspace/node/test_expr.ts'
 export { executeNode, type ExecuteNodeDeps } from './workspace/node/execute_node.ts'
 export { S3Accessor, type S3ResourceLike } from './accessor/s3.ts'
 export {
+  normalizeKeyPrefix,
   redactConfig as redactS3Config,
+  S3ConfigSchema,
   type S3BrowserOperation,
   type S3BrowserPresignedUrlProvider,
   type S3BrowserSignOptions,
@@ -651,7 +669,13 @@ export {
   googlePut,
   refreshAccessToken,
 } from './core/google/_client.ts'
-export type { GoogleConfig } from './core/google/config.ts'
+export {
+  GoogleConfigSchema,
+  normalizeGoogleConfig,
+  redactGoogleConfig,
+  type GoogleConfig,
+  type GoogleConfigRedacted,
+} from './core/google/config.ts'
 export {
   MIME_TO_EXT,
   WORKSPACE_MIMES,
@@ -883,7 +907,26 @@ export {
   searchKind as postgresSearchKind,
   searchSchema as postgresSearchSchema,
 } from './core/postgres/search.ts'
-export type { MongoDriver, MongoFindOptions } from './core/mongodb/_driver.ts'
+export type {
+  MongoCollectionSpec,
+  MongoDriver,
+  MongoFindOptions,
+  MongoIndexAccess,
+  MongoIterOptions,
+} from './core/mongodb/_driver.ts'
+export {
+  BsonTypeTag,
+  EntityKind,
+  IndexType,
+  KIND_DIR_NAMES,
+  KIND_TO_DIR,
+  KIND_TO_RESOURCE_TYPE,
+  PRIMARY_KEY,
+  RESOURCE_TYPE_COLLECTION,
+  RESOURCE_TYPE_DATABASE,
+  RESOURCE_TYPE_VIEW,
+  ScopeLevel,
+} from './core/mongodb/types.ts'
 export { MongoDBAccessor } from './accessor/mongodb.ts'
 export {
   normalizeMongoDBConfig,
@@ -902,6 +945,11 @@ export { detectScope as detectMongoScope, type MongoDBScope } from './core/mongo
 export {
   countDocuments as mongoCountDocuments,
   findDocuments as mongoFindDocuments,
+  getIndexStats as mongoGetIndexStats,
+  getValidator as mongoGetValidator,
+  isView as mongoIsView,
+  iterDocuments as mongoIterDocuments,
+  iterInserts as mongoIterInserts,
   listCollections as mongoListCollections,
   listDatabases as mongoListDatabases,
   listIndexes as mongoListIndexes,

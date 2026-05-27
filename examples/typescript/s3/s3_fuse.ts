@@ -12,24 +12,15 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-// S3 mounted as a real FUSE filesystem. Any OS-level tool (cat, ls,
-// external scripts, editors, other processes) can then read from the mount
-// just like a local directory.
+// S3 mounted as a real FUSE filesystem with two mounts:
+//   /s3/    — unscoped, full bucket
+//   /deep/  — same bucket, scoped via keyPrefix=subdata/subsubdata/
 //
-// Use when:
-//   - You want to pipe S3 content into non-Mirage-aware tools
-//   - You want to `cat $mountpoint/s3/foo.json` from another shell
-//   - A long-running service benefits from kernel-level caching + metadata
+// External processes can then do `cat $mp/deep/example.json` just like
+// a local directory; the prefix is transparent.
 //
 // Requires: macFUSE / libfuse3 + @zkochan/fuse-native (see /typescript/setup/fuse).
-// Also requires local MinIO (see s3_write.ts).
-//
-// Known issue: in-process `fs.promises.readdir` against a FUSE-mounted S3
-// bucket can fail with EIO on Node (the FUSE napi callback needs the event
-// loop to make network calls while the `readdir` promise is already holding
-// it). External shell access (from another terminal) works fine. For
-// in-process real-fs access, use RAM as a cache layer or host the FUSE
-// mount in a helper process — see examples/typescript/fuse/main_with_helper.ts.
+// Loads credentials from .env.development at the repo root.
 import {
   FuseManager,
   MountMode,
@@ -37,43 +28,43 @@ import {
   Workspace,
   type S3Config,
 } from '@struktoai/mirage-node'
-import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3'
+import dotenv from 'dotenv'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const config: S3Config = {
-  bucket: 'mirage-fuse-demo',
-  region: 'us-east-1',
-  endpoint: 'http://localhost:9000',
-  accessKeyId: 'minioadmin',
-  secretAccessKey: 'minioadmin',
-  forcePathStyle: true,
-}
+const __HERE = dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: resolve(__HERE, '../../../.env.development') })
 
-async function ensureBucket(): Promise<void> {
-  const sdk = new S3Client({
-    region: config.region,
-    endpoint: config.endpoint,
-    forcePathStyle: true,
-    credentials: { accessKeyId: config.accessKeyId!, secretAccessKey: config.secretAccessKey! },
-  })
-  try {
-    await sdk.send(new CreateBucketCommand({ Bucket: config.bucket }))
-  } catch (err) {
-    const code = (err as { name?: string }).name
-    if (code !== 'BucketAlreadyOwnedByYou' && code !== 'BucketAlreadyExists') throw err
-  } finally {
-    sdk.destroy()
+function baseConfig(): S3Config {
+  if (process.env.AWS_S3_BUCKET === undefined) {
+    throw new Error('AWS_S3_BUCKET not set (expected in .env.development)')
+  }
+  return {
+    bucket: process.env.AWS_S3_BUCKET,
+    region: process.env.AWS_DEFAULT_REGION ?? 'us-east-1',
+    ...(process.env.AWS_ACCESS_KEY_ID !== undefined &&
+    process.env.AWS_SECRET_ACCESS_KEY !== undefined
+      ? {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        }
+      : {}),
   }
 }
 
 async function main(): Promise<void> {
-  await ensureBucket()
-  const ws = new Workspace({ '/s3/': new S3Resource(config) }, { mode: MountMode.WRITE })
-  try {
-    // Seed files via the virtual executor.
-    await ws.execute('rm -rf /s3/fuse-demo')
-    await ws.execute('echo "via fuse" | tee /s3/fuse-demo/hello.txt')
-    await ws.execute(`printf 'line1\\nline2\\nline3\\n' | tee /s3/fuse-demo/multi.txt`)
+  const cfg = baseConfig()
+  const deepCfg: S3Config = { ...cfg, keyPrefix: 'subdata/subsubdata/' }
 
+  const ws = new Workspace(
+    {
+      '/s3/': new S3Resource(cfg),
+      '/deep/': new S3Resource(deepCfg),
+    },
+    { mode: MountMode.READ },
+  )
+
+  try {
     const fm = new FuseManager()
     const mp = await fm.setup(ws)
     let cleaned = false
@@ -81,40 +72,42 @@ async function main(): Promise<void> {
       if (cleaned) return
       cleaned = true
       void (async (): Promise<void> => {
-        try { await fm.close(ws) } catch {}
-        try { await ws.close() } catch {}
+        try {
+          await fm.close(ws)
+        } catch {}
+        try {
+          await ws.close()
+        } catch {}
         console.error(`\n>>> unmounted ${mp}`)
         process.exit(sig === 'SIGINT' ? 130 : 143)
       })()
     }
     process.on('SIGINT', handler)
     process.on('SIGTERM', handler)
-    console.log(`=== FUSE MODE: mounted at ${mp} ===\n`)
+
+    console.log(`=== FUSE MODE — bucket: ${cfg.bucket} ===`)
+    console.log(`  mountpoint = ${mp}`)
+    console.log(`  /deep keyPrefix = ${JSON.stringify(deepCfg.keyPrefix)}\n`)
 
     try {
-      console.log(`  ws.fuseMountpoint = ${ws.fuseMountpoint ?? 'null'}`)
-      console.log(`  ws.ownsFuseMount  = ${String(ws.ownsFuseMount)}`)
-      console.log()
-
-      // The mount is live. All virtual-executor commands continue to work —
-      // they bypass the FUSE kernel path but read/write the same S3 bucket.
-      console.log('--- virtual executor still works while mounted ---')
-      const cat = await ws.execute('cat /s3/fuse-demo/hello.txt')
-      console.log(`  cat: ${JSON.stringify(cat.stdoutText)}`)
-      const grep = await ws.execute('grep line2 /s3/fuse-demo/multi.txt')
-      console.log(`  grep: ${JSON.stringify(grep.stdoutText.trim())}`)
+      console.log('--- virtual executor: stats via /deep ---')
+      const ls = await ws.execute('ls /deep')
+      console.log(`  ls /deep      : ${ls.stdoutText.trim().split('\n').slice(0, 3).join(', ')}, ...`)
+      const stat = await ws.execute('stat /deep/example.jsonl')
+      console.log(`  stat /deep/example.jsonl : ${stat.stdoutText.trim()}`)
+      const grep = await ws.execute('grep -c mirage /deep/example.jsonl')
+      console.log(`  grep -c mirage           : ${grep.stdoutText.trim()}`)
+      const rg = await ws.execute('rg -l mirage /deep')
+      console.log(`  rg -l mirage /deep       : ${rg.stdoutText.trim().split('\n').join(' | ')}`)
 
       console.log()
       console.log('>>> Mount is live. From ANOTHER terminal you can:')
-      console.log(`>>>   ls  ${mp}/s3/fuse-demo/`)
-      console.log(`>>>   cat ${mp}/s3/fuse-demo/hello.txt`)
-      console.log(`>>>   grep line2 ${mp}/s3/fuse-demo/multi.txt`)
-      console.log()
-      console.log('>>> In-process `fs.promises.readdir` on an S3-backed FUSE mount')
-      console.log('>>> may fail with EIO on Node — see the comment at the top of')
-      console.log('>>> this file for workarounds.')
+      console.log(`>>>   ls  ${mp}/s3/data/`)
+      console.log(`>>>   ls  ${mp}/deep/`)
+      console.log(`>>>   cat ${mp}/deep/example.json`)
+      console.log(`>>>   wc -l ${mp}/deep/example.jsonl`)
+      console.log('>>> (Under the hood /deep/X reads s3://<bucket>/subdata/subsubdata/X)')
     } finally {
-      await ws.execute('rm -rf /s3/fuse-demo')
       await fm.close(ws)
       console.log(`\nafter unmount: ws.fuseMountpoint = ${ws.fuseMountpoint ?? 'null'}`)
     }

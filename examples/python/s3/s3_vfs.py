@@ -31,11 +31,26 @@ config = S3Config(
     aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
 )
 
+deep_config = S3Config(
+    bucket=os.environ["AWS_S3_BUCKET"],
+    region=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+    aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+    key_prefix="subdata/subsubdata/",
+)
+
 resource = S3Resource(config)
+deep_resource = S3Resource(deep_config)
 
 
 async def main():
-    with Workspace({"/s3/": resource}, mode=MountMode.READ) as ws:
+    with Workspace(
+        {
+            "/s3/": resource,
+            "/deep/": deep_resource
+        },
+            mode=MountMode.READ,
+    ) as ws:
         vos = sys.modules["os"]
         print("=== VFS MODE: open() reads from S3 transparently ===\n")
 
@@ -67,6 +82,37 @@ async def main():
         print("\n--- VFS commands ---")
         result = await ws.execute("grep -c mirage /s3/data/example.jsonl")
         print(f"  grep matches: {(await result.stdout_str()).strip()}")
+
+        print("\n=== KEY_PREFIX MOUNT (/deep → subdata/subsubdata/) ===\n")
+        print(f"  key_prefix = {deep_config.key_prefix!r}\n")
+
+        print("--- os.listdir('/deep') ---")
+        for e in vos.listdir("/deep"):
+            print(f"  {e}")
+
+        print("\n--- os.path.exists / isdir / getsize ---")
+        print(f"  /deep/example.jsonl  exists: "
+              f"{vos.path.exists('/deep/example.jsonl')}")
+        print(f"  /deep/example.json   isdir : "
+              f"{vos.path.isdir('/deep/example.json')}")
+        print(f"  /deep/example.json   size  : "
+              f"{vos.path.getsize('/deep/example.json')} bytes")
+
+        print("\n--- open() + read first 3 records ---")
+        with open("/deep/example.jsonl") as f:
+            for i, line in enumerate(f):
+                if i >= 3:
+                    break
+                rec = json.loads(line)
+                print(f"  [{i}] {json.dumps(rec)[:90]}...")
+
+        print("\n--- VFS commands against /deep ---")
+        r = await ws.execute("grep -c mirage /deep/example.jsonl")
+        print(f"  grep -c mirage     : {(await r.stdout_str()).strip()}")
+        r = await ws.execute("rg -l mirage /deep")
+        print(f"  rg -l mirage       : {(await r.stdout_str()).strip()}")
+        r = await ws.execute("jq .metadata.version /deep/example.json")
+        print(f"  jq .metadata.version: {(await r.stdout_str()).strip()}")
 
         print("\n--- session observer via VFS ---")
         day_folders = vos.listdir("/.sessions")

@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   copy as copyCore,
   create as createCore,
   du as duCore,
@@ -21,10 +22,9 @@ import {
   type FileStat,
   type FindOptions,
   find as findCore,
-  type IndexCacheStore,
   mkdir as mkdirCore,
+  normalizeKeyPrefix,
   PathSpec,
-  RAMIndexCacheStore,
   rangeRead as rangeReadCore,
   S3_COMMANDS,
   read as readCore,
@@ -50,12 +50,10 @@ import { redactConfig, type S3Config, type S3ConfigRedacted } from './config.ts'
 
 export interface S3ResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: S3ConfigRedacted
 }
 
-export class S3Resource implements Resource {
+export class S3Resource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.S3
   readonly isRemote: boolean = true
   readonly supportsSnapshot: boolean = true
@@ -63,7 +61,6 @@ export class S3Resource implements Resource {
   readonly prompt: string = S3_PROMPT
   readonly config: S3Config
   readonly accessor: S3Accessor
-  readonly index: IndexCacheStore
   readonly opsMap: Record<string, unknown> = {
     read_bytes: readCore,
     write: writeCore,
@@ -86,9 +83,16 @@ export class S3Resource implements Resource {
   }
 
   constructor(config: S3Config) {
-    this.config = config
+    super()
+    const normalized = normalizeKeyPrefix(config.keyPrefix)
+    const cfg: S3Config = { ...config }
+    if (normalized !== undefined) {
+      cfg.keyPrefix = normalized
+    } else {
+      delete cfg.keyPrefix
+    }
+    this.config = cfg
     this.accessor = new S3Accessor(this.config)
-    this.index = new RAMIndexCacheStore({ ttl: this.indexTtl })
   }
 
   open(): Promise<void> {
@@ -215,8 +219,6 @@ export class S3Resource implements Resource {
   getState(): Promise<S3ResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['accessKeyId', 'secretAccessKey', 'sessionToken'],
       config: redactConfig(this.config),
     })
   }

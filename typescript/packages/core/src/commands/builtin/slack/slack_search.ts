@@ -21,10 +21,38 @@ import { CommandSpec, OperandKind, Option } from '../../spec/types.ts'
 
 const SPEC = new CommandSpec({
   options: [
-    new Option({ long: '--query', valueKind: OperandKind.TEXT }),
-    new Option({ long: '--count', valueKind: OperandKind.TEXT }),
+    new Option({
+      long: '--query',
+      valueKind: OperandKind.TEXT,
+      description: "Slack search query (supports operators like 'from:@user', 'in:#channel')",
+    }),
+    new Option({
+      long: '--count',
+      valueKind: OperandKind.TEXT,
+      description: 'Results per page (1-100, default 20)',
+    }),
+    new Option({
+      long: '--page',
+      valueKind: OperandKind.TEXT,
+      description: '1-based page number (default 1)',
+    }),
   ],
 })
+
+function parseIntFlag(
+  raw: string | boolean | undefined,
+  name: string,
+  fallback: number,
+  lo: number,
+  hi: number | null,
+): number {
+  if (raw === undefined || raw === '' || typeof raw !== 'string') return fallback
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed)) throw new Error(`--${name} must be an integer`)
+  if (parsed < lo) throw new Error(`--${name} must be >= ${String(lo)}`)
+  if (hi !== null && parsed > hi) throw new Error(`--${name} must be <= ${String(hi)}`)
+  return parsed
+}
 
 async function slackSearchCommand(
   accessor: SlackAccessor,
@@ -36,13 +64,9 @@ async function slackSearchCommand(
   if (typeof query !== 'string' || query === '') {
     throw new Error('--query is required')
   }
-  const countRaw = opts.flags.count
-  let count = 20
-  if (typeof countRaw === 'string' && countRaw !== '') {
-    const parsed = Number.parseInt(countRaw, 10)
-    if (Number.isFinite(parsed) && parsed > 0) count = parsed
-  }
-  const result = await searchMessages(accessor, query, count)
+  const count = parseIntFlag(opts.flags.count, 'count', 20, 1, 100)
+  const page = parseIntFlag(opts.flags.page, 'page', 1, 1, null)
+  const result = await searchMessages(accessor, query, count, page)
   return [result, new IOResult()]
 }
 

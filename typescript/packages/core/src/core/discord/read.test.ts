@@ -58,7 +58,7 @@ const decoder = new TextDecoder()
 describe('read history jsonl branch', () => {
   it('reads channel jsonl bytes via getHistoryJsonl when channel cached', async () => {
     const idx = new RAMIndexCacheStore()
-    await idx.setDir('/mnt/discord/My_Server__G1/channels', [
+    await idx.setDir('/mnt/discord/My Server__G1/channels', [
       [
         'general__C1',
         new IndexEntry({
@@ -84,7 +84,7 @@ describe('read history jsonl branch', () => {
     })
     const out = await read(
       new DiscordAccessor(t),
-      spec('/mnt/discord/My_Server__G1/channels/general__C1/2024-01-15.jsonl', '/mnt/discord'),
+      spec('/mnt/discord/My Server__G1/channels/general__C1/2024-01-15/chat.jsonl', '/mnt/discord'),
       idx,
     )
     const text = decoder.decode(out).trimEnd()
@@ -101,7 +101,10 @@ describe('read history jsonl branch', () => {
     await expect(
       read(
         new DiscordAccessor(t),
-        spec('/mnt/discord/My_Server__G1/channels/general__C1/2024-01-15.jsonl', '/mnt/discord'),
+        spec(
+          '/mnt/discord/My Server__G1/channels/general__C1/2024-01-15/chat.jsonl',
+          '/mnt/discord',
+        ),
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
   })
@@ -112,7 +115,10 @@ describe('read history jsonl branch', () => {
     await expect(
       read(
         new DiscordAccessor(t),
-        spec('/mnt/discord/My_Server__G1/channels/general__C1/2024-01-15.jsonl', '/mnt/discord'),
+        spec(
+          '/mnt/discord/My Server__G1/channels/general__C1/2024-01-15/chat.jsonl',
+          '/mnt/discord',
+        ),
         idx,
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
@@ -124,16 +130,16 @@ describe('read members branch', () => {
     const idx = new RAMIndexCacheStore()
     await idx.setDir('/mnt/discord', [
       [
-        'My_Server__G1',
+        'My Server__G1',
         new IndexEntry({
           id: 'G1',
           name: 'My Server',
           resourceType: 'discord/guild',
-          vfsName: 'My_Server__G1',
+          vfsName: 'My Server__G1',
         }),
       ],
     ])
-    await idx.setDir('/mnt/discord/My_Server__G1/members', [
+    await idx.setDir('/mnt/discord/My Server__G1/members', [
       [
         'alice__U1.json',
         new IndexEntry({
@@ -155,7 +161,7 @@ describe('read members branch', () => {
     })
     const out = await read(
       new DiscordAccessor(t),
-      spec('/mnt/discord/My_Server__G1/members/alice__U1.json', '/mnt/discord'),
+      spec('/mnt/discord/My Server__G1/members/alice__U1.json', '/mnt/discord'),
       idx,
     )
     const parsed = JSON.parse(decoder.decode(out)) as Record<string, unknown>
@@ -172,7 +178,7 @@ describe('read members branch', () => {
     await expect(
       read(
         new DiscordAccessor(t),
-        spec('/mnt/discord/My_Server__G1/members/alice__U1.json', '/mnt/discord'),
+        spec('/mnt/discord/My Server__G1/members/alice__U1.json', '/mnt/discord'),
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
   })
@@ -183,7 +189,7 @@ describe('read members branch', () => {
     await expect(
       read(
         new DiscordAccessor(t),
-        spec('/mnt/discord/My_Server__G1/members/alice__U1.json', '/mnt/discord'),
+        spec('/mnt/discord/My Server__G1/members/alice__U1.json', '/mnt/discord'),
         idx,
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
@@ -191,7 +197,7 @@ describe('read members branch', () => {
 
   it('throws ENOENT for members path when guild not in cache', async () => {
     const idx = new RAMIndexCacheStore()
-    await idx.setDir('/mnt/discord/My_Server__G1/members', [
+    await idx.setDir('/mnt/discord/My Server__G1/members', [
       [
         'alice__U1.json',
         new IndexEntry({
@@ -206,7 +212,7 @@ describe('read members branch', () => {
     await expect(
       read(
         new DiscordAccessor(t),
-        spec('/mnt/discord/My_Server__G1/members/alice__U1.json', '/mnt/discord'),
+        spec('/mnt/discord/My Server__G1/members/alice__U1.json', '/mnt/discord'),
         idx,
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
@@ -216,16 +222,16 @@ describe('read members branch', () => {
     const idx = new RAMIndexCacheStore()
     await idx.setDir('/mnt/discord', [
       [
-        'My_Server__G1',
+        'My Server__G1',
         new IndexEntry({
           id: 'G1',
           name: 'My Server',
           resourceType: 'discord/guild',
-          vfsName: 'My_Server__G1',
+          vfsName: 'My Server__G1',
         }),
       ],
     ])
-    await idx.setDir('/mnt/discord/My_Server__G1/members', [
+    await idx.setDir('/mnt/discord/My Server__G1/members', [
       [
         'alice__U1.json',
         new IndexEntry({
@@ -245,7 +251,7 @@ describe('read members branch', () => {
     await expect(
       read(
         new DiscordAccessor(t),
-        spec('/mnt/discord/My_Server__G1/members/alice__U1.json', '/mnt/discord'),
+        spec('/mnt/discord/My Server__G1/members/alice__U1.json', '/mnt/discord'),
         idx,
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
@@ -256,7 +262,7 @@ describe('read unknown', () => {
   it('throws ENOENT for unknown path shape', async () => {
     const t = new FakeDiscordTransport(() => null)
     await expect(
-      read(new DiscordAccessor(t), spec('/mnt/discord/My_Server__G1/foo/bar', '/mnt/discord')),
+      read(new DiscordAccessor(t), spec('/mnt/discord/My Server__G1/foo/bar', '/mnt/discord')),
     ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 

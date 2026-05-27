@@ -12,21 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import Fastify from 'fastify'
 import multipart from '@fastify/multipart'
 import { WorkspaceRegistry } from './registry.ts'
 import { JobTable } from './jobs.ts'
-import { restoreAll, snapshotAll } from './persist.ts'
+import type { AuthConfig } from './auth/index.ts'
+import { registerAuth, resolveAuthConfig } from './auth/index.ts'
+import { isHostAllowed, resolveAllowedHosts } from './host_validation.ts'
 import { registerExecuteRoutes } from './routers/execute.ts'
 import { registerHealthRoutes } from './routers/health.ts'
 import { registerJobsRoutes } from './routers/jobs.ts'
 import { registerSessionsRoutes } from './routers/sessions.ts'
+import { registerVersionsRoutes } from './routers/versions.ts'
 import { registerWorkspacesRoutes } from './routers/workspaces.ts'
+import { LocalBackend } from './version/backend.ts'
 
 export interface BuildAppOptions {
   idleGraceSeconds?: number
-  persistDir?: string
   onIdleExit?: () => void
+  allowedHosts?: readonly string[]
+  authConfig?: AuthConfig
+  versionRoot?: string
 }
 
 export type MirageApp = ReturnType<typeof buildApp>
@@ -44,39 +52,37 @@ export function buildApp(options: BuildAppOptions = {}) {
       : {}),
     onIdleExit: exitFn,
   })
-  let restorePromise: Promise<void> = Promise.resolve()
-  if (options.persistDir !== undefined && options.persistDir !== '') {
-    const pd = options.persistDir
-    restorePromise = restoreAll(registry, pd)
-      .then(([restored, skipped]) => {
-        console.log(
-          `restored ${String(restored)} workspaces (${String(skipped)} skipped) from ${pd}`,
-        )
-      })
-      .catch((err: unknown) => {
-        console.warn('restoreAll failed; starting empty:', err)
-      })
-  }
   const jobs = new JobTable()
+  const versionBackend = new LocalBackend(
+    options.versionRoot ?? join(homedir(), '.mirage', 'repos'),
+  )
   const app = Fastify({ logger: false })
+  const allowedHosts = resolveAllowedHosts(options.allowedHosts)
+  if (!allowedHosts.includes('*')) {
+    app.addHook('onRequest', (request, reply, done) => {
+      if (!isHostAllowed(request.headers.host, allowedHosts)) {
+        console.warn(
+          `rejecting request from ${request.ip}: Host=${JSON.stringify(request.headers.host)} not in allowlist ${JSON.stringify(allowedHosts)}`,
+        )
+        void reply.code(400).send({ detail: 'Invalid host header' })
+        return
+      }
+      done()
+    })
+  }
+  const authConfig = options.authConfig ?? resolveAuthConfig()
+  registerAuth(app, authConfig)
   void app.register(multipart, {
     limits: { fileSize: 10 * 1024 * 1024 * 1024 },
   })
   registerHealthRoutes(app, { registry, startedAt, exit: exitFn })
   registerWorkspacesRoutes(app, { registry })
+  registerVersionsRoutes(app, { registry, versionBackend })
   registerSessionsRoutes(app, { registry })
   registerExecuteRoutes(app, { registry, jobs })
   registerJobsRoutes(app, { jobs })
   app.addHook('onClose', async () => {
-    if (options.persistDir !== undefined && options.persistDir !== '') {
-      try {
-        const saved = await snapshotAll(registry, options.persistDir)
-        console.log(`snapshotted ${String(saved)} workspaces to ${options.persistDir}`)
-      } catch (err) {
-        console.warn('snapshotAll on shutdown failed:', err)
-      }
-    }
     await registry.closeAll()
   })
-  return Object.assign(app, { registry, jobs, restorePromise })
+  return Object.assign(app, { registry, jobs, versionBackend })
 }

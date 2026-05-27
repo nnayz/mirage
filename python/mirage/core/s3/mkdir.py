@@ -23,7 +23,7 @@ async def mkdir(accessor: S3Accessor, path: PathSpec) -> None:
     if isinstance(path, PathSpec):
         path = path.strip_prefix
     config = accessor.config
-    pfx = _prefix(path)
+    pfx = _prefix(path, config)
     if pfx:
         session = async_session(config)
         async with session.client(**_client_kwargs(config)) as client:

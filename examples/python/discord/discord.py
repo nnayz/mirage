@@ -14,6 +14,7 @@
 
 import asyncio
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -26,6 +27,11 @@ config = DiscordConfig(token=os.environ["DISCORD_BOT_TOKEN"])
 resource = DiscordResource(config=config)
 
 
+def _assert_nonempty(text: str, msg: str) -> None:
+    if not text.strip():
+        raise AssertionError(f"regression: {msg}")
+
+
 async def main():
     ws = Workspace({"/discord": resource}, mode=MountMode.READ)
 
@@ -33,73 +39,90 @@ async def main():
     print("=== ls /discord/ (guilds) ===")
     r = await ws.execute("ls /discord/")
     print(await r.stdout_str())
+    _assert_nonempty(await r.stdout_str(), "ls /discord/ returned no guilds")
 
     guilds = (await r.stdout_str()).strip().split("\n")
-    if not guilds or not guilds[0]:
-        print("no guilds found")
-        return
-
     guild = guilds[0].strip()
     print(f"=== ls /discord/{guild}/channels/ ===")
     r = await ws.execute(f'ls "/discord/{guild}/channels/"')
     print(await r.stdout_str())
+    _assert_nonempty(await r.stdout_str(), "no channels in first guild")
 
     channels = (await r.stdout_str()).strip().splitlines()
-    if not channels:
-        print("no channels found")
-        return
-
     ch = channels[0].strip()
     base = f"/discord/{guild}/channels/{ch}"
 
-    # Use search API to find a date that actually has messages
-    print("\n=== finding a date with messages "
-          "via search API ===")
-    r = await ws.execute(f'grep -m 1 "" "{base}/"')
-    search_out = (await r.stdout_str()).strip()
-    if search_out:
-        # Extract date from search result
-        # (format: channelId/YYYY-MM-DD.jsonl:...)
-        date_match = None
-        for line in search_out.splitlines():
-            parts = line.split("/")
-            for part in parts:
-                if part.endswith(".jsonl"):
-                    date_match = part.split(":")[0]
-                    break
-            if date_match:
-                break
-        if date_match:
-            target = date_match
-        else:
-            target = "2026-04-04.jsonl"
-    else:
-        target = "2026-04-04.jsonl"
-    file_path = f"{base}/{target}"
-    print(f"  using: {target}")
+    # ── pick the most recent date that has messages ────
+    print(f"\n=== ls {base}/ (date directories) ===")
+    r = await ws.execute(f'ls "{base}/" | tail -n 5')
+    print(await r.stdout_str())
+    dates = (await r.stdout_str()).strip().splitlines()
+    if not dates:
+        print("  (no date directories — channel is empty)")
+        return
+    # Walk newest → oldest, find one with non-empty chat.jsonl
+    target_date: str | None = None
+    for d in reversed(dates):
+        d = d.strip()
+        r = await ws.execute(f'cat "{base}/{d}/chat.jsonl" | head -c 1')
+        if (await r.stdout_str()).strip():
+            target_date = d
+            break
+    if target_date is None:
+        target_date = dates[-1].strip()
+    print(f"  using date: {target_date}")
+    file_path = f"{base}/{target_date}/chat.jsonl"
 
-    # ── cat the file to see what's in it ──────────────
-    print(f"\n=== cat {target} | head -n 3 ===")
+    # ── cat the chat.jsonl ────────────────────────────
+    print(f"\n=== cat {target_date}/chat.jsonl | head -n 3 ===")
     r = await ws.execute(f'cat "{file_path}" | head -n 3')
     print((await r.stdout_str())[:300])
 
-    # ── grep at FILE level (download + grep) ──────────
-    print(f"\n=== grep at FILE level: grep content {target} ===")
-    r = await ws.execute(f'grep content "{file_path}"')
-    lines = (await r.stdout_str()).strip().splitlines() if (
-        await r.stdout_str()).strip() else []
-    print(f"  matches: {len(lines)}")
-    if lines:
-        print(f"  first: {lines[0][:120]}...")
+    # ── list date contents (chat.jsonl + files dir) ────
+    print(f"\n=== ls {base}/{target_date}/ ===")
+    r = await ws.execute(f'ls "{base}/{target_date}/"')
+    print(await r.stdout_str())
 
-    print("\n=== grep -c content "
-          "(file, count only) ===")
-    r = await ws.execute(f'grep -c content "{file_path}"')
-    print(f"  count: {(await r.stdout_str()).strip()}")
+    # ── list attachments for that date (may be empty) ─
+    print(f"\n=== ls {base}/{target_date}/files/ (attachments) ===")
+    r = await ws.execute(f'ls "{base}/{target_date}/files/"')
+    files_out = (await r.stdout_str()).strip()
+    if files_out:
+        for line in files_out.splitlines()[:5]:
+            print(f"  {line}")
+    else:
+        print("  (no attachments on this date)")
 
-    # ── grep at CHANNEL level (Discord search API) ────
-    print(f"\n=== grep at CHANNEL level: grep hihi {base}/ ===")
-    r = await ws.execute(f'grep hihi "{base}/"')
+    # ── stat + cat first attachment (byte-exact CDN download) ──
+    if files_out:
+        first_att = files_out.splitlines()[0].strip()
+        att_path = f"{base}/{target_date}/files/{first_att}"
+
+        print(f"\n=== stat {first_att} ===")
+        r = await ws.execute(f'stat "{att_path}"')
+        stat_out = (await r.stdout_str()).strip()
+        print(f"  {stat_out[:200]}")
+        size_match = re.search(r"size=(\d+)", stat_out)
+        expected_size = int(size_match.group(1)) if size_match else None
+
+        print(f"\n=== cat {first_att} (byte-exact CDN download) ===")
+        r = await ws.execute(f'cat "{att_path}"')
+        data = await r.materialize_stdout()
+        print(f"  bytes={len(data)} expected={expected_size} "
+              f"exit={r.exit_code}")
+        if expected_size is not None and len(data) != expected_size:
+            raise AssertionError(
+                f"regression: attachment cat got {len(data)} bytes, "
+                f"expected {expected_size}")
+
+    # ── grep at FILE level ────────────────────────────
+    print(f"\n=== grep at FILE level: grep . {target_date}/chat.jsonl ===")
+    r = await ws.execute(f'grep -c . "{file_path}"')
+    print(f"  line count: {(await r.stdout_str()).strip()}")
+
+    # ── grep at CHANNEL level (Discord search push-down) ──
+    print(f"\n=== grep at CHANNEL level: grep . {base}/ ===")
+    r = await ws.execute(f'grep -m 5 . "{base}/"')
     print(f"  exit={r.exit_code}")
     out = (await r.stdout_str()).strip()
     if out:
@@ -107,25 +130,13 @@ async def main():
             print(f"  {line[:120]}")
     else:
         print("  (no results)")
-    if (await r.stderr_str()):
-        print(f"  stderr: {await r.stderr_str()}")
+    err = await r.stderr_str()
+    if err:
+        print(f"  stderr: {err[:200]}")
 
-    # ── grep at GUILD level (Discord search API) ──────
-    print(f"\n=== grep at GUILD level: grep hihi /discord/{guild}/ ===")
-    r = await ws.execute(f'grep hihi "/discord/{guild}/"')
-    print(f"  exit={r.exit_code}")
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines()[:5]:
-            print(f"  {line[:120]}")
-    else:
-        print("  (no results)")
-    if (await r.stderr_str()):
-        print(f"  stderr: {await r.stderr_str()}")
-
-    # ── rg at CHANNEL level ───────────────────────────
-    print(f"\n=== rg at CHANNEL level: rg hihi {base}/ ===")
-    r = await ws.execute(f'rg hihi "{base}/"')
+    # ── grep at GUILD level ──────────────────────────
+    print(f"\n=== grep at GUILD level: grep . /discord/{guild}/ ===")
+    r = await ws.execute(f'grep -m 5 . "/discord/{guild}/"')
     print(f"  exit={r.exit_code}")
     out = (await r.stdout_str()).strip()
     if out:
@@ -134,157 +145,103 @@ async def main():
     else:
         print("  (no results)")
 
-    # ── jq on a file (JSONL needs .[] to iterate) ───
-    print(f"\n=== jq '.[] | .author.username' {target} ===")
-    r = await ws.execute(f'jq ".[] | .author.username" "{file_path}"')
-    print(f"  exit={r.exit_code}")
+    # ── jq pipeline ──────────────────────────────────
+    print(f"\n=== jq '.[] | .author.username' {target_date}/chat.jsonl ===")
+    r = await ws.execute(f'jq -r ".[] | .author.username" "{file_path}"'
+                         ' | head -n 5')
     out = (await r.stdout_str()).strip()
     if out:
         for line in out.splitlines()[:5]:
             print(f"  {line}")
-    else:
-        print("  (no output)")
 
-    print(f"\n=== jq -r '.[] | .content' {target} | head -n 5 ===")
-    r = await ws.execute(f'jq -r ".[] | .content" "{file_path}" | head -n 5')
-    print(f"  exit={r.exit_code}")
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines()[:5]:
-            print(f"  {line}")
-
-    # ── stat on a file ────────────────────────────────
-    print(f"\n=== stat {target} ===")
+    # ── stat ─────────────────────────────────────────
+    print(f"\n=== stat {file_path} ===")
     r = await ws.execute(f'stat "{file_path}"')
-    print(f"  {(await r.stdout_str()).strip()}")
+    print(f"  {(await r.stdout_str()).strip()[:200]}")
 
-    # ── cat | jq pipeline (JSONL needs .[] to iterate) ──
-    print(f"\n=== cat {target} | jq -r '.[] | .author.username'"
-          " | sort | uniq -c ===")
-    r = await ws.execute(f'cat "{file_path}" | jq -r ".[] | .author.username"'
-                         ' | sort | uniq -c')
-    print(f"  exit={r.exit_code}")
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines()[:10]:
-            print(f"  {line}")
-
-    # ── wc across levels ─────────────────────────────
-    print(f"\n=== wc -l {target} ===")
+    # ── wc / head / tail ─────────────────────────────
+    print(f"\n=== wc -l {target_date}/chat.jsonl ===")
     r = await ws.execute(f'wc -l "{file_path}"')
     print(f"  {(await r.stdout_str()).strip()}")
 
-    # ── head / tail ──────────────────────────────────
-    print(f"\n=== head -n 3 {target} ===")
-    r = await ws.execute(f'head -n 3 "{file_path}"')
+    # ── basename / dirname / realpath (path ops) ─────
+    print(f"\n=== basename {file_path} ===")
+    r = await ws.execute(f'basename "{file_path}"')
+    out = (await r.stdout_str()).strip()
+    print(f"  {out}")
+    assert out == "chat.jsonl", f"basename expected 'chat.jsonl', got {out!r}"
+
+    expected_dir = f"{base}/{target_date}"
+    print(f"\n=== dirname {file_path} ===")
+    r = await ws.execute(f'dirname "{file_path}"')
+    out = (await r.stdout_str()).strip()
+    print(f"  {out}")
+    assert out == expected_dir, (
+        f"dirname expected {expected_dir!r}, got {out!r}")
+
+    print(f"\n=== realpath {file_path} ===")
+    r = await ws.execute(f'realpath "{file_path}"')
+    out = (await r.stdout_str()).strip()
+    print(f"  {out}")
+    assert out == file_path, f"realpath expected {file_path!r}, got {out!r}"
+
+    print(f"\n=== realpath -e {file_path} (must exist) ===")
+    r = await ws.execute(f'realpath -e "{file_path}"')
+    print(f"  exit={r.exit_code} {(await r.stdout_str()).strip()}")
+    assert r.exit_code == 0, (
+        "regression: realpath -e failed for existing file; "
+        f"stderr={await r.stderr_str()}")
+
+    # ── tree ─────────────────────────────────────────
+    print(f"\n=== tree -L 2 /discord/{guild}/ ===")
+    r = await ws.execute(f'tree -L 2 "/discord/{guild}/" | head -n 20')
+    out = (await r.stdout_str()).strip()
+    for line in out.splitlines()[:20]:
+        print(f"  {line}")
+
+    # ── find chat.jsonl everywhere ───────────────────
+    print(f"\n=== find /discord/{guild}/ -name chat.jsonl | head -n 5 ===")
+    r = await ws.execute(f'find "/discord/{guild}/" -name "chat.jsonl"'
+                         ' | head -n 5')
+    print(f"  exit={r.exit_code}")
     out = (await r.stdout_str()).strip()
     if out:
         for line in out.splitlines():
-            print(f"  {line[:120]}")
+            print(f"  {line}")
+    if r.exit_code != 0:
+        raise AssertionError(
+            f"regression: find chat.jsonl exited {r.exit_code} "
+            "(soft errors should not abort)")
 
-    print(f"\n=== tail -n 2 {target} ===")
-    r = await ws.execute(f'tail -n 2 "{file_path}"')
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines():
-            print(f"  {line[:120]}")
-
-    # ── pwd / cd ─────────────────────────────────────
-    print("\n=== pwd ===")
-    r = await ws.execute("pwd")
-    print(f"  {(await r.stdout_str()).strip()}")
-
-    print(f'\n=== cd "/discord/{guild}/channels/{ch}" ===')
-    r = await ws.execute(f'cd "/discord/{guild}/channels/{ch}"')
+    # ── pwd / cd / relative ──────────────────────────
+    print(f"\n=== cd {base} ===")
+    r = await ws.execute(f'cd "{base}"')
     print(f"  exit={r.exit_code}")
 
     print("\n=== pwd (after cd) ===")
     r = await ws.execute("pwd")
     print(f"  {(await r.stdout_str()).strip()}")
 
-    print("\n=== ls (relative, in channel dir) ===")
-    r = await ws.execute("ls | tail -n 5")
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines():
-            print(f"  {line}")
-
-    print(f"\n=== cat {target} (relative) ===")
-    r = await ws.execute(f'cat {target} | head -n 1')
+    print(f"\n=== cat {target_date}/chat.jsonl (relative) | head -n 1 ===")
+    r = await ws.execute(f'cat "{target_date}/chat.jsonl" | head -n 1')
     out = (await r.stdout_str()).strip()
     if out:
         print(f"  {out[:120]}")
+
+    # ── members ──────────────────────────────────────
+    print(f"\n=== ls /discord/{guild}/members/ | head -n 5 ===")
+    r = await ws.execute(f'ls "/discord/{guild}/members/" | head -n 5')
+    mem_out = (await r.stdout_str()).strip()
+    if mem_out:
+        for line in mem_out.splitlines():
+            print(f"  {line}")
+        first_member = mem_out.splitlines()[0].strip()
+        print(f"\n=== cat /discord/{guild}/members/{first_member} ===")
+        r = await ws.execute(f'cat "/discord/{guild}/members/{first_member}"')
+        body = (await r.stdout_str()).strip()
+        print(f"  {body[:200]}")
     else:
-        print("  (empty)")
-
-    # ── cat two dates to compare ─────────────────────
-    print("\n=== cat 2026-04-04.jsonl (messages) ===")
-    r = await ws.execute(f'cat "{base}/2026-04-04.jsonl"')
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines():
-            print(f"  {line[:120]}")
-    else:
-        print("  (empty)")
-
-    print("\n=== cat 2026-04-05.jsonl (no messages?) ===")
-    r = await ws.execute(f'cat "{base}/2026-04-05.jsonl"')
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines():
-            print(f"  {line[:120]}")
-    else:
-        print("  (empty)")
-
-    # ── tree ─────────────────────────────────────────
-    print(f"\n=== tree -L 1 /discord/{guild}/ ===")
-    r = await ws.execute(f'tree -L 1 "/discord/{guild}/"')
-    print(f"  exit={r.exit_code}")
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines():
-            print(f"  {line}")
-
-    # ── find ─────────────────────────────────────────
-    print(f"\n=== find /discord/{guild}/ -name '*.jsonl'"
-          " -maxdepth 3 ===")
-    r = await ws.execute(f'find "/discord/{guild}/" -name "*.jsonl"'
-                         ' -maxdepth 3 | head -n 10')
-    print(f"  exit={r.exit_code}")
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines():
-            print(f"  {line}")
-
-    print("\n=== find /discord/ -name 'general' ===")
-    r = await ws.execute('find "/discord/" -name "general"')
-    print(f"  exit={r.exit_code}")
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines():
-            print(f"  {line}")
-
-    print(f"\n=== find {base}/ -name '2026-04-04*' ===")
-    r = await ws.execute(f'find "{base}/" -name "2026-04-04*"')
-    print(f"  exit={r.exit_code}")
-    out = (await r.stdout_str()).strip()
-    if out:
-        for line in out.splitlines():
-            print(f"  {line}")
-
-    # ── glob expansion (exercises resolve_glob → readdir) ──
-    # Quoted dir + unquoted glob: "/path with spaces/"*.ext
-    print(f"\n=== echo {base}/*.jsonl (glob) ===")
-    r = await ws.execute(f'echo "{base}/"*.jsonl')
-    out = (await r.stdout_str()).strip()
-    print(f"  {out[:200]}")
-
-    print(f"\n=== for f in {base}/*.jsonl (glob loop) ===")
-    r = await ws.execute(f'for f in "{base}/"*.jsonl; do echo found:$f; done'
-                         ' | head -n 3')
-    out = (await r.stdout_str()).strip()
-    for line in out.splitlines():
-        print(f"  {line[:120]}")
+        print("  (no members visible)")
 
 
 if __name__ == "__main__":

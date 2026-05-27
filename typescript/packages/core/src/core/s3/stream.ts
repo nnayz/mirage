@@ -36,7 +36,7 @@ export async function* stream(accessor: S3Accessor, path: PathSpec): AsyncIterab
   ).send.bind(client)
 
   const pinnedRevision = revisionFor(virtual)
-  const input: Record<string, unknown> = { Bucket: config.bucket, Key: s3Key(rawPath) }
+  const input: Record<string, unknown> = { Bucket: config.bucket, Key: s3Key(rawPath, config) }
   if (pinnedRevision !== null) input.VersionId = pinnedRevision
 
   // Use virtual (mount-prefixed) path so the record stays correct even

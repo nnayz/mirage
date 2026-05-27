@@ -16,26 +16,23 @@ from collections.abc import AsyncIterator
 
 from mirage.accessor.s3 import S3Accessor
 from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.generic.cat import cat as generic_cat
+from mirage.commands.builtin.s3._provision import file_read_provision
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.s3.glob import resolve_glob
 from mirage.core.s3.stat import stat
 from mirage.core.s3.stream import read_stream
-from mirage.io.async_line_iterator import AsyncLineIterator
+from mirage.io.cachable_iterator import CachableAsyncIterator
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def _number_lines_stream(
-        source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    num = 1
-    async for line in AsyncLineIterator(source):
-        yield f"     {num}\t".encode() + line + b"\n"
-        num += 1
-
-
-@command("cat", resource="s3", spec=SPECS["cat"])
+@command("cat",
+         resource="s3",
+         spec=SPECS["cat"],
+         provision=file_read_provision)
 async def cat(
     accessor: S3Accessor,
     paths: list[PathSpec],
@@ -47,14 +44,15 @@ async def cat(
 ) -> tuple[ByteSource | None, IOResult]:
     if paths:
         paths = await resolve_glob(accessor, paths, index)
-        p = paths[0]
-        await stat(accessor, p)
-        source = read_stream(accessor, p)
-        io = IOResult(reads={p.strip_prefix: source}, cache=[p.strip_prefix])
+        await stat(accessor, paths[0], index)
+        source = read_stream(accessor, paths[0])
+        cachable = CachableAsyncIterator(source)
+        key = paths[0].strip_prefix
+        io = IOResult(reads={key: cachable}, cache=[key])
         if n:
-            return _number_lines_stream(source), io
-        return source, io
+            return generic_cat(cachable, number_lines=True), io
+        return cachable, io
     source = _resolve_source(stdin, "cat: missing operand")
     if n:
-        return _number_lines_stream(source), IOResult()
+        return generic_cat(source, number_lines=True), IOResult()
     return source, IOResult()

@@ -15,7 +15,20 @@
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt
+
+
+class FindType(str, Enum):
+    """POSIX `find -type` flag values (`-type d`, `-type f`)."""
+    DIRECTORY = "d"
+    FILE = "f"
+
+
+class LsSortBy(str, Enum):
+    """`ls` sort keys. NAME is default, TIME is `-t`, SIZE is `-S`."""
+    NAME = "name"
+    TIME = "time"
+    SIZE = "size"
 
 
 class FileType(str, Enum):
@@ -59,6 +72,17 @@ class ConsistencyPolicy(str, Enum):
     ALWAYS = "always"
 
 
+class OnExceed(str, Enum):
+    ERROR = "error"
+    TRUNCATE = "truncate"
+
+
+class CommandSafeguard(BaseModel):
+    max_bytes: NonNegativeInt | None = None
+    max_lines: NonNegativeInt | None = None
+    on_exceed: OnExceed = OnExceed.TRUNCATE
+
+
 class VFSWriteOp(str, Enum):
     WRITE = "write"
     UNLINK = "unlink"
@@ -97,7 +121,8 @@ class ResourceName(str, Enum):
     GITHUB_CI = "github_ci"
     GCS = "gcs"
     EMAIL = "email"
-    PAPERCLIP = "paperclip"
+    DATABRICKS_VOLUME = "databricks_volume"
+    HF_BUCKETS = "hf_buckets"
     NEXTCLOUD = "nextcloud"
 
 
@@ -112,7 +137,9 @@ class PathSpec:
     @property
     def strip_prefix(self) -> str:
         if self.prefix and self.original.startswith(self.prefix):
-            return self.original[len(self.prefix):] or "/"
+            rest = self.original[len(self.prefix):]
+            if self.prefix.endswith("/") or rest == "" or rest.startswith("/"):
+                return rest or "/"
         return self.original
 
     @property
@@ -257,8 +284,6 @@ class SessionKey(StrEnum):
 
 class ResourceStateKey(StrEnum):
     TYPE = "type"
-    NEEDS_OVERRIDE = "needs_override"
-    REDACTED_FIELDS = "redacted_fields"
     CONFIG = "config"
     FILES = "files"
     DIRS = "dirs"

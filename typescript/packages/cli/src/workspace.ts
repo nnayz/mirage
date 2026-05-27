@@ -12,8 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import type { Command } from 'commander'
 import { interpolateEnv, loadWorkspaceConfig } from '@struktoai/mirage-server'
 import { parse as yamlParse } from 'yaml'
@@ -31,6 +31,16 @@ function envRecord(): Record<string, string> {
     if (typeof v === 'string') out[k] = v
   }
   return out
+}
+
+function loadConfigArgument(path: string): unknown {
+  if (!existsSync(path)) fail(`config file not found: ${path}`, 2)
+  const text = readFileSync(path, 'utf-8')
+  try {
+    return interpolateEnv(yamlParse(text), envRecord())
+  } catch (err: unknown) {
+    fail(`invalid config YAML/JSON at ${path}: ${String(err)}`, 2)
+  }
 }
 
 interface WorkspaceBrief {
@@ -109,6 +119,33 @@ function formatWorkspaceDetail(d: WorkspaceDetail): string {
   return lines.join('\n')
 }
 
+interface VersionLogItem {
+  id: string
+  message: string
+}
+
+interface DiffResult {
+  added: string[]
+  modified: string[]
+  deleted: string[]
+}
+
+function formatVersionLog(items: VersionLogItem[]): string {
+  if (items.length === 0) return 'No versions.'
+  return formatTable(
+    ['VERSION', 'MESSAGE'],
+    items.map((v) => [v.id.slice(0, 12), v.message]),
+  )
+}
+
+function formatDiff(changes: DiffResult): string {
+  const lines: string[] = []
+  for (const kind of ['added', 'modified', 'deleted'] as const) {
+    for (const path of changes[kind]) lines.push(`${kind.padEnd(9)} ${path}`)
+  }
+  return lines.length > 0 ? lines.join('\n') : 'No changes.'
+}
+
 export function registerWorkspaceCommands(program: Command): void {
   const ws = program.command('workspace').description('Manage workspaces.')
 
@@ -166,75 +203,130 @@ export function registerWorkspaceCommands(program: Command): void {
     })
 
   ws.command('clone')
-    .description('Clone a workspace; defaults to fresh local backings + shared remotes.')
+    .description('Clone a workspace, optionally from one of its past versions.')
     .argument('<srcId>')
-    .option('--id <id>')
-    .option('--override <path>', 'Partial config JSON/YAML for per-mount overrides')
-    .action(async (srcId: string, opts: { id?: string; override?: string }) => {
-      const body: Record<string, unknown> = {}
+    .option('--id <id>', 'Explicit id for the clone')
+    .option('--at <ref>', 'Clone from a past version (id or branch) not the live state')
+    .action(async (srcId: string, opts: { id?: string; at?: string }) => {
+      const body: Record<string, unknown> = { sourceId: srcId }
       if (opts.id !== undefined) body.id = opts.id
-      if (opts.override !== undefined) {
-        const text = readFileSync(opts.override, 'utf-8')
-        let parsed: unknown
-        try {
-          parsed = yamlParse(text)
-        } catch (err: unknown) {
-          fail(`invalid override YAML/JSON at ${opts.override}: ${String(err)}`, 2)
-        }
-        body.override = interpolateEnv(parsed, envRecord())
-      }
+      if (opts.at !== undefined) body.at = opts.at
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('POST', `/v1/workspaces/${srcId}/clone`, {
-        body: JSON.stringify(body),
+      const r = await c.request('POST', '/v1/workspaces/clone', { body: JSON.stringify(body) })
+      emit((await handleResponse(r)) as WorkspaceDetail, formatWorkspaceDetail)
+    })
+
+  ws.command('commit')
+    .description("Commit the workspace's current state as a version.")
+    .argument('<id>')
+    .option('-m, --message <msg>', 'Version message', '')
+    .option('-b, --branch <branch>', 'Branch to commit on', 'main')
+    .action(async (id: string, opts: { message: string; branch: string }) => {
+      const c = buildClient()
+      await c.ensureRunning({ allowSpawn: false })
+      const r = await c.request('POST', `/v1/workspaces/${id}/commit`, {
+        body: JSON.stringify({ message: opts.message, branch: opts.branch }),
+      })
+      emit(
+        (await handleResponse(r)) as { version: string; branch: string },
+        (d) => `Committed ${d.version.slice(0, 12)} on ${d.branch}.`,
+      )
+    })
+
+  ws.command('branch')
+    .description("Create a branch at another branch's current version.")
+    .argument('<id>')
+    .argument('<name>')
+    .option('--from <branch>', 'Branch to fork from', 'main')
+    .action(async (id: string, name: string, opts: { from: string }) => {
+      const c = buildClient()
+      await c.ensureRunning({ allowSpawn: false })
+      const r = await c.request('POST', `/v1/workspaces/${id}/branch`, {
+        body: JSON.stringify({ name, fromBranch: opts.from }),
+      })
+      emit(
+        (await handleResponse(r)) as { branch: string; version: string },
+        (d) => `Created branch ${d.branch} at ${d.version.slice(0, 12)}.`,
+      )
+    })
+
+  ws.command('log')
+    .description("List a workspace's versions (newest first).")
+    .argument('<id>')
+    .option('-b, --branch <branch>', 'Branch', 'main')
+    .action(async (id: string, opts: { branch: string }) => {
+      const c = buildClient()
+      await c.ensureRunning({ allowSpawn: false })
+      const r = await c.request('GET', `/v1/workspaces/${id}/versions?branch=${opts.branch}`)
+      emit((await handleResponse(r)) as VersionLogItem[], formatVersionLog)
+    })
+
+  ws.command('diff')
+    .description('Show changed files (git-style): live vs HEAD, live vs <a>, or <a> vs <b>.')
+    .argument('<id>')
+    .argument('[a]', 'Base ref; omit to use live state')
+    .argument('[b]', 'Compare ref; omit to use live state')
+    .option('-b, --branch <branch>', 'Branch', 'main')
+    .action(
+      async (
+        id: string,
+        a: string | undefined,
+        b: string | undefined,
+        opts: { branch: string },
+      ) => {
+        const params = new URLSearchParams({ branch: opts.branch })
+        if (a !== undefined) params.set('a', a)
+        if (b !== undefined) params.set('b', b)
+        const c = buildClient()
+        await c.ensureRunning({ allowSpawn: false })
+        const r = await c.request('GET', `/v1/workspaces/${id}/diff?${params.toString()}`)
+        emit((await handleResponse(r)) as DiffResult, formatDiff)
+      },
+    )
+
+  ws.command('checkout')
+    .description('Restore a workspace in place to one of its versions.')
+    .argument('<id>')
+    .argument('<ref>', 'Version id or branch to restore')
+    .action(async (id: string, ref: string) => {
+      const c = buildClient()
+      await c.ensureRunning({ allowSpawn: false })
+      const r = await c.request('POST', `/v1/workspaces/${id}/checkout`, {
+        body: JSON.stringify({ ref }),
       })
       emit((await handleResponse(r)) as WorkspaceDetail, formatWorkspaceDetail)
     })
 
   ws.command('snapshot')
-    .description('Snapshot a workspace to a tar file.')
+    .description(
+      'Snapshot a workspace to a tar file. The path is resolved to an absolute path and the daemon writes the tar.',
+    )
     .argument('<id>')
     .argument('<output>', 'Path to write the .tar to')
     .action(async (id: string, output: string) => {
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: false })
-      const r = await c.request('GET', `/v1/workspaces/${id}/snapshot`)
-      if (r.status >= 400) {
-        fail(`daemon error ${String(r.status)}: ${await r.text()}`, 2)
-      }
-      const buf = Buffer.from(await r.arrayBuffer())
-      writeFileSync(output, buf)
-      emit(
-        { workspaceId: id, path: output, bytes: buf.length },
-        (d) => `Snapshot ${d.workspaceId} -> ${d.path} (${d.bytes.toLocaleString()} bytes).`,
-      )
+      const r = await c.request('POST', `/v1/workspaces/${id}/snapshot`, {
+        body: JSON.stringify({ path: resolve(output) }),
+      })
+      const d = (await handleResponse(r)) as { id: string; path: string; size: number }
+      emit(d, (x) => `Snapshot ${x.id} -> ${x.path} (${x.size.toLocaleString()} bytes).`)
     })
 
   ws.command('load')
     .description('Load a workspace from a tar file.')
     .argument('<tar>', 'Path to a .tar produced by `mirage workspace snapshot`')
+    .argument('[config]', 'Workspace YAML/JSON config')
     .option('--id <id>', 'Explicit workspace id')
-    .option('--override <path>', 'Partial config YAML/JSON for per-mount overrides')
-    .action(async (tarPath: string, opts: { id?: string; override?: string }) => {
+    .action(async (tarPath: string, configPath: string | undefined, opts: { id?: string }) => {
       if (!existsSync(tarPath)) fail(`tar file not found: ${tarPath}`, 2)
-      const tarBuf = readFileSync(tarPath)
-      const form = new FormData()
-      form.append('tar', new Blob([tarBuf], { type: 'application/x-tar' }), basename(tarPath))
-      if (opts.id !== undefined) form.append('id', opts.id)
-      if (opts.override !== undefined) {
-        const overrideText = readFileSync(opts.override, 'utf-8')
-        let parsed: unknown
-        try {
-          parsed = yamlParse(overrideText)
-        } catch (err: unknown) {
-          fail(`invalid override YAML/JSON at ${opts.override}: ${String(err)}`, 2)
-        }
-        form.append('override', JSON.stringify(interpolateEnv(parsed, envRecord())))
-      }
+      const body: { path: string; id?: string; override?: unknown } = { path: resolve(tarPath) }
+      if (opts.id !== undefined) body.id = opts.id
+      if (configPath !== undefined) body.override = loadConfigArgument(configPath)
       const c = buildClient()
       await c.ensureRunning({ allowSpawn: true })
-      const r = await c.requestMultipart('POST', '/v1/workspaces/load', form)
-      if (r.status >= 400) fail(`load failed: ${await r.text()}`, 2)
+      const r = await c.request('POST', '/v1/workspaces/load', { body: JSON.stringify(body) })
       emit((await handleResponse(r)) as WorkspaceDetail, formatWorkspaceDetail)
     })
 }

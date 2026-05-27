@@ -65,8 +65,8 @@ describe('DiscordResource (node)', () => {
     const r = new DiscordResource({ token: 'bot-secret' })
     const state = await r.getState()
     expect(state.type).toBe(ResourceName.DISCORD)
-    expect(state.needsOverride).toBe(true)
-    expect(state.redactedFields).toEqual(['token'])
+    expect(state).not.toHaveProperty('needsOverride')
+    expect(state).not.toHaveProperty('redactedFields')
     expect(state.config).toEqual({ token: '<REDACTED>' })
   })
 
@@ -90,14 +90,14 @@ describe('DiscordResource (node)', () => {
     const r = new DiscordResource({ token: 'bot-test' })
     const out = await r.readdir(
       new PathSpec({
-        original: '/mnt/discord/My_Server__G1/channels',
-        directory: '/mnt/discord/My_Server__G1/channels',
+        original: '/mnt/discord/My Server__G1/channels',
+        directory: '/mnt/discord/My Server__G1/channels',
         prefix: '/mnt/discord',
       }),
     )
     expect(out).toEqual([
-      '/mnt/discord/My_Server__G1/channels/general__C1',
-      '/mnt/discord/My_Server__G1/channels/eng__C2',
+      '/mnt/discord/My Server__G1/channels/general__C1',
+      '/mnt/discord/My Server__G1/channels/eng__C2',
     ])
     const calls = fetchMock.mock.calls.map((c) => urlOf((c as unknown[])[0]))
     expect(calls.some((u) => u.includes('/users/@me/guilds'))).toBe(true)

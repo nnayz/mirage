@@ -12,24 +12,34 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import json
+import asyncio
 
-from bson.json_util import default
+from bson.json_util import RELAXED_JSON_OPTIONS, dumps
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from mirage.core.mongodb._client import get_indexes, list_collections
+from mirage.core.mongodb.types import PRIMARY_KEY, EntityKind
 
 
-async def _regex_filter(col, pattern: str) -> list[dict]:
-    sample = await col.find_one()
-    if not sample:
-        return [{}]
-    string_fields = [
-        k for k, v in sample.items() if isinstance(v, str) and k != "_id"
-    ]
-    if not string_fields:
-        return [{}]
-    return [{f: {"$regex": pattern, "$options": "i"}} for f in string_fields]
+def _collect_string_paths(value, prefix: str, out: set[str]) -> None:
+    if isinstance(value, dict):
+        for k, v in value.items():
+            sub = f"{prefix}.{k}" if prefix else k
+            _collect_string_paths(v, sub, out)
+        return
+    if isinstance(value, str) and prefix and prefix != PRIMARY_KEY:
+        out.add(prefix)
+
+
+async def _sampled_string_paths(col, sample_size: int = 100) -> list[str]:
+    paths: set[str] = set()
+    async for doc in col.aggregate([{"$sample": {"size": sample_size}}]):
+        _collect_string_paths(doc, "", paths)
+    return sorted(paths)
+
+
+def _has_text_index(indexes: list[dict]) -> bool:
+    return any("textIndexVersion" in idx for idx in indexes)
 
 
 async def search_collection(
@@ -42,15 +52,21 @@ async def search_collection(
     db = client[database]
     col = db[collection]
     indexes = await get_indexes(client, database, collection)
-    has_text_index = any(
-        any(v == "text" for v in idx.get("key", {}).values())
-        for idx in indexes)
-    if has_text_index:
-        cursor = col.find({"$text": {"$search": pattern}}).limit(limit)
+    if _has_text_index(indexes):
+        filter_expr: dict = {"$text": {"$search": pattern}}
     else:
-        cursor = col.find({
-            "$or": await _regex_filter(col, pattern)
-        }).limit(limit)
+        paths = await _sampled_string_paths(col)
+        if not paths:
+            return []
+        filter_expr = {
+            "$or": [{
+                p: {
+                    "$regex": pattern,
+                    "$options": "i"
+                }
+            } for p in paths]
+        }
+    cursor = col.find(filter_expr).limit(limit)
     return await cursor.to_list(length=limit)
 
 
@@ -60,25 +76,24 @@ async def search_database(
     pattern: str,
     limit: int,
 ) -> list[tuple[str, str, list[dict]]]:
-    collections = await list_collections(client, database)
-    results: list[tuple[str, str, list[dict]]] = []
-    for col in collections:
-        docs = await search_collection(client,
-                                       database,
-                                       col,
-                                       pattern,
-                                       limit=limit)
-        if docs:
-            results.append((database, col, docs))
-    return results
+    collections = await list_collections(client,
+                                         database,
+                                         kind=EntityKind.COLLECTION)
+    tasks = [
+        search_collection(client, database, col, pattern, limit=limit)
+        for col in collections
+    ]
+    results_per_col = await asyncio.gather(*tasks)
+    return [(database, col, docs)
+            for col, docs in zip(collections, results_per_col) if docs]
 
 
 def format_grep_results(
         results: list[tuple[str, str, list[dict]]]) -> list[str]:  # noqa: E125
     lines: list[str] = []
     for db_name, col_name, docs in results:
+        path = f"{db_name}/collections/{col_name}/documents.jsonl"
         for doc in docs:
-            doc["_id"] = str(doc.get("_id", ""))
-            line_json = json.dumps(doc, ensure_ascii=False, default=default)
-            lines.append(f"{db_name}/{col_name}.jsonl:{line_json}")
+            line_json = dumps(doc, json_options=RELAXED_JSON_OPTIONS)
+            lines.append(f"{path}:{line_json}")
     return lines

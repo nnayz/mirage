@@ -43,23 +43,32 @@ const ClientCtor = vi.fn((_uri: string) => {
         arr = arr.slice(0, n)
         return cursor
       }),
+      batchSize: vi.fn(() => cursor),
       toArray: vi.fn(() => Promise.resolve(arr)),
     }
     return cursor
   }
-  const profilesCollection = {
-    find: vi.fn(() => makeCursor(profilesDocs)),
-    countDocuments: vi.fn(() => Promise.resolve(profilesDocs.length)),
+  const makeColl = (docs: Record<string, unknown>[]) => ({
+    find: vi.fn(() => makeCursor(docs)),
+    countDocuments: vi.fn(() => Promise.resolve(docs.length)),
     listIndexes: vi.fn(() => ({ toArray: () => Promise.resolve([{ name: '_id_' }]) })),
-  }
-  const sessionsCollection = {
-    find: vi.fn(() => makeCursor([])),
-    countDocuments: vi.fn(() => Promise.resolve(0)),
-    listIndexes: vi.fn(() => ({ toArray: () => Promise.resolve([{ name: '_id_' }]) })),
-  }
+    aggregate: vi.fn(() => ({ toArray: () => Promise.resolve([]) })),
+    watch: vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        // no events
+      },
+      close: () => Promise.resolve(),
+    })),
+  })
+  const profilesCollection = makeColl(profilesDocs)
+  const sessionsCollection = makeColl([])
   const db = {
     listCollections: vi.fn(() => ({
-      toArray: () => Promise.resolve([{ name: 'profiles' }, { name: 'sessions' }]),
+      toArray: () =>
+        Promise.resolve([
+          { name: 'profiles', type: 'collection' },
+          { name: 'sessions', type: 'collection' },
+        ]),
     })),
     collection: vi.fn((name: string) =>
       name === 'profiles' ? profilesCollection : sessionsCollection,
@@ -108,15 +117,23 @@ describe('MongoDBResource mount integration', () => {
     expect(stdout).not.toContain('admin')
   })
 
-  it('readdir /mongo/app lists collections as <name>.jsonl', async () => {
+  it('readdir /mongo/app exposes database.json / collections / views', async () => {
     const r = await ws.execute('ls /mongo/app')
     const stdout = new TextDecoder().decode(r.stdout)
-    expect(stdout).toContain('profiles.jsonl')
-    expect(stdout).toContain('sessions.jsonl')
+    expect(stdout).toContain('database.json')
+    expect(stdout).toContain('collections')
+    expect(stdout).toContain('views')
   })
 
-  it('cat /mongo/app/profiles.jsonl returns JSONL docs', async () => {
-    const r = await ws.execute('cat /mongo/app/profiles.jsonl')
+  it('readdir /mongo/app/collections lists collection names', async () => {
+    const r = await ws.execute('ls /mongo/app/collections')
+    const stdout = new TextDecoder().decode(r.stdout)
+    expect(stdout).toContain('profiles')
+    expect(stdout).toContain('sessions')
+  })
+
+  it('cat documents.jsonl returns one BSON-faithful JSON line per doc', async () => {
+    const r = await ws.execute('cat /mongo/app/collections/profiles/documents.jsonl')
     const text = new TextDecoder().decode(r.stdout).trim()
     const lines = text.split('\n')
     expect(lines).toHaveLength(3)
@@ -125,13 +142,13 @@ describe('MongoDBResource mount integration', () => {
   })
 
   it('head -n 2 pushes down to find().limit(2)', async () => {
-    const r = await ws.execute('head -n 2 /mongo/app/profiles.jsonl')
+    const r = await ws.execute('head -n 2 /mongo/app/collections/profiles/documents.jsonl')
     const lines = new TextDecoder().decode(r.stdout).trim().split('\n')
     expect(lines).toHaveLength(2)
   })
 
   it('wc -l pushes down to countDocuments', async () => {
-    const r = await ws.execute('wc -l /mongo/app/profiles.jsonl')
+    const r = await ws.execute('wc -l /mongo/app/collections/profiles/documents.jsonl')
     expect(new TextDecoder().decode(r.stdout).trim()).toBe('3')
   })
 })

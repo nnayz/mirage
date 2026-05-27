@@ -49,7 +49,7 @@ def daemon(tmp_path):
     env = dict(os.environ)
     env["MIRAGE_DAEMON_URL"] = url
     env["MIRAGE_IDLE_GRACE_SECONDS"] = "60"
-    env.pop("MIRAGE_PERSIST_DIR", None)
+    env["MIRAGE_VERSION_ROOT"] = str(tmp_path / "repos")
     env.pop("MIRAGE_AUTH_TOKEN", None)
     env.pop("MIRAGE_TOKEN", None)
     log_file = tmp_path / "daemon.log"
@@ -58,7 +58,7 @@ def daemon(tmp_path):
             sys.executable,
             "-m",
             "uvicorn",
-            "mirage.cli.server_factory:app",
+            "mirage.server.daemon:app",
             "--host",
             "127.0.0.1",
             "--port",

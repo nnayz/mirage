@@ -13,65 +13,84 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { setServers } from 'node:dns'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import dotenv from 'dotenv'
 import { MongoDBResource, MountMode, Workspace } from '@struktoai/mirage-node'
 
+const __HERE = fileURLToPath(new URL('.', import.meta.url))
 setServers(['8.8.8.8', '1.1.1.1'])
-dotenv.config({ path: '.env.development' })
+dotenv.config({ path: resolve(__HERE, '../../../.env.development') })
 
-const uri = process.env.MONGODB_URI
-if (uri === undefined) {
-  console.error('MONGODB_URI missing in .env.development')
-  process.exit(1)
-}
-
-const DEC = new TextDecoder()
-
-async function dump(ws: Workspace, label: string, cmd: string): Promise<void> {
-  console.log(`\n--- ${label} ---`)
-  const r = await ws.execute(cmd)
-  if (r.exitCode !== 0) {
-    console.log(`(exit=${String(r.exitCode)}) ${DEC.decode(r.stderr)}`)
-    return
-  }
-  process.stdout.write(DEC.decode(r.stdout))
-  if (!DEC.decode(r.stdout).endsWith('\n')) process.stdout.write('\n')
-}
+const DB = 'mirage_test'
+const COLL = 'heterogeneous'
+const VIEW = 'high_rated_films'
 
 async function main(): Promise<void> {
-  const resource = new MongoDBResource({
-    uri,
-    defaultDocLimit: 50,
-  })
+  const uri = process.env.MONGODB_URI
+  if (uri === undefined) {
+    console.error('MONGODB_URI missing in .env.development')
+    process.exit(1)
+  }
+  const resource = new MongoDBResource({ uri, databases: [DB] })
   const ws = new Workspace({ '/mongodb/': resource }, { mode: MountMode.READ })
 
   try {
-    console.log('=== VFS MODE: shell pipelines transparently read MongoDB ===')
+    console.log('=== VFS MODE: open() reads from MongoDB ===\n')
 
-    await dump(ws, 'ls /mongodb — databases', 'ls /mongodb')
+    console.log('--- listdir() root (databases) ---')
+    for (const db of await ws.fs.readdir('/mongodb')) console.log(`  ${db}`)
 
-    const dbsOut = await ws.execute('ls /mongodb')
-    const dbs = DEC.decode(dbsOut.stdout).split('\n').filter((s) => s.length > 0)
-    if (dbs.length === 0) {
-      console.log('\nno databases')
-      return
+    console.log(`\n--- listdir() /mongodb/${DB} (entities) ---`)
+    for (const e of await ws.fs.readdir(`/mongodb/${DB}`)) console.log(`  ${e}`)
+
+    console.log(`\n--- listdir() /mongodb/${DB}/collections ---`)
+    for (const c of await ws.fs.readdir(`/mongodb/${DB}/collections`)) console.log(`  ${c}`)
+
+    console.log(`\n--- listdir() /mongodb/${DB}/views ---`)
+    for (const v of await ws.fs.readdir(`/mongodb/${DB}/views`)) console.log(`  ${v}`)
+
+    console.log(`\n--- listdir() /mongodb/${DB}/collections/${COLL} (entity) ---`)
+    for (const e of await ws.fs.readdir(`/mongodb/${DB}/collections/${COLL}`)) console.log(`  ${e}`)
+
+    console.log('\n--- open() database.json ---')
+    const dbMeta = JSON.parse(await ws.fs.readFileText(`/mongodb/${DB}/database.json`)) as {
+      collections: unknown[]
+      views: unknown[]
     }
-    const target = dbs[0]!
+    console.log(`  collections: ${String(dbMeta.collections.length)}`)
+    console.log(`  views: ${String(dbMeta.views.length)}`)
 
-    await dump(ws, `ls /mongodb/${target}`, `ls /mongodb/${target} | head -n 5`)
+    console.log(`\n--- open() schema.json for ${COLL} ---`)
+    const schema = JSON.parse(
+      await ws.fs.readFileText(`/mongodb/${DB}/collections/${COLL}/schema.json`),
+    ) as { kind: string; fields: unknown[]; indexes: unknown[] }
+    console.log(`  kind: ${schema.kind}`)
+    console.log(`  fields: ${String(schema.fields.length)}`)
+    console.log(`  indexes: ${String(schema.indexes.length)}`)
 
-    const colsOut = await ws.execute(`ls /mongodb/${target}`)
-    const cols = DEC.decode(colsOut.stdout).split('\n').filter((s) => s.endsWith('.jsonl'))
-    if (cols.length === 0) {
-      console.log(`\nno collections in ${target}`)
-      return
+    console.log(`\n--- open() + read documents.jsonl for ${COLL} ---`)
+    const content = await ws.fs.readFileText(
+      `/mongodb/${DB}/collections/${COLL}/documents.jsonl`,
+    )
+    const lines = content.trim().split('\n').filter((ln) => ln.trim() !== '')
+    console.log(`  documents: ${String(lines.length)}`)
+    for (const ln of lines.slice(0, 3)) {
+      const doc = JSON.parse(ln) as { _id: { $oid?: string }; title?: string }
+      console.log(`  [${doc._id.$oid ?? '?'}] ${doc.title ?? '?'}`)
     }
-    const path = `/mongodb/${target}/${cols[0]!}`
 
-    await dump(ws, `head -n 1 ${path}`, `head -n 1 ${path}`)
-    await dump(ws, `wc -l ${path}`, `wc -l ${path}`)
-    await dump(ws, `cat ${path} | wc -l`, `cat ${path} | wc -l`)
-    await dump(ws, `jq -s ".[0]" ${path}`, `jq -s ".[0]" ${path}`)
+    console.log(`\n--- open() + read view documents for ${VIEW} ---`)
+    const viewContent = await ws.fs.readFileText(
+      `/mongodb/${DB}/views/${VIEW}/documents.jsonl`,
+    )
+    const viewLines = viewContent.trim().split('\n').filter((ln) => ln.trim() !== '')
+    console.log(`  documents: ${String(viewLines.length)}`)
+    for (const ln of viewLines.slice(0, 3)) {
+      const doc = JSON.parse(ln) as { title?: string; rating?: number }
+      console.log(`  ${doc.title ?? '?'} (rating=${String(doc.rating ?? '?')})`)
+    }
+
   } finally {
     await ws.close()
     await resource.close()

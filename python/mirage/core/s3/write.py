@@ -27,7 +27,7 @@ async def write_bytes(accessor: S3Accessor, path: PathSpec,
     if isinstance(path, PathSpec):
         path = path.strip_prefix
     config = accessor.config
-    key = _key(path)
+    key = _key(path, config)
     start_ms = int(time.monotonic() * 1000)
     session = async_session(config)
     async with session.client(**_client_kwargs(config)) as client:

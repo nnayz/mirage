@@ -30,7 +30,7 @@ export async function truncate(
 ): Promise<void> {
   const { GetObjectCommand, PutObjectCommand } = await loadS3Module(accessor.config)
   const raw = rawPathOf(path)
-  const key = s3Key(raw)
+  const key = s3Key(raw, accessor.config)
   await withClient(accessor.config, async (client) => {
     let existing: Uint8Array = new Uint8Array()
     try {

@@ -85,7 +85,7 @@ export async function stat(
   try {
     if (hintsDirectory) {
       // Skip HeadObject — caller already said it's a directory.
-      const pfx = s3Key(rawPath).replace(/\/+$/, '') + '/'
+      const pfx = s3Key(rawPath, config).replace(/\/+$/, '') + '/'
       const listResp = (await send(
         new ListObjectsV2Command({
           Bucket: config.bucket,
@@ -104,7 +104,7 @@ export async function stat(
 
     try {
       const resp = (await send(
-        new HeadObjectCommand({ Bucket: config.bucket, Key: s3Key(rawPath) }),
+        new HeadObjectCommand({ Bucket: config.bucket, Key: s3Key(rawPath, config) }),
       )) as {
         ContentLength?: number
         LastModified?: Date
@@ -129,7 +129,7 @@ export async function stat(
     }
 
     // Not a file — probe for directory prefix.
-    const pfx = s3Key(rawPath).replace(/\/+$/, '') + '/'
+    const pfx = s3Key(rawPath, config).replace(/\/+$/, '') + '/'
     const listResp = (await send(
       new ListObjectsV2Command({
         Bucket: config.bucket,

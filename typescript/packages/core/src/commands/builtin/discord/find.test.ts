@@ -46,10 +46,10 @@ async function runFind(
 }
 
 describe('discord find', () => {
-  it('returns *.jsonl files under a 4-level VFS channel directory', async () => {
+  it('returns chat.jsonl files under a 5-level VFS channel directory', async () => {
     const idx = new RAMIndexCacheStore()
-    await seedGuild(idx, '/mnt/discord', 'My_Server__G1', 'G1')
-    await seedChannel(idx, '/mnt/discord', 'My_Server__G1', 'general__C1', 'C1', {
+    await seedGuild(idx, '/mnt/discord', 'My Server__G1', 'G1')
+    await seedChannel(idx, '/mnt/discord', 'My Server__G1', 'general__C1', 'C1', {
       dates: ['2024-01-01', '2024-01-02'],
     })
     const transport = new FakeDiscordTransport(() => {
@@ -58,17 +58,17 @@ describe('discord find', () => {
     const out = await runFind(
       [
         new PathSpec({
-          original: '/mnt/discord/My_Server__G1/channels/general__C1',
-          directory: '/mnt/discord/My_Server__G1/channels/general__C1',
+          original: '/mnt/discord/My Server__G1/channels/general__C1',
+          directory: '/mnt/discord/My Server__G1/channels/general__C1',
           resolved: false,
           prefix: '/mnt/discord',
         }),
       ],
-      { name: '*.jsonl' },
+      { name: 'chat.jsonl' },
       { index: idx, transport },
     )
     const lines = out.split('\n').filter((s) => s !== '')
-    expect(lines).toContain('/mnt/discord/My_Server__G1/channels/general__C1/2024-01-01.jsonl')
-    expect(lines).toContain('/mnt/discord/My_Server__G1/channels/general__C1/2024-01-02.jsonl')
+    expect(lines).toContain('/mnt/discord/My Server__G1/channels/general__C1/2024-01-01/chat.jsonl')
+    expect(lines).toContain('/mnt/discord/My Server__G1/channels/general__C1/2024-01-02/chat.jsonl')
   })
 })

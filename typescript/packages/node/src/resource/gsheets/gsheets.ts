@@ -13,15 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   GSHEETS_COMMANDS,
   GSHEETS_PROMPT,
   GSHEETS_VFS_OPS,
   GSHEETS_WRITE_PROMPT,
   GSheetsAccessor,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -36,12 +35,10 @@ import { redactGSheetsConfig, type GSheetsConfig, type GSheetsConfigRedacted } f
 
 export interface GSheetsResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: GSheetsConfigRedacted
 }
 
-export class GSheetsResource implements Resource {
+export class GSheetsResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GSHEETS
   readonly isRemote: boolean = true
   readonly indexTtl: number = 86_400
@@ -49,9 +46,9 @@ export class GSheetsResource implements Resource {
   readonly writePrompt: string = GSHEETS_WRITE_PROMPT
   readonly config: GSheetsConfig
   readonly accessor: GSheetsAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: GSheetsConfig) {
+    super()
     this.config = config
     const tm = new TokenManager({
       clientId: config.clientId,
@@ -59,7 +56,6 @@ export class GSheetsResource implements Resource {
       refreshToken: config.refreshToken,
     })
     this.accessor = new GSheetsAccessor({ tokenManager: tm })
-    this.index = new RAMIndexCacheStore({ ttl: 86_400 })
   }
 
   open(): Promise<void> {
@@ -116,8 +112,6 @@ export class GSheetsResource implements Resource {
   getState(): Promise<GSheetsResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['clientSecret', 'refreshToken'],
       config: redactGSheetsConfig(this.config),
     })
   }

@@ -164,15 +164,11 @@ async function rgCommand(
       warnings,
     )
     const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n')) : undefined
-    let finalResults = results
-    if (first.prefix !== '' && flags.filesOnly) {
-      finalResults = finalResults.map((r) => first.prefix + '/' + r.replace(/^\/+/, ''))
-    }
-    if (finalResults.length === 0) {
+    if (results.length === 0) {
       const io = new IOResult({ exitCode: 1, ...(stderr !== undefined ? { stderr } : {}) })
       return [new Uint8Array(0), io]
     }
-    const out: ByteSource = ENC.encode(finalResults.join('\n'))
+    const out: ByteSource = ENC.encode(results.join('\n'))
     const io = new IOResult(stderr !== undefined ? { stderr } : {})
     return [out, io]
   }
@@ -215,15 +211,11 @@ async function rgCommand(
       warnings,
     )
     const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n')) : undefined
-    let finalResults = results
-    if (first.prefix !== '' && flags.filesOnly) {
-      finalResults = finalResults.map((r) => first.prefix + '/' + r.replace(/^\/+/, ''))
-    }
-    if (finalResults.length === 0) {
+    if (results.length === 0) {
       const io = new IOResult({ exitCode: 1, ...(stderr !== undefined ? { stderr } : {}) })
       return [new Uint8Array(0), io]
     }
-    const out: ByteSource = ENC.encode(finalResults.join('\n'))
+    const out: ByteSource = ENC.encode(results.join('\n'))
     const io = new IOResult(stderr !== undefined ? { stderr } : {})
     return [out, io]
   }
@@ -251,11 +243,7 @@ async function rgCommand(
       }
     }
     if (allResults.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-    let finalResults = allResults
-    if (first.prefix !== '') {
-      finalResults = finalResults.map((r) => first.prefix + '/' + r.replace(/^\/+/, ''))
-    }
-    const out: ByteSource = ENC.encode(finalResults.join('\n'))
+    const out: ByteSource = ENC.encode(allResults.join('\n'))
     return [out, new IOResult()]
   }
 

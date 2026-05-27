@@ -14,12 +14,13 @@
 
 from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.cache.index import IndexCacheStore, IndexEntry
-from mirage.core.mongodb._client import list_collections, list_databases
+from mirage.core.mongodb._client import (database_exists, entity_exists,
+                                         list_collections, list_databases)
+from mirage.core.mongodb.scope import detect_scope
+from mirage.core.mongodb.types import (KIND_TO_DIR, KIND_TO_RESOURCE_TYPE,
+                                       RESOURCE_TYPE_DATABASE, EntityKind,
+                                       ScopeLevel)
 from mirage.types import PathSpec
-
-
-def _is_single_db(config) -> bool:
-    return config.databases is not None and len(config.databases) == 1
 
 
 async def readdir(
@@ -27,74 +28,50 @@ async def readdir(
     path: PathSpec,
     index: IndexCacheStore = None,
 ) -> list[str]:
-    """List directory contents.
-
-    Args:
-        accessor (MongoDBAccessor): mongodb accessor.
-        path (PathSpec | str): resource-relative path.
-        index (IndexCacheStore | None): index cache.
-        prefix (str): mount prefix for virtual index keys.
-    """
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
-    if isinstance(path, PathSpec):
-        prefix = path.prefix
-        path = path.directory if path.pattern else path.original
-    if prefix and path.startswith(prefix):
-        path = path[len(prefix):] or "/"
-    key = path.strip("/")
+    prefix = path.prefix or ""
+    scope = detect_scope(path)
+    virtual_key = (prefix + scope.resource_path).rstrip("/") or "/"
 
-    if key and any(p.startswith(".") for p in key.split("/")):
-        raise FileNotFoundError(path)
+    if scope.level == ScopeLevel.ROOT:
+        return await _list_root(accessor, virtual_key, index, prefix)
 
-    virtual_key = prefix + "/" + key if key else prefix or "/"
+    if scope.level == ScopeLevel.DATABASE:
+        if not await database_exists(accessor.client, accessor.config,
+                                     scope.database, accessor):
+            raise FileNotFoundError(path.original)
+        base = f"{prefix}/{scope.database}"
+        return [
+            f"{base}/database.json",
+            f"{base}/collections",
+            f"{base}/views",
+        ]
 
-    if not key:
-        if _is_single_db(accessor.config):
-            return await _readdir_collections(
-                accessor,
-                accessor.config.databases[0],
-                virtual_key,
-                index,
-                prefix,
-            )
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
-        dbs = await list_databases(accessor.client, accessor.config)
-        entries = []
-        names = []
-        for db_name in dbs:
-            entry = IndexEntry(
-                id=db_name,
-                name=db_name,
-                resource_type="mongodb/database",
-                vfs_name=db_name,
-            )
-            entries.append((db_name, entry))
-            names.append(f"{prefix}/{db_name}")
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
-        return names
+    if scope.level == ScopeLevel.KIND_DIR:
+        if not await database_exists(accessor.client, accessor.config,
+                                     scope.database, accessor):
+            raise FileNotFoundError(path.original)
+        return await _list_kind_dir(accessor, scope.database, scope.kind,
+                                    virtual_key, index, prefix)
 
-    parts = key.split("/")
+    if scope.level == ScopeLevel.ENTITY:
+        if not await entity_exists(accessor.client, accessor.config,
+                                   scope.database, scope.name, scope.kind,
+                                   accessor):
+            raise FileNotFoundError(path.original)
+        base = (f"{prefix}/{scope.database}/"
+                f"{KIND_TO_DIR[scope.kind]}/{scope.name}")
+        return [
+            f"{base}/schema.json",
+            f"{base}/documents.jsonl",
+        ]
 
-    if len(parts) == 1:
-        return await _readdir_collections(
-            accessor,
-            parts[0],
-            virtual_key,
-            index,
-            prefix,
-        )
-
-    raise FileNotFoundError(path)
+    raise FileNotFoundError(path.original)
 
 
-async def _readdir_collections(
+async def _list_root(
     accessor: MongoDBAccessor,
-    db_name: str,
     virtual_key: str,
     index: IndexCacheStore | None,
     prefix: str,
@@ -103,22 +80,48 @@ async def _readdir_collections(
         listing = await index.list_dir(virtual_key)
         if listing.entries is not None:
             return listing.entries
-    collections = await list_collections(accessor.client, db_name)
-    entries = []
-    names = []
-    for col_name in collections:
-        filename = f"{col_name}.jsonl"
+    dbs = await list_databases(accessor.client, accessor.config)
+    entries: list[tuple[str, IndexEntry]] = []
+    names: list[str] = []
+    for db_name in dbs:
         entry = IndexEntry(
-            id=col_name,
-            name=col_name,
-            resource_type="mongodb/collection",
-            vfs_name=filename,
+            id=db_name,
+            name=db_name,
+            resource_type=RESOURCE_TYPE_DATABASE,
+            vfs_name=db_name,
         )
-        entries.append((filename, entry))
-        full_path = f"{prefix}/{db_name}/{filename}"
-        if _is_single_db(accessor.config):
-            full_path = f"{prefix}/{filename}"
-        names.append(full_path)
+        entries.append((db_name, entry))
+        names.append(f"{prefix}/{db_name}")
     if index is not None:
         await index.set_dir(virtual_key, entries)
     return names
+
+
+async def _list_kind_dir(
+    accessor: MongoDBAccessor,
+    database: str,
+    kind: EntityKind,
+    virtual_key: str,
+    index: IndexCacheStore | None,
+    prefix: str,
+) -> list[str]:
+    if index is not None:
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
+    names = await list_collections(accessor.client, database, kind=kind)
+    base = f"{prefix}/{database}/{KIND_TO_DIR[kind]}"
+    entries: list[tuple[str, IndexEntry]] = []
+    out: list[str] = []
+    for name in names:
+        entry = IndexEntry(
+            id=name,
+            name=name,
+            resource_type=KIND_TO_RESOURCE_TYPE[kind],
+            vfs_name=name,
+        )
+        entries.append((name, entry))
+        out.append(f"{base}/{name}")
+    if index is not None:
+        await index.set_dir(virtual_key, entries)
+    return out

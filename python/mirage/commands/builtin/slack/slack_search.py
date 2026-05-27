@@ -19,8 +19,42 @@ from mirage.core.slack.search import search_messages
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
-SPEC = CommandSpec(options=(Option(long="--query",
-                                   value_kind=OperandKind.TEXT), ), )
+SPEC = CommandSpec(options=(
+    Option(
+        long="--query",
+        value_kind=OperandKind.TEXT,
+        description=("Slack search query "
+                     "(supports operators like 'from:@user', "
+                     "'in:#channel')"),
+    ),
+    Option(
+        long="--count",
+        value_kind=OperandKind.TEXT,
+        description="Results per page (1-100, default 20)",
+    ),
+    Option(
+        long="--page",
+        value_kind=OperandKind.TEXT,
+        description="1-based page number (default 1)",
+    ),
+), )
+
+
+def _parse_int(raw: object, name: str, default: int, lo: int,
+               hi: int | None) -> int:
+    if raw is None or raw == "":
+        return default
+    if not isinstance(raw, str):
+        raise ValueError(f"--{name} must be an integer")
+    try:
+        value = int(raw)
+    except ValueError as e:
+        raise ValueError(f"--{name} must be an integer") from e
+    if value < lo:
+        raise ValueError(f"--{name} must be >= {lo}")
+    if hi is not None and value > hi:
+        raise ValueError(f"--{name} must be <= {hi}")
+    return value
 
 
 @command("slack-search", resource="slack", spec=SPEC)
@@ -33,5 +67,10 @@ async def slack_search(
     query = _extra.get("query", "")
     if not query or not isinstance(query, str):
         raise ValueError("--query is required")
-    result = await search_messages(accessor.config, query)
+    count = _parse_int(_extra.get("count"), "count", default=20, lo=1, hi=100)
+    page = _parse_int(_extra.get("page"), "page", default=1, lo=1, hi=None)
+    result = await search_messages(accessor.config,
+                                   query,
+                                   count=count,
+                                   page=page)
     return result, IOResult()

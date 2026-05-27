@@ -23,7 +23,7 @@ export async function write(accessor: S3Accessor, path: PathSpec, data: Uint8Arr
     await client.send(
       new PutObjectCommand({
         Bucket: accessor.config.bucket,
-        Key: s3Key(raw),
+        Key: s3Key(raw, accessor.config),
         Body: data,
       }),
     )

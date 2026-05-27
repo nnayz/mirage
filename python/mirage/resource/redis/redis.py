@@ -44,6 +44,7 @@ from mirage.ops.redis import OPS as REDIS_OPS
 from mirage.resource.base import BaseResource
 from mirage.resource.redis.prompt import PROMPT
 from mirage.resource.redis.store import RedisStore
+from mirage.resource.secrets import REDACTED_SECRET
 from mirage.types import PathSpec, ResourceName
 
 _REDIS_OPS = {
@@ -71,7 +72,7 @@ _REDIS_OPS = {
 class RedisResource(BaseResource):
 
     name: str = ResourceName.REDIS
-    _index_ttl: float = 0
+    index_ttl: float = 0
     _ops: dict = _REDIS_OPS
     PROMPT: str = PROMPT
 
@@ -119,8 +120,10 @@ class RedisResource(BaseResource):
             client.close()
         return {
             "type": self.name,
-            "needs_override": True,
-            "redacted_fields": ["url"],
+            "config": {
+                "url": REDACTED_SECRET,
+                "key_prefix": prefix,
+            },
             "key_prefix": prefix,
             "files": files,
             "dirs": dirs,

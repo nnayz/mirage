@@ -14,88 +14,103 @@
 
 // S3 in VFS mode — agent-style workflow using only `ws.execute()`. No FUSE.
 //
-// This is the default path. Every shell command you run against `/s3/...`
-// is handled by Mirage's in-process executor: pipes, redirects, jq, awk, sed,
-// grep, wc, head, tail — all reimplemented to read/write the S3 bucket
-// through the resource's streamPath/readFile/writeFile methods.
+// Two mounts:
+//   /s3/    — unscoped, full bucket
+//   /deep/  — same bucket, scoped to subdata/subsubdata/ via keyPrefix.
+//             /deep/example.jsonl resolves to s3://<bucket>/subdata/subsubdata/example.jsonl
 //
-// Use when:
-//   - You don't need a real mountpoint on disk
-//   - You don't want to install FUSE
-//   - You want the lowest-friction S3 access from an agent
-//
-// Requires local MinIO on port 9000 (see s3_write.ts for the docker command).
+// Loads credentials from .env.development at the repo root.
 import { MountMode, S3Resource, Workspace, type S3Config } from '@struktoai/mirage-node'
-import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3'
+import dotenv from 'dotenv'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const config: S3Config = {
-  bucket: 'mirage-vfs-demo',
-  region: 'us-east-1',
-  endpoint: 'http://localhost:9000',
-  accessKeyId: 'minioadmin',
-  secretAccessKey: 'minioadmin',
-  forcePathStyle: true,
-}
+const __HERE = dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: resolve(__HERE, '../../../.env.development') })
 
-async function ensureBucket(): Promise<void> {
-  const sdk = new S3Client({
-    region: config.region,
-    endpoint: config.endpoint,
-    forcePathStyle: true,
-    credentials: { accessKeyId: config.accessKeyId!, secretAccessKey: config.secretAccessKey! },
-  })
-  try {
-    await sdk.send(new CreateBucketCommand({ Bucket: config.bucket }))
-  } catch (err) {
-    const code = (err as { name?: string }).name
-    if (code !== 'BucketAlreadyOwnedByYou' && code !== 'BucketAlreadyExists') throw err
-  } finally {
-    sdk.destroy()
+function baseConfig(): S3Config {
+  if (process.env.AWS_S3_BUCKET === undefined) {
+    throw new Error('AWS_S3_BUCKET not set (expected in .env.development)')
+  }
+  return {
+    bucket: process.env.AWS_S3_BUCKET,
+    region: process.env.AWS_DEFAULT_REGION ?? 'us-east-1',
+    ...(process.env.AWS_ACCESS_KEY_ID !== undefined &&
+    process.env.AWS_SECRET_ACCESS_KEY !== undefined
+      ? {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        }
+      : {}),
   }
 }
 
 async function main(): Promise<void> {
-  await ensureBucket()
-  const ws = new Workspace({ '/s3/': new S3Resource(config) }, { mode: MountMode.WRITE })
+  const cfg = baseConfig()
+  const deepCfg: S3Config = { ...cfg, keyPrefix: 'subdata/subsubdata/' }
+
+  const ws = new Workspace(
+    {
+      '/s3/': new S3Resource(cfg),
+      '/deep/': new S3Resource(deepCfg),
+    },
+    { mode: MountMode.READ },
+  )
+
+  const run = async (cmd: string): Promise<void> => {
+    const r = await ws.execute(cmd)
+    const out = r.stdoutText.trimEnd()
+    const lines = out ? out.split('\n') : []
+    const head = lines[0] ?? ''
+    const more = lines.length > 1 ? ` (+${String(lines.length - 1)} more)` : ''
+    console.log(`  $ ${cmd}`)
+    console.log(`    ${head.slice(0, 110)}${more}  [exit=${String(r.exitCode)}]`)
+  }
+
   try {
-    await ws.execute('rm -rf /s3/vfs-demo')
-    console.log('=== VFS MODE: every command runs in-process ===\n')
+    console.log(`=== VFS MODE — bucket: ${cfg.bucket} ===\n`)
+    console.log(`  keyPrefix on /deep = ${JSON.stringify(deepCfg.keyPrefix)}\n`)
 
-    // Seed a typical analytics workflow.
-    await ws.execute(`printf 'id,name,score\\n1,alice,87\\n2,bob,92\\n3,carol,78\\n' | tee /s3/vfs-demo/scores.csv`)
-    await ws.execute(`echo '{"user":"alice","tier":"gold"}' | tee /s3/vfs-demo/user.json`)
+    console.log('[listings]')
+    await run('ls /deep')
+    await run('ls -1 /deep')
 
-    console.log('--- cat ---')
-    const cat = await ws.execute('cat /s3/vfs-demo/scores.csv')
-    process.stdout.write(cat.stdoutText)
-    console.log()
+    console.log('\n[stat / exists]')
+    await run('stat /deep/example.jsonl')
+    await run('test -f /deep/example.jsonl && echo present || echo absent')
+    await run('test -f /deep/no-such.txt && echo present || echo absent')
 
-    console.log('--- awk: sum scores in column 3 ---')
-    const sum = await ws.execute(
-      `awk -F, 'NR>1 { s += $3 } END { print s }' /s3/vfs-demo/scores.csv`,
-    )
-    process.stdout.write(sum.stdoutText)
-    console.log()
+    console.log('\n[read]')
+    await run('head -n 1 /deep/example.jsonl')
+    await run('wc -l /deep/example.jsonl')
+    await run('wc -c /deep/example.json')
 
-    console.log('--- jq: extract user tier ---')
-    const tier = await ws.execute('jq .tier /s3/vfs-demo/user.json')
-    process.stdout.write(tier.stdoutText)
-    console.log()
+    console.log('\n[grep / rg]')
+    await run('grep -c mirage /deep/example.jsonl')
+    await run('grep -m 1 mirage /deep/example.jsonl')
+    await run('rg -l mirage /deep')
+    await run('rg -c mirage /deep/example.json')
 
-    console.log('--- grep + head pipeline ---')
-    const grep = await ws.execute(
-      "grep -i '^[12]' /s3/vfs-demo/scores.csv | head -n 5",
-    )
-    process.stdout.write(grep.stdoutText)
-    console.log()
+    console.log('\n[find / glob]')
+    await run("find /deep -name '*.json'")
+    await run('find /deep -type f | wc -l')
+    await run('echo /deep/*.json')
 
-    console.log('--- wc -l across files ---')
-    const wc = await ws.execute('wc -l /s3/vfs-demo/*.csv')
-    process.stdout.write(wc.stdoutText)
-    console.log()
+    console.log('\n[jq]')
+    await run('jq .metadata.version /deep/example.json')
 
-    // Cleanup.
-    await ws.execute('rm -rf /s3/vfs-demo')
+    console.log('\n[pipelines]')
+    await run('cat /deep/example.jsonl | grep mirage | wc -l')
+    await run('grep -m 1 mirage /deep/example.jsonl && echo found')
+
+    console.log('\n[parity: /deep vs /s3/subdata/subsubdata/]')
+    const a = (await ws.execute('grep -c mirage /deep/example.jsonl')).stdoutText.trim()
+    const b = (
+      await ws.execute('grep -c mirage /s3/subdata/subsubdata/example.jsonl')
+    ).stdoutText.trim()
+    console.log(`  /deep/example.jsonl                       grep -c: ${a}`)
+    console.log(`  /s3/subdata/subsubdata/example.jsonl      grep -c: ${b}`)
+    console.log(`  parity: ${String(a === b)}`)
   } finally {
     await ws.close()
   }

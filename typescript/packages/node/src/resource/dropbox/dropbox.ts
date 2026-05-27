@@ -13,15 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  BaseResource,
   type FileStat,
   DROPBOX_COMMANDS,
   DROPBOX_PROMPT,
   DROPBOX_VFS_OPS,
   DropboxAccessor,
   DropboxTokenManager,
-  type IndexCacheStore,
   PathSpec,
-  RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
@@ -35,21 +34,19 @@ import { redactDropboxConfig, type DropboxConfig, type DropboxConfigRedacted } f
 
 export interface DropboxResourceState {
   type: string
-  needsOverride: boolean
-  redactedFields: readonly string[]
   config: DropboxConfigRedacted
 }
 
-export class DropboxResource implements Resource {
+export class DropboxResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.DROPBOX
   readonly isRemote: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = DROPBOX_PROMPT
   readonly config: DropboxConfig
   readonly accessor: DropboxAccessor
-  readonly index: IndexCacheStore
 
   constructor(config: DropboxConfig) {
+    super()
     this.config = config
     const tm = new DropboxTokenManager({
       clientId: config.clientId,
@@ -58,7 +55,6 @@ export class DropboxResource implements Resource {
       ...(config.refreshFn !== undefined ? { refreshFn: config.refreshFn } : {}),
     })
     this.accessor = new DropboxAccessor({ tokenManager: tm })
-    this.index = new RAMIndexCacheStore({ ttl: 86_400 })
   }
 
   open(): Promise<void> {
@@ -115,8 +111,6 @@ export class DropboxResource implements Resource {
   getState(): Promise<DropboxResourceState> {
     return Promise.resolve({
       type: this.kind,
-      needsOverride: true,
-      redactedFields: ['clientSecret', 'refreshToken'],
       config: redactDropboxConfig(this.config),
     })
   }
