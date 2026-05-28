@@ -12,37 +12,111 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from fnmatch import fnmatch
+
+from opendal.exceptions import NotFound
+from opendal.types import EntryMode
+
 from mirage.accessor.hf_buckets import HfBucketsAccessor
-from mirage.cache.index import IndexCacheStore
-from mirage.core.hf_buckets._client import (HfBucketsClient, _prefix,
-                                            _strip_prefix, _tree_url)
 from mirage.types import PathSpec
 
 
 async def find(
     accessor: HfBucketsAccessor,
     path: PathSpec,
-    index: IndexCacheStore | None = None,
+    name: str | None = None,
+    type: str | None = None,
+    min_size: int | None = None,
+    max_size: int | None = None,
+    maxdepth: int | None = None,
+    name_exclude: str | None = None,
+    or_names: list[str] | None = None,
+    mtime_min: float | None = None,
+    mtime_max: float | None = None,
+    iname: str | None = None,
+    path_pattern: str | None = None,
+    mindepth: int | None = None,
 ) -> list[str]:
     if isinstance(path, str):
         path = PathSpec.from_str_path(path)
     target = path.strip_prefix
-    config = accessor.config
-    pfx = _prefix(target, config).rstrip("/")
-    client = HfBucketsClient(config)
-    bucket_id = await client.bucket_id()
-    url = _tree_url(config.endpoint, bucket_id, pfx)
-    # TODO: confirm HF tree recursive param against real API.
-    async with await client.session() as session:
-        async with session.get(url, params={"recursive": "true"}) as resp:
-            resp.raise_for_status()
-            entries_json = await resp.json()
+    pfx = target.strip("/")
+    scan_path = pfx + "/" if pfx else "/"
+    base = "/" + pfx if pfx else "/"
+    base_depth = 0 if base == "/" else base.count("/")
+
+    op = accessor.operator()
     results: list[str] = []
-    for entry in entries_json:
-        if entry.get("type") == "directory":
-            continue
-        bucket_key = entry.get("path", "")
-        if not bucket_key:
-            continue
-        results.append("/" + _strip_prefix(bucket_key, config))
-    return sorted(results)
+    seen_dirs: set[str] = set()
+    try:
+        async for entry in await op.scan(scan_path):
+            rel = entry.path
+            if not rel:
+                continue
+            is_dir = (rel.endswith("/") or getattr(entry.metadata, "mode",
+                                                   None) == EntryMode.Dir)
+            entry_path = "/" + rel.rstrip("/").lstrip("/")
+            kind = "d" if is_dir else "f"
+
+            file_entries: list[tuple[str, str]] = [(entry_path, kind)]
+            if not is_dir:
+                parent = entry_path.rsplit("/", 1)[0] or "/"
+                while parent and parent != base and parent != "/":
+                    if parent not in seen_dirs:
+                        seen_dirs.add(parent)
+                        file_entries.append((parent, "d"))
+                    parent = parent.rsplit("/", 1)[0] or "/"
+
+            for ep, k in file_entries:
+                en = ep.rsplit("/", 1)[-1]
+
+                if type == "f" or type == "file":
+                    if k != "f":
+                        continue
+                elif type == "d" or type == "directory":
+                    if k != "d":
+                        continue
+
+                if or_names:
+                    if not any(fnmatch(en, pat) for pat in or_names):
+                        continue
+                elif name is not None and not fnmatch(en, name):
+                    continue
+
+                if iname is not None and not fnmatch(en.lower(),
+                                                     iname.lower()):
+                    continue
+
+                if path_pattern is not None and not fnmatch(ep, path_pattern):
+                    continue
+
+                if name_exclude is not None and fnmatch(en, name_exclude):
+                    continue
+
+                depth = ep.count("/") - base_depth
+                if maxdepth is not None and depth > maxdepth:
+                    continue
+                if mindepth is not None and depth < mindepth:
+                    continue
+
+                if k == "f" and (min_size is not None or max_size is not None):
+                    size = getattr(entry.metadata, "content_length", 0) or 0
+                    if min_size is not None and size < min_size:
+                        continue
+                    if max_size is not None and size > max_size:
+                        continue
+
+                if mtime_min is not None or mtime_max is not None:
+                    lm = getattr(entry.metadata, "last_modified", None)
+                    if lm is None:
+                        continue
+                    mt = lm.timestamp()
+                    if mtime_min is not None and mt < mtime_min:
+                        continue
+                    if mtime_max is not None and mt > mtime_max:
+                        continue
+
+                results.append(ep)
+    except NotFound:
+        return []
+    return sorted(set(results))
