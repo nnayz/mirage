@@ -1,16 +1,16 @@
+from opendal.exceptions import NotFound
+
 from mirage.accessor.nextcloud import NextcloudAccessor
-from mirage.core.nextcloud._client import _auth, _resolve_url, session
 from mirage.types import PathSpec
 
 
 async def rmdir(accessor: NextcloudAccessor, path: PathSpec) -> None:
     if isinstance(path, str):
-        path = PathSpec(original=path, directory=path)
-    key = path.strip_prefix.rstrip("/") + "/"
-    config = accessor.config
-    url = _resolve_url(config, key)
-    async with session(config) as s:
-        async with s.delete(url, auth=_auth(config)) as resp:
-            if resp.status == 404:
-                raise FileNotFoundError(key)
-            resp.raise_for_status()
+        path = PathSpec.from_str_path(path)
+    raw = path.strip_prefix
+    key = raw.strip("/") + "/"
+    op = accessor.operator()
+    try:
+        await op.delete(key)
+    except NotFound as exc:
+        raise FileNotFoundError(raw) from exc

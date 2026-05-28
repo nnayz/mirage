@@ -1,30 +1,55 @@
+import time
 from collections.abc import AsyncIterator
+
+from opendal.exceptions import NotFound
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.core.nextcloud._client import _auth, _resolve_url, session
-from mirage.observe.context import record_stream
+from mirage.core.nextcloud.constants import DEFAULT_CHUNK_SIZE
+from mirage.observe.context import record, record_stream
 from mirage.types import PathSpec
+
+
+async def range_read(accessor: NextcloudAccessor, path: PathSpec, start: int,
+                     end: int) -> bytes:
+    if isinstance(path, str):
+        path = PathSpec.from_str_path(path)
+    raw = path.strip_prefix
+    key = raw.lstrip("/")
+    op = accessor.operator()
+    start_ms = int(time.monotonic() * 1000)
+    try:
+        async with await op.open(key, "rb") as f:
+            if start:
+                await f.seek(start)
+            data = await f.read(end - start)
+    except NotFound as exc:
+        raise FileNotFoundError(raw) from exc
+    record("read", raw, "nextcloud", len(data), start_ms)
+    return data
 
 
 async def read_stream(
     accessor: NextcloudAccessor,
     path: PathSpec,
     index: IndexCacheStore = None,
-    chunk_size: int = 8192,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> AsyncIterator[bytes]:
     if isinstance(path, str):
-        path = PathSpec(original=path, directory=path)
-    key = path.strip_prefix
-    config = accessor.config
-    url = _resolve_url(config, key)
-    rec = record_stream("read", key, "nextcloud")
-    async with session(config) as s:
-        async with s.get(url, auth=_auth(config)) as resp:
-            if resp.status in (404, 409):
-                raise FileNotFoundError(key)
-            resp.raise_for_status()
-            async for chunk in resp.content.iter_chunked(chunk_size):
+        path = PathSpec.from_str_path(path)
+    raw = path.strip_prefix
+    key = raw.lstrip("/")
+    op = accessor.operator()
+    rec = record_stream("read", raw, "nextcloud")
+    try:
+        async with await op.open(key, "rb") as f:
+            while True:
+                chunk = await f.read(chunk_size)
+                if not chunk:
+                    break
+                chunk_bytes = bytes(chunk)
                 if rec is not None:
-                    rec.bytes += len(chunk)
-                yield chunk
+                    rec.bytes += len(chunk_bytes)
+                yield chunk_bytes
+    except NotFound as exc:
+        raise FileNotFoundError(raw) from exc

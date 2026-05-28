@@ -1,16 +1,15 @@
-import fnmatch
+from fnmatch import fnmatch
+
+from opendal.exceptions import NotFound
+from opendal.types import EntryMode
 
 from mirage.accessor.nextcloud import NextcloudAccessor
-from mirage.cache.index import IndexCacheStore
-from mirage.core.nextcloud.readdir import readdir
-from mirage.core.nextcloud.stat import stat
 from mirage.types import PathSpec
 
 
 async def find(
     accessor: NextcloudAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
     name: str | None = None,
     type: str | None = None,
     min_size: int | None = None,
@@ -25,119 +24,85 @@ async def find(
     mindepth: int | None = None,
 ) -> list[str]:
     if isinstance(path, str):
-        path = PathSpec(original=path, directory=path)
+        path = PathSpec.from_str_path(path)
+    target = path.strip_prefix
+    pfx = target.strip("/")
+    scan_path = pfx + "/" if pfx else "/"
+    base = "/" + pfx if pfx else "/"
+    base_depth = 0 if base == "/" else base.count("/")
+
+    op = accessor.operator()
     results: list[str] = []
-    await _find_recursive(
-        accessor,
-        path,
-        index,
-        name=name,
-        type=type,
-        min_size=min_size,
-        max_size=max_size,
-        maxdepth=maxdepth,
-        name_exclude=name_exclude,
-        or_names=or_names,
-        iname=iname,
-        path_pattern=path_pattern,
-        mindepth=mindepth,
-        depth=0,
-        results=results,
-    )
-    return sorted(results)
-
-
-async def _find_recursive(
-    accessor: NextcloudAccessor,
-    path: PathSpec,
-    index: IndexCacheStore | None,
-    name: str | None,
-    type: str | None,
-    min_size: int | None,
-    max_size: int | None,
-    maxdepth: int | None,
-    name_exclude: str | None,
-    or_names: list[str] | None,
-    iname: str | None,
-    path_pattern: str | None,
-    mindepth: int | None,
-    depth: int,
-    results: list[str],
-) -> None:
+    seen_dirs: set[str] = set()
     try:
-        entries = await readdir(accessor, path, index)
-    except (FileNotFoundError, ValueError):
-        return
+        async for entry in await op.scan(scan_path):
+            rel = entry.path
+            if not rel:
+                continue
+            is_dir = (rel.endswith("/") or getattr(entry.metadata, "mode",
+                                                   None) == EntryMode.Dir)
+            entry_path = "/" + rel.rstrip("/").lstrip("/")
+            kind = "d" if is_dir else "f"
 
-    for entry in entries:
-        entry_spec = PathSpec(original=entry,
-                              directory=entry,
-                              resolved=False,
-                              prefix=path.prefix)
-        try:
-            s = await stat(accessor, entry_spec, index)
-        except (FileNotFoundError, ValueError):
-            continue
+            file_entries: list[tuple[str, str]] = [(entry_path, kind)]
+            if not is_dir:
+                parent = entry_path.rsplit("/", 1)[0] or "/"
+                while parent and parent != base and parent != "/":
+                    if parent not in seen_dirs:
+                        seen_dirs.add(parent)
+                        file_entries.append((parent, "d"))
+                    parent = parent.rsplit("/", 1)[0] or "/"
 
-        entry_name = s.name
-        full_path = entry
+            for ep, k in file_entries:
+                en = ep.rsplit("/", 1)[-1]
 
-        if mindepth is not None and depth < mindepth:
-            pass
-        else:
-            if or_names:
-                if not any(fnmatch.fnmatch(entry_name, p) for p in or_names):
-                    if s.type and s.type.value != "directory":
+                if type == "f" or type == "file":
+                    if k != "f":
                         continue
-                else:
-                    pass
-            elif name and not fnmatch.fnmatch(entry_name, name):
-                if s.type and s.type.value != "directory":
-                    pass
-                else:
-                    pass
+                elif type == "d" or type == "directory":
+                    if k != "d":
+                        continue
 
-            include = True
-            if or_names and not any(
-                    fnmatch.fnmatch(entry_name, p) for p in or_names):
-                include = False
-            elif name and not fnmatch.fnmatch(entry_name, name):
-                include = False
-            if iname is not None and not fnmatch.fnmatch(
-                    entry_name.lower(), iname.lower()):
-                include = False
-            if name_exclude and fnmatch.fnmatch(entry_name, name_exclude):
-                include = False
-            if path_pattern is not None and not fnmatch.fnmatch(
-                    full_path, path_pattern):
-                include = False
-            if type == "file" and s.type and s.type.value == "directory":
-                include = False
-            if type == "directory" and s.type and s.type.value != "directory":
-                include = False
-            if min_size is not None and (s.size or 0) < min_size:
-                include = False
-            if max_size is not None and (s.size or 0) > max_size:
-                include = False
-            if include:
-                results.append(full_path)
+                if or_names:
+                    if not any(fnmatch(en, pat) for pat in or_names):
+                        continue
+                elif name is not None and not fnmatch(en, name):
+                    continue
 
-        if s.type and s.type.value == "directory":
-            if maxdepth is None or depth < maxdepth:
-                await _find_recursive(
-                    accessor,
-                    entry_spec,
-                    index,
-                    name=name,
-                    type=type,
-                    min_size=min_size,
-                    max_size=max_size,
-                    maxdepth=maxdepth,
-                    name_exclude=name_exclude,
-                    or_names=or_names,
-                    iname=iname,
-                    path_pattern=path_pattern,
-                    mindepth=mindepth,
-                    depth=depth + 1,
-                    results=results,
-                )
+                if iname is not None and not fnmatch(en.lower(),
+                                                     iname.lower()):
+                    continue
+
+                if path_pattern is not None and not fnmatch(ep, path_pattern):
+                    continue
+
+                if name_exclude is not None and fnmatch(en, name_exclude):
+                    continue
+
+                depth = ep.count("/") - base_depth
+                if maxdepth is not None and depth > maxdepth:
+                    continue
+                if mindepth is not None and depth < mindepth:
+                    continue
+
+                if k == "f" and (min_size is not None or max_size is not None):
+                    size = getattr(entry.metadata, "content_length", 0) or 0
+                    if min_size is not None and size < min_size:
+                        continue
+                    if max_size is not None and size > max_size:
+                        continue
+
+                if mtime_min is not None or mtime_max is not None:
+                    lm = getattr(entry.metadata, "last_modified", None)
+                    if lm is None:
+                        continue
+                    mt = lm.timestamp()
+                    if mtime_min is not None and mt < mtime_min:
+                        continue
+                    if mtime_max is not None and mt > mtime_max:
+                        continue
+
+                results.append(ep)
+    except NotFound:
+        return []
+    return sorted(set(results))

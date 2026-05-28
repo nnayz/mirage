@@ -1,26 +1,25 @@
 import time
 
+from opendal.exceptions import NotFound
+
 from mirage.accessor.nextcloud import NextcloudAccessor
-from mirage.core.nextcloud._client import _auth, _resolve_url, session
+from mirage.cache.index import IndexCacheStore
 from mirage.observe.context import record
 from mirage.types import PathSpec
 
 
-# TODO: support streaming uploads. Today this buffers the whole payload before
-# PUT. Two options: (1) accept AsyncIterator[bytes] and pass it as `data=` --
-# aiohttp emits Transfer-Encoding: chunked; works against any WebDAV server.
-# (2) implement Nextcloud's chunked-upload protocol (PUT chunks to
-# remote.php/dav/uploads/<user>/<id>/<n>, then MOVE to destination) for
-# resumable uploads of very large files.
-async def write_bytes(accessor: NextcloudAccessor, path: PathSpec,
-                      data: bytes) -> None:
+async def write_bytes(accessor: NextcloudAccessor,
+                      path: PathSpec,
+                      data: bytes,
+                      index: IndexCacheStore = None) -> None:
     if isinstance(path, str):
-        path = PathSpec(original=path, directory=path)
-    key = path.strip_prefix
-    config = accessor.config
-    url = _resolve_url(config, key)
+        path = PathSpec.from_str_path(path)
+    raw = path.strip_prefix
+    key = raw.lstrip("/")
+    op = accessor.operator()
     start_ms = int(time.monotonic() * 1000)
-    async with session(config) as s:
-        async with s.put(url, auth=_auth(config), data=data) as resp:
-            resp.raise_for_status()
-    record("write", key, "nextcloud", len(data), start_ms)
+    try:
+        await op.write(key, data)
+    except NotFound as exc:
+        raise FileNotFoundError(raw) from exc
+    record("write", path.original, "nextcloud", len(data), start_ms)

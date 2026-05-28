@@ -1,68 +1,51 @@
 import logging
 
+from opendal.exceptions import NotFound
+
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore, IndexEntry
-from mirage.core.nextcloud._client import (_auth, _resolve_url, parse_propfind,
-                                           session)
 from mirage.core.nextcloud.constants import SCOPE_ERROR
 from mirage.types import PathSpec
 
 logger = logging.getLogger(__name__)
 
 
-def _strip_prefix(path: str, prefix: str) -> str:
-    if prefix and path.startswith(prefix):
-        return path[len(prefix):] or "/"
-    return path
-
-
 async def readdir(accessor: NextcloudAccessor, path: PathSpec,
                   index: IndexCacheStore) -> list[str]:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
-    prefix = path.prefix if isinstance(path, PathSpec) else ""
-    raw_path = path.directory if path.pattern else path.original
-    raw_path = _strip_prefix(raw_path, prefix)
-
-    config = accessor.config
-    virtual_key = (prefix + raw_path).rstrip("/") or "/"
+    prefix = path.prefix
+    target = path.directory if path.pattern else path.original
+    if prefix and target.startswith(prefix):
+        rest = target[len(prefix):]
+        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
+            target = rest or "/"
+    virtual_key = (prefix + target if prefix else target).rstrip("/") or "/"
     listing = await index.list_dir(virtual_key)
     if listing.entries is not None:
         return listing.entries
-
-    url = _resolve_url(config, raw_path)
-    async with session(config) as s:
-        async with s.request(
-                "PROPFIND",
-                url,
-                auth=_auth(config),
-                headers={
-                    "Depth": "1",
-                    "Content-Type": "application/xml"
-                },
-        ) as resp:
-            if resp.status == 404:
-                raise FileNotFoundError(raw_path)
-            resp.raise_for_status()
-            xml_text = await resp.text()
-
-    entries = parse_propfind(xml_text, config.url.rstrip("/"))
+    list_path = target.strip("/")
+    list_path = list_path + "/" if list_path else "/"
+    op = accessor.operator()
     names: list[str] = []
     dir_keys: set[str] = set()
     sizes: dict[str, int | None] = {}
-
-    for entry in entries:
-        rel = entry["rel"]
-        if rel == raw_path.rstrip("/") or rel == "/":
-            continue
-        key = rel if rel.startswith("/") else "/" + rel
-        names.append(key)
-        if entry["is_dir"]:
-            dir_keys.add(key)
-        else:
-            sizes[key] = entry["size"]
-
-    names = sorted(set(names))
+    try:
+        async for entry in await op.list(list_path):
+            relative = entry.path
+            if not relative or relative == list_path:
+                continue
+            is_dir = relative.endswith("/")
+            base = "/" + relative.rstrip("/")
+            names.append(base)
+            if is_dir:
+                dir_keys.add(base)
+            else:
+                meta = entry.metadata
+                sizes[base] = meta.content_length if meta else None
+    except NotFound as exc:
+        raise FileNotFoundError(target) from exc
+    names = sorted(names)
     if len(names) > SCOPE_ERROR:
         logger.warning(
             "nextcloud readdir: %s returned %d entries (limit %d)",
@@ -70,9 +53,8 @@ async def readdir(accessor: NextcloudAccessor, path: PathSpec,
             len(names),
             SCOPE_ERROR,
         )
-
     virtual_entries = sorted((prefix + e if prefix else e) for e in names)
-    index_entries = []
+    index_entries: list[tuple[str, IndexEntry]] = []
     for e in names:
         name = e.rsplit("/", 1)[-1]
         if e in dir_keys:

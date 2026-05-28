@@ -4,9 +4,8 @@ icon: cloud
 ---
 The Nextcloud resource mounts a [WebDAV](http://www.webdav.org/specs/rfc4918.html)
 server (Nextcloud, ownCloud, Hetzner Storage Share, or any generic WebDAV
-endpoint) at some prefix such as `/nc/`. Reads go directly over HTTP with
-`aiohttp` for true async streaming, including HTTP `Range` requests for
-partial reads.
+endpoint) at some prefix such as `/nc/`. Reads are async and streaming, with
+range requests for partial reads.
 
 For credential setup, see [Nextcloud Setup](/home/setup/nextcloud).
 
@@ -238,14 +237,13 @@ tabular text (CSV) for processing.
 
 ## Streaming
 
-- **Reads**: chunked via `aiohttp` `iter_chunked(8192)`. Downstream
-  commands like `head -n 1` early-cancel, so you only pay for the first
-  chunk over the wire.
-- **Range reads**: `head -c BYTES` and other partial reads use HTTP
-  `Range: bytes=...`, which Nextcloud and most WebDAV servers honor.
-- **Writes**: currently buffer the full payload before `PUT`. Streaming
-  uploads (chunked transfer encoding, or Nextcloud's `uploads/` resumable
-  protocol) are a known follow-up.
+- **Reads**: streamed in chunks. Downstream commands like `head -n 1`
+  early-cancel, so you only pay for the first chunk over the wire.
+- **Range reads**: `head -c BYTES` and other partial reads issue HTTP
+  `Range` requests that Nextcloud and most WebDAV servers honor.
+- **Writes**: buffer the payload before upload. Streaming uploads
+  (Nextcloud's `uploads/` resumable protocol) are a possible future
+  follow-up.
 
 ## Use Cases
 

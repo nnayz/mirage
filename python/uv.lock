@@ -3384,6 +3384,7 @@ dependencies = [
     { name = "jq" },
     { name = "mfusepy" },
     { name = "numpy" },
+    { name = "opendal" },
     { name = "orjson" },
     { name = "pillow" },
     { name = "pyjwt", extra = ["crypto"] },
@@ -3415,7 +3416,6 @@ all = [
     { name = "motor" },
     { name = "openai" },
     { name = "openai-agents" },
-    { name = "opendal" },
     { name = "openhands-sdk" },
     { name = "openhands-tools" },
     { name = "pandas" },
@@ -3466,9 +3466,6 @@ gcs = [
 hdf5 = [
     { name = "h5py" },
     { name = "tables" },
-]
-hf-buckets = [
-    { name = "opendal" },
 ]
 langfuse = [
     { name = "langfuse" },
@@ -3567,7 +3564,6 @@ requires-dist = [
     { name = "mirage-ai", extras = ["fuse"], marker = "extra == 'all'" },
     { name = "mirage-ai", extras = ["gcs"], marker = "extra == 'all'" },
     { name = "mirage-ai", extras = ["hdf5"], marker = "extra == 'all'" },
-    { name = "mirage-ai", extras = ["hf-buckets"], marker = "extra == 'all'" },
     { name = "mirage-ai", extras = ["langfuse"], marker = "extra == 'all'" },
     { name = "mirage-ai", extras = ["mongodb"], marker = "extra == 'all'" },
     { name = "mirage-ai", extras = ["oci"], marker = "extra == 'all'" },
@@ -3587,7 +3583,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.4.3" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=2.30.0" },
     { name = "openai-agents", marker = "extra == 'openai'", specifier = ">=0.14.7" },
-    { name = "opendal", marker = "extra == 'hf-buckets'", specifier = ">=0.47.1" },
+    { name = "opendal", specifier = ">=0.47.1" },
     { name = "openhands-sdk", marker = "extra == 'openhands'", specifier = ">=1.18.0" },
     { name = "openhands-tools", marker = "extra == 'openhands'", specifier = ">=1.18.0" },
     { name = "orjson", specifier = ">=3.11" },
@@ -3613,7 +3609,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.41.0" },
 ]
-provides-extras = ["s3", "r2", "gcs", "oci", "databricks", "hf-buckets", "ssh", "fuse", "mongodb", "postgres", "redis", "email", "parquet", "hdf5", "pdf", "audio", "langfuse", "anthropic", "openai", "pydantic-ai", "deepagents", "openhands", "camel", "daytona", "all"]
+provides-extras = ["s3", "r2", "gcs", "oci", "databricks", "ssh", "fuse", "mongodb", "postgres", "redis", "email", "parquet", "hdf5", "pdf", "audio", "langfuse", "anthropic", "openai", "pydantic-ai", "deepagents", "openhands", "camel", "daytona", "all"]
 
 [package.metadata.requires-dev]
 dev = [

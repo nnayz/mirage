@@ -1,70 +1,50 @@
+from opendal.exceptions import NotFound
+
 from mirage.accessor.nextcloud import NextcloudAccessor
-from mirage.cache.index import IndexCacheStore
-from mirage.core.nextcloud.readdir import readdir
-from mirage.core.nextcloud.stat import stat
-from mirage.types import FileType, PathSpec
+from mirage.types import PathSpec
 
 
-async def _walk(
-    accessor: NextcloudAccessor,
-    path: PathSpec,
-    index: IndexCacheStore | None,
-    entries: list[tuple[str, int]],
-) -> int:
-    try:
-        names = await readdir(accessor, path, index)
-    except (FileNotFoundError, ValueError):
-        return 0
+async def du(accessor: NextcloudAccessor, path: PathSpec) -> int:
+    if isinstance(path, str):
+        path = PathSpec.from_str_path(path)
+    target = path.strip_prefix
+    pfx = target.strip("/")
+    scan_path = pfx + "/" if pfx else "/"
+    op = accessor.operator()
     total = 0
-    for entry in names:
-        entry_spec = PathSpec(original=entry,
-                              directory=entry,
-                              resolved=False,
-                              prefix=path.prefix)
-        try:
-            s = await stat(accessor, entry_spec, index)
-        except (FileNotFoundError, ValueError):
-            continue
-        if s.type == FileType.DIRECTORY:
-            sub = await _walk(accessor, entry_spec, index, entries)
-            total += sub
-        else:
-            sz = s.size or 0
-            entries.append((entry, sz))
-            total += sz
+    try:
+        async for entry in await op.scan(scan_path):
+            if entry.path.endswith("/"):
+                continue
+            meta = entry.metadata
+            if meta is not None:
+                total += int(meta.content_length or 0)
+    except NotFound:
+        return 0
     return total
 
 
-async def du(accessor: NextcloudAccessor,
-             path: PathSpec,
-             index: IndexCacheStore | None = None) -> int:
+async def du_all(accessor: NextcloudAccessor,
+                 path: PathSpec) -> list[tuple[str, int]]:
     if isinstance(path, str):
-        path = PathSpec(original=path, directory=path)
+        path = PathSpec.from_str_path(path)
+    target = path.strip_prefix
+    pfx = target.strip("/")
+    scan_path = pfx + "/" if pfx else "/"
+    op = accessor.operator()
+    results: list[tuple[str, int]] = []
+    total = 0
     try:
-        s = await stat(accessor, path, index)
-    except (FileNotFoundError, ValueError):
-        return 0
-    if s.type != FileType.DIRECTORY:
-        return s.size or 0
-    return await _walk(accessor, path, index, [])
-
-
-async def du_all(
-        accessor: NextcloudAccessor,
-        path: PathSpec,
-        index: IndexCacheStore | None = None) -> list[tuple[str, int]]:
-    if isinstance(path, str):
-        path = PathSpec(original=path, directory=path)
-    entries: list[tuple[str, int]] = []
-    try:
-        s = await stat(accessor, path, index)
-    except (FileNotFoundError, ValueError):
-        return entries
-    if s.type != FileType.DIRECTORY:
-        sz = s.size or 0
-        entries.append((path.original, sz))
-        entries.append((path.original, sz))
-        return entries
-    total = await _walk(accessor, path, index, entries)
-    entries.append((path.original, total))
-    return entries
+        async for entry in await op.scan(scan_path):
+            rel = entry.path
+            if not rel or rel.endswith("/"):
+                continue
+            meta = entry.metadata
+            sz = int(meta.content_length or 0) if meta is not None else 0
+            results.append(("/" + rel.lstrip("/"), sz))
+            total += sz
+    except NotFound:
+        pass
+    results.sort()
+    results.append((target, total))
+    return results

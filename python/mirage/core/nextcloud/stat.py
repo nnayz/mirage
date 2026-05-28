@@ -1,30 +1,24 @@
+from opendal.exceptions import NotFound
+from opendal.types import EntryMode
+
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.core.nextcloud._client import (_auth, _resolve_url, parse_propfind,
-                                           session)
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.filetype import guess_type
-
-
-def _strip_prefix(path: str, prefix: str) -> str:
-    if prefix and path.startswith(prefix):
-        return path[len(prefix):] or "/"
-    return path
 
 
 async def stat(accessor: NextcloudAccessor,
                path: PathSpec,
                index: IndexCacheStore = None) -> FileStat:
     if isinstance(path, str):
-        path = PathSpec(original=path, directory=path)
-    original_prefix = path.prefix if isinstance(path, PathSpec) else ""
-    raw_path = path.original if isinstance(path, PathSpec) else path
-    raw_path = _strip_prefix(raw_path, original_prefix)
-
-    stripped = raw_path.strip("/")
+        path = PathSpec.from_str_path(path)
+    original_prefix = path.prefix
+    raw = path.original
+    if original_prefix and raw.startswith(original_prefix):
+        raw = raw[len(original_prefix):] or "/"
+    stripped = raw.strip("/")
     if not stripped:
         return FileStat(name="/", type=FileType.DIRECTORY)
-
     if index is not None:
         virtual_key = (original_prefix + "/" +
                        stripped if original_prefix else "/" + stripped)
@@ -33,46 +27,36 @@ async def stat(accessor: NextcloudAccessor,
             entry = lookup.entry
             if entry.resource_type == "folder":
                 return FileStat(name=entry.name, type=FileType.DIRECTORY)
-            return FileStat(
-                name=entry.name,
-                size=entry.size,
-                type=guess_type(entry.name),
-            )
+            return FileStat(name=entry.name,
+                            size=entry.size,
+                            type=guess_type(entry.name))
         parent = virtual_key.rsplit("/", 1)[0] or "/"
         parent_listing = await index.list_dir(parent)
         if parent_listing.entries is not None:
-            raise FileNotFoundError(raw_path)
-
-    config = accessor.config
-    url = _resolve_url(config, raw_path)
-    async with session(config) as s:
-        async with s.request(
-                "PROPFIND",
-                url,
-                auth=_auth(config),
-                headers={
-                    "Depth": "0",
-                    "Content-Type": "application/xml"
-                },
-        ) as resp:
-            if resp.status == 404:
-                raise FileNotFoundError(raw_path)
-            resp.raise_for_status()
-            xml_text = await resp.text()
-
-    entries = parse_propfind(xml_text, config.url.rstrip("/"))
-    if not entries:
-        raise FileNotFoundError(raw_path)
-
-    entry = entries[0]
-    name = raw_path.rstrip("/").rsplit("/", 1)[-1] or "/"
-    if entry["is_dir"]:
-        return FileStat(name=name, type=FileType.DIRECTORY)
-    return FileStat(
-        name=name,
-        size=entry["size"],
-        modified=entry["modified"],
-        fingerprint=entry["etag"] or None,
-        type=guess_type(name),
-        extra={"etag": entry["etag"] or ""},
-    )
+            raise FileNotFoundError(raw)
+    op = accessor.operator()
+    key = stripped
+    try:
+        md = await op.stat(key)
+    except NotFound:
+        md = None
+    if md is not None and md.mode != EntryMode.Dir:
+        modified = md.last_modified.isoformat() if md.last_modified else None
+        return FileStat(
+            name=stripped.rsplit("/", 1)[-1],
+            size=md.content_length,
+            modified=modified,
+            type=guess_type(raw),
+            fingerprint=md.etag,
+            extra={"etag": md.etag} if md.etag else {},
+        )
+    try:
+        md_dir = await op.stat(key + "/")
+        if md_dir and md_dir.mode == EntryMode.Dir:
+            return FileStat(
+                name=stripped.rsplit("/", 1)[-1] or "/",
+                type=FileType.DIRECTORY,
+            )
+    except NotFound:
+        pass
+    raise FileNotFoundError(raw)
