@@ -126,7 +126,8 @@
                 "icon": "folder-open",
                 "pages": [
                   "home/setup/dropbox",
-                  "home/setup/box"
+                  "home/setup/box",
+                  "home/setup/nextcloud"
                 ]
               },
               {
@@ -237,6 +238,13 @@
                   "python/resource/gdocs",
                   "python/resource/gsheets",
                   "python/resource/gslides"
+                ]
+              },
+              {
+                "group": "Cloud Files",
+                "icon": "folder-open",
+                "pages": [
+                  "python/resource/nextcloud"
                 ]
               },
               {

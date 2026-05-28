@@ -1,9 +1,24 @@
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.nextcloud.glob import resolve_glob
 from mirage.core.nextcloud.readdir import readdir
+from mirage.core.nextcloud.rm import rm_r
 from mirage.core.nextcloud.rmdir import rmdir
 from mirage.core.nextcloud.stat import stat
 from mirage.core.nextcloud.unlink import unlink
@@ -11,31 +26,9 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
 
 
-async def _rm_recursive(accessor: NextcloudAccessor, path: PathSpec,
-                        index: IndexCacheStore | None) -> None:
-    try:
-        entries = await readdir(accessor, path, index)
-    except (FileNotFoundError, ValueError):
-        entries = []
-    for entry in entries:
-        entry_spec = PathSpec(original=entry,
-                              directory=entry,
-                              resolved=False,
-                              prefix=path.prefix)
-        try:
-            s = await stat(accessor, entry_spec, index)
-        except (FileNotFoundError, ValueError):
-            continue
-        if s.type == FileType.DIRECTORY:
-            await _rm_recursive(accessor, entry_spec, index)
-        else:
-            await unlink(accessor, entry_spec)
-    await rmdir(accessor, path)
-
-
 async def _rm(
     accessor: NextcloudAccessor,
-    path: PathSpec,
+    path: PathSpec | str,
     recursive: bool = False,
     force: bool = False,
     remove_dir: bool = False,
@@ -50,7 +43,7 @@ async def _rm(
     label = path.original if isinstance(path, PathSpec) else path
     if s.type == FileType.DIRECTORY:
         if recursive:
-            await _rm_recursive(accessor, path, index)
+            await rm_r(accessor, path)
         elif remove_dir:
             children = await readdir(accessor, path, index)
             if children:

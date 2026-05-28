@@ -2,7 +2,8 @@ import logging
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore, IndexEntry
-from mirage.core.nextcloud._client import _auth, _resolve_url, parse_propfind, session
+from mirage.core.nextcloud._client import (_auth, _resolve_url, parse_propfind,
+                                           session)
 from mirage.core.nextcloud.constants import SCOPE_ERROR
 from mirage.types import PathSpec
 
@@ -35,7 +36,10 @@ async def readdir(accessor: NextcloudAccessor, path: PathSpec,
                 "PROPFIND",
                 url,
                 auth=_auth(config),
-                headers={"Depth": "1", "Content-Type": "application/xml"},
+                headers={
+                    "Depth": "1",
+                    "Content-Type": "application/xml"
+                },
         ) as resp:
             if resp.status == 404:
                 raise FileNotFoundError(raw_path)

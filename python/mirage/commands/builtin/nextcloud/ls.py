@@ -1,71 +1,30 @@
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+from functools import partial
+
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.generic.ls import ls as generic_ls
 from mirage.commands.builtin.nextcloud._provision import metadata_provision
-from mirage.commands.builtin.utils.formatting import _human_size
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.nextcloud.glob import resolve_glob
 from mirage.core.nextcloud.readdir import readdir
 from mirage.core.nextcloud.stat import stat
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import FileType, PathSpec
-
-
-async def _ls_entries(
-    accessor: NextcloudAccessor,
-    path: PathSpec,
-    all_files: bool,
-    sort_by: str,
-    reverse: bool,
-    recursive: bool,
-    list_dir: bool,
-    warnings: list[str],
-    index: IndexCacheStore = None,
-):
-    if list_dir:
-        s = await stat(accessor, path, index)
-        return [s]
-    try:
-        entries = await readdir(accessor, path, index)
-    except (FileNotFoundError, ValueError) as exc:
-        warnings.append(f"ls: cannot access '{path.original}': {exc}")
-        return []
-    stats = []
-    for entry in entries:
-        try:
-            e_spec = PathSpec(original=entry,
-                              directory=entry,
-                              resolved=False,
-                              prefix=path.prefix)
-            s = await stat(accessor, e_spec, index)
-        except (FileNotFoundError, ValueError) as exc:
-            warnings.append(f"ls: cannot access '{entry}': {exc}")
-            continue
-        if not all_files and s.name.startswith("."):
-            continue
-        stats.append(s)
-    if sort_by == "time":
-        stats.sort(key=lambda s: s.modified or "", reverse=not reverse)
-    elif sort_by == "size":
-        stats.sort(key=lambda s: s.size or 0, reverse=not reverse)
-    else:
-        stats.sort(key=lambda s: s.name, reverse=reverse)
-    if recursive:
-        sub_entries = []
-        for s in stats:
-            sub_entries.append(s)
-            if s.type == FileType.DIRECTORY:
-                entry_path = path.child(s.name)
-                entry_spec = PathSpec(original=entry_path,
-                                      directory=entry_path,
-                                      resolved=False,
-                                      prefix=path.prefix)
-                sub = await _ls_entries(accessor, entry_spec, all_files,
-                                        sort_by, reverse, recursive, False,
-                                        warnings, index)
-                sub_entries.extend(sub)
-        return sub_entries
-    return stats
+from mirage.types import LsSortBy, PathSpec
 
 
 @command("ls",
@@ -89,36 +48,33 @@ async def ls(
     d: bool = False,
     F: bool = False,
     index: IndexCacheStore = None,
+    cwd: PathSpec | str = "/",
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
+    if not paths:
+        cwd_str = cwd.original if isinstance(cwd, PathSpec) else cwd
+        cwd_prefix = cwd.prefix if isinstance(cwd, PathSpec) else ""
+        paths = [
+            PathSpec(original=cwd_str,
+                     directory=cwd_str,
+                     resolved=False,
+                     prefix=cwd_prefix)
+        ]
     paths = await resolve_glob(accessor, paths, index)
-    all_files = a or A
-    sort_by = "name"
-    if t:
-        sort_by = "time"
-    elif S:
-        sort_by = "size"
-    warnings: list[str] = []
-    results: list[str] = []
-    for p in paths:
-        try:
-            entries = await _ls_entries(accessor, p, all_files, sort_by, r, R,
-                                        d, warnings, index)
-        except (FileNotFoundError, ValueError) as exc:
-            warnings.append(f"ls: cannot access '{p.original}': {exc}")
-            continue
-        if args_l and not args_1:
-            for e in entries:
-                size_str = _human_size(e.size or 0) if h else str(e.size or 0)
-                line = (f"{e.type or '-'}\t{size_str}"
-                        f"\t{e.modified or ''}\t{e.name}")
-                results.append(line)
-        else:
-            for e in entries:
-                is_dir = F and e.type == FileType.DIRECTORY
-                name = e.name + "/" if is_dir else e.name
-                results.append(name)
-    stderr = "\n".join(warnings).encode() if warnings else None
-    exit_code = 1 if warnings and not results else 0
-    output = ("\n".join(results) + "\n").encode() if results else b""
-    return output, IOResult(stderr=stderr, exit_code=exit_code)
+    sort_by = LsSortBy.TIME if t else LsSortBy.SIZE if S else LsSortBy.NAME
+    return await generic_ls(
+        paths,
+        readdir=partial(readdir, accessor),
+        stat=partial(stat, accessor),
+        long=args_l,
+        one_per_line=args_1,
+        all_files=a or A,
+        human=h,
+        sort_by=sort_by,
+        reverse=r,
+        recursive=R,
+        list_dir=d,
+        classify=F,
+        index=index,
+        trailing_newline=True,
+    )

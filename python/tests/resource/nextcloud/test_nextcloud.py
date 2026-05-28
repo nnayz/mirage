@@ -5,7 +5,8 @@ from mirage.resource.nextcloud import NextcloudConfig, NextcloudResource
 
 
 def test_nextcloudconfig_defaults():
-    c = NextcloudConfig(url="https://cloud.example.com/remote.php/dav/files/user/")
+    c = NextcloudConfig(
+        url="https://cloud.example.com/remote.php/dav/files/user/")
     assert c.username is None
     assert c.password is None
     assert c.verify_ssl is True
@@ -13,7 +14,8 @@ def test_nextcloudconfig_defaults():
 
 
 def test_nextcloudconfig_immutable():
-    c = NextcloudConfig(url="https://cloud.example.com/remote.php/dav/files/user/")
+    c = NextcloudConfig(
+        url="https://cloud.example.com/remote.php/dav/files/user/")
     with pytest.raises(ValidationError):
         c.url = "https://other.example.com/"
 
@@ -32,7 +34,10 @@ def test_nextcloudconfig_with_credentials():
 
 def test_nextcloud_write_commands_tagged():
     from mirage.commands.builtin.nextcloud import COMMANDS
-    write_names = {"rm", "mkdir", "touch", "cp", "mv"}
+    write_names = {
+        "cp", "csplit", "gunzip", "gzip", "iconv", "ln", "mkdir", "mktemp",
+        "mv", "patch", "rm", "split", "tar", "tee", "touch", "unzip", "zip"
+    }
     for fn in COMMANDS:
         for rc in fn._registered_commands:
             if rc.name in write_names:
@@ -43,7 +48,9 @@ def test_nextcloud_write_commands_tagged():
 
 def test_nextcloud_write_ops_tagged():
     from mirage.ops.nextcloud import OPS
-    write_op_names = {"write", "unlink", "rmdir", "mkdir", "create", "truncate", "rename"}
+    write_op_names = {
+        "write", "unlink", "rmdir", "mkdir", "create", "truncate", "rename"
+    }
     for fn in OPS:
         for ro in fn._registered_ops:
             if ro.name in write_op_names:
@@ -77,4 +84,5 @@ def test_nextcloud_resource_get_state():
     assert state["needs_override"] is True
     assert state["config"]["password"] == "<REDACTED>"
     assert state["config"]["username"] == "alice"
-    assert state["config"]["url"] == "https://cloud.example.com/remote.php/dav/files/user/"
+    assert state["config"][
+        "url"] == "https://cloud.example.com/remote.php/dav/files/user/"

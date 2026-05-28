@@ -28,7 +28,10 @@ async def rename(accessor: NextcloudAccessor, src: PathSpec,
                 "MOVE",
                 url,
                 auth=_auth(config),
-                headers={"Destination": destination, "Overwrite": "T"},
+                headers={
+                    "Destination": destination,
+                    "Overwrite": "T"
+                },
         ) as resp:
             if resp.status == 404:
                 raise FileNotFoundError(src_key)

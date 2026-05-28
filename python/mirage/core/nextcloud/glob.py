@@ -19,8 +19,7 @@ async def resolve_glob(
     result: list[PathSpec] = []
     for p in paths:
         if isinstance(p, str):
-            result.append(
-                PathSpec(original=p, directory=posixpath.dirname(p)))
+            result.append(PathSpec(original=p, directory=posixpath.dirname(p)))
             continue
         if p.resolved:
             result.append(p)

@@ -1,3 +1,17 @@
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.registry import command
@@ -10,7 +24,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def _exists(accessor: NextcloudAccessor, path: PathSpec) -> bool:
+async def _exists(accessor: NextcloudAccessor, path: PathSpec | str) -> bool:
     try:
         await stat_impl(accessor, path)
         return True
@@ -26,7 +40,7 @@ async def cp(
     stdin: bytes | None = None,
     r: bool = False,
     R: bool = False,
-    a: bool = False,
+    a: bool = False,  # -a: alias for -r, no attributes in virtual fs
     f: bool = False,
     n: bool = False,
     v: bool = False,
@@ -41,17 +55,15 @@ async def cp(
     if recursive:
         src_base = paths[0].strip_prefix.rstrip("/")
         dst_base = paths[1].strip_prefix.rstrip("/")
-        entries = await find_impl(accessor, paths[0], index=index, type="file")
+        entries = await find_impl(accessor, paths[0], type="f")
         for entry in entries:
             rel = entry[len(src_base):]
-            dst_str = dst_base + rel
-            dst_spec = PathSpec(original=dst_str, directory=dst_str)
-            if n and await _exists(accessor, dst_spec):
+            dst = dst_base + rel
+            if n and await _exists(accessor, dst):
                 continue
-            src_spec = PathSpec(original=entry, directory=entry)
-            await copy(accessor, src_spec, dst_spec)
+            await copy(accessor, entry, dst)
             if v:
-                verbose_lines.append(f"{entry} -> {dst_str}")
+                verbose_lines.append(f"{entry} -> {dst}")
         writes = {dst_base + entry[len(src_base):]: b"" for entry in entries}
         output = "\n".join(verbose_lines) + "\n" if verbose_lines else None
         return output.encode() if output else None, IOResult(writes=writes)

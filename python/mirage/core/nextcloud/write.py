@@ -6,6 +6,12 @@ from mirage.observe.context import record
 from mirage.types import PathSpec
 
 
+# TODO: support streaming uploads. Today this buffers the whole payload before
+# PUT. Two options: (1) accept AsyncIterator[bytes] and pass it as `data=` --
+# aiohttp emits Transfer-Encoding: chunked; works against any WebDAV server.
+# (2) implement Nextcloud's chunked-upload protocol (PUT chunks to
+# remote.php/dav/uploads/<user>/<id>/<n>, then MOVE to destination) for
+# resumable uploads of very large files.
 async def write_bytes(accessor: NextcloudAccessor, path: PathSpec,
                       data: bytes) -> None:
     if isinstance(path, str):

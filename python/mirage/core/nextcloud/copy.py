@@ -28,7 +28,10 @@ async def copy(accessor: NextcloudAccessor, src: PathSpec,
                 "COPY",
                 url,
                 auth=_auth(config),
-                headers={"Destination": destination, "Overwrite": "T"},
+                headers={
+                    "Destination": destination,
+                    "Overwrite": "T"
+                },
         ) as resp:
             if resp.status == 404:
                 raise FileNotFoundError(src_key)

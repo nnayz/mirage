@@ -9,4 +9,7 @@ from mirage.ops.nextcloud.truncate import truncate
 from mirage.ops.nextcloud.unlink import unlink
 from mirage.ops.nextcloud.write import write as write_bytes
 
-OPS = [create, mkdir, read, readdir, rename, rmdir, stat, truncate, unlink, write_bytes]
+OPS = [
+    create, mkdir, read, readdir, rename, rmdir, stat, truncate, unlink,
+    write_bytes
+]

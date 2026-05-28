@@ -5,5 +5,6 @@ from mirage.types import PathSpec
 
 
 @op("unlink", resource="nextcloud", write=True)
-async def unlink(accessor: NextcloudAccessor, path: PathSpec, **kwargs) -> None:
+async def unlink(accessor: NextcloudAccessor, path: PathSpec,
+                 **kwargs) -> None:
     await unlink_impl(accessor, path)

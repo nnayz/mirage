@@ -46,6 +46,7 @@ EXPECTED_RESOURCES = {
     "email",
     "databricks_volume",
     "hf_buckets",
+    "nextcloud",
 }
 
 

@@ -1,5 +1,3 @@
-import pytest
-
 from mirage.core.nextcloud._client import _resolve_url, parse_propfind
 
 
@@ -9,19 +7,24 @@ def _make_config(url: str, username: str = None, password: str = None):
 
 
 def test_resolve_url_root():
-    config = _make_config("https://cloud.example.com/remote.php/dav/files/user/")
+    config = _make_config(
+        "https://cloud.example.com/remote.php/dav/files/user/")
     url = _resolve_url(config, "/")
     assert url == "https://cloud.example.com/remote.php/dav/files/user/"
 
 
 def test_resolve_url_file():
-    config = _make_config("https://cloud.example.com/remote.php/dav/files/user/")
+    config = _make_config(
+        "https://cloud.example.com/remote.php/dav/files/user/")
     url = _resolve_url(config, "/docs/file.txt")
-    assert url == "https://cloud.example.com/remote.php/dav/files/user/docs/file.txt"
+    expected = (
+        "https://cloud.example.com/remote.php/dav/files/user/docs/file.txt")
+    assert url == expected
 
 
 def test_resolve_url_no_trailing_slash():
-    config = _make_config("https://cloud.example.com/remote.php/dav/files/user")
+    config = _make_config(
+        "https://cloud.example.com/remote.php/dav/files/user")
     url = _resolve_url(config, "/docs/")
     assert url == "https://cloud.example.com/remote.php/dav/files/user/docs/"
 

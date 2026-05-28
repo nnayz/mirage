@@ -43,7 +43,7 @@ function describeResource(resource: Resource): string {
 }
 
 function buildInternals(ws: Workspace): WorkspaceInternals {
-  const cache = ws.cache as typeof ws.cache & { snapshotEntries?: () => unknown[] }
+  const cache = ws.cache
   return {
     cacheBytes: cache.cacheSize,
     cacheEntries: cache.snapshotEntries?.().length ?? 0,

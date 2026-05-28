@@ -1,6 +1,7 @@
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.core.nextcloud._client import _auth, _resolve_url, parse_propfind, session
+from mirage.core.nextcloud._client import (_auth, _resolve_url, parse_propfind,
+                                           session)
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.filetype import guess_type
 
@@ -49,7 +50,10 @@ async def stat(accessor: NextcloudAccessor,
                 "PROPFIND",
                 url,
                 auth=_auth(config),
-                headers={"Depth": "0", "Content-Type": "application/xml"},
+                headers={
+                    "Depth": "0",
+                    "Content-Type": "application/xml"
+                },
         ) as resp:
             if resp.status == 404:
                 raise FileNotFoundError(raw_path)
