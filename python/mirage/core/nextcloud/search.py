@@ -148,11 +148,6 @@ def _glob_to_like(pattern: str) -> str:
 
 
 def build_dav_condition(node: PredNode) -> ElementTree.Element | None:
-    """Recursively translate a find predicate into DAV where condition.
-
-    Returns None for unpushable parts (Path, Empty, bracket globs, etc).
-    Supports And/Or/Not around Name/Type for server-side boolean logic.
-    """
     if isinstance(node, TrueNode):
         return None
     if isinstance(node, Name):
@@ -189,8 +184,6 @@ def build_dav_condition(node: PredNode) -> ElementTree.Element | None:
         if not kids:
             return None
         return _combine("or", kids)
-    # Path/Empty etc. cannot be expressed in basicsearch.
-    # Client-side keep() handles them on reduced results (or full fallback).
     return None
 
 

@@ -51,10 +51,8 @@ def _gather_server_predicates(
         for kid in node.kids:
             _gather_server_predicates(kid, names, kinds)
         return
-    # Not/Or are now handled via build_dav_condition for rich where clauses.
-    # Path/Empty and bracket globs are omitted from server query; the full
-    # tree (including them) is applied client-side via keep()/_matches on the
-    # (smaller) result set returned by the server for the pushable parts.
+    # Path, Empty, Not, Or and other nodes are not pushed to the server
+    # query; the full tree is still applied client-side in _matches/keep.
     return
 
 
