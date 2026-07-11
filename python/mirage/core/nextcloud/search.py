@@ -9,6 +9,8 @@ from xml.etree import ElementTree
 import httpx
 
 from mirage.accessor.nextcloud import NextcloudAccessor
+from mirage.commands.builtin.find_eval import (And, Name, Not, Or, PredNode,
+                                               TrueNode, Type)
 from mirage.resource.secrets import reveal_secret
 from mirage.types import PathSpec
 
@@ -145,6 +147,53 @@ def _glob_to_like(pattern: str) -> str:
     return "".join(translated)
 
 
+def build_dav_condition(node: PredNode) -> ElementTree.Element | None:
+    """Recursively translate a find predicate into DAV where condition.
+
+    Returns None for unpushable parts (Path, Empty, bracket globs, etc).
+    Supports And/Or/Not around Name/Type for server-side boolean logic.
+    """
+    if isinstance(node, TrueNode):
+        return None
+    if isinstance(node, Name):
+        if "[" in node.pattern:
+            return None
+        return _name_condition(
+            SearchName(pattern=node.pattern, case_insensitive=node.icase))
+    if isinstance(node, Type):
+        if node.kind == "d":
+            return _is_collection()
+        if node.kind == "f":
+            return _not_collection()
+        return None
+    if isinstance(node, Not):
+        inner = build_dav_condition(node.kid)
+        if inner is None:
+            return None
+        el = ElementTree.Element(_dav("not"))
+        el.append(inner)
+        return el
+    if isinstance(node, And):
+        kids = [
+            c for c in (build_dav_condition(k) for k in node.kids)
+            if c is not None
+        ]
+        if not kids:
+            return None
+        return _combine("and", kids)
+    if isinstance(node, Or):
+        kids = [
+            c for c in (build_dav_condition(k) for k in node.kids)
+            if c is not None
+        ]
+        if not kids:
+            return None
+        return _combine("or", kids)
+    # Path/Empty etc. cannot be expressed in basicsearch.
+    # Client-side keep() handles them on reduced results (or full fallback).
+    return None
+
+
 def _name_condition(name: SearchName) -> ElementTree.Element:
     has_wildcard = "*" in name.pattern or "?" in name.pattern
     operation = "like" if has_wildcard or name.case_insensitive else "eq"
@@ -171,8 +220,15 @@ def _size_condition(query: FilesSearchQuery) -> ElementTree.Element | None:
     return _combine("or", [_is_collection(), file_bounds])
 
 
-def _where_condition(query: FilesSearchQuery) -> ElementTree.Element:
-    conditions = [_name_condition(name) for name in query.names]
+def _where_condition(
+        query: FilesSearchQuery,
+        extra_condition: ElementTree.Element | None = None
+) -> ElementTree.Element:
+    conditions: list[ElementTree.Element] = []
+    if extra_condition is not None:
+        conditions.append(extra_condition)
+    else:
+        conditions.extend(_name_condition(name) for name in query.names)
     if query.kind == "d":
         conditions.append(_is_collection())
     elif query.kind == "f":
@@ -200,8 +256,11 @@ def _order(parent: ElementTree.Element, namespace: str,
     ElementTree.SubElement(order, _dav("ascending"))
 
 
-def _request_body(target: _SearchTarget, path: PathSpec,
-                  query: FilesSearchQuery, offset: int) -> bytes:
+def _request_body(target: _SearchTarget,
+                  path: PathSpec,
+                  query: FilesSearchQuery,
+                  offset: int,
+                  extra_condition: ElementTree.Element | None = None) -> bytes:
     root = ElementTree.Element(_dav("searchrequest"))
     basic = ElementTree.SubElement(root, _dav("basicsearch"))
     select = ElementTree.SubElement(basic, _dav("select"))
@@ -218,7 +277,7 @@ def _request_body(target: _SearchTarget, path: PathSpec,
     depth = ElementTree.SubElement(scope, _dav("depth"))
     depth.text = "infinity"
     where = ElementTree.SubElement(basic, _dav("where"))
-    where.append(_where_condition(query))
+    where.append(_where_condition(query, extra_condition))
     orderby = ElementTree.SubElement(basic, _dav("orderby"))
     _order(orderby, DAV_NAMESPACE, "displayname")
     _order(orderby, DAV_NAMESPACE, "getlastmodified")
@@ -351,6 +410,7 @@ async def search_files(
     accessor: NextcloudAccessor,
     path: PathSpec,
     query: FilesSearchQuery,
+    extra_condition: ElementTree.Element | None = None,
 ) -> list[SearchEntry] | None:
     target = _search_target(accessor.config.url)
     if target is None:
@@ -369,7 +429,8 @@ async def search_files(
             response = await client.request(
                 "SEARCH",
                 target.endpoint,
-                content=_request_body(target, path, query, offset),
+                content=_request_body(target, path, query, offset,
+                                      extra_condition),
                 headers={
                     "Accept": "application/xml",
                     "Content-Type": "text/xml; charset=utf-8",

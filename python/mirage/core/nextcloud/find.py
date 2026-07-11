@@ -10,7 +10,8 @@ from mirage.commands.builtin.find_eval import (And, FindEntry, Name, PredNode,
                                                emit_start_path, keep,
                                                start_basename)
 from mirage.core.nextcloud.search import (FilesSearchQuery, SearchEntry,
-                                          SearchName, search_files)
+                                          SearchName, build_dav_condition,
+                                          search_files)
 from mirage.types import PathSpec
 
 
@@ -50,8 +51,10 @@ def _gather_server_predicates(
         for kid in node.kids:
             _gather_server_predicates(kid, names, kinds)
         return
-    # Path, Empty, Not, Or and other nodes are not pushed to the server
-    # query; the full tree is still applied client-side in _matches/keep.
+    # Not/Or are now handled via build_dav_condition for rich where clauses.
+    # Path/Empty and bracket globs are omitted from server query; the full
+    # tree (including them) is applied client-side via keep()/_matches on the
+    # (smaller) result set returned by the server for the pushable parts.
     return
 
 
@@ -188,7 +191,8 @@ async def _server_find(
     mindepth: int | None,
 ) -> list[str] | None:
     query = _server_query(tree, min_size, max_size, mtime_min, mtime_max)
-    if query is None:
+    tree_cond = build_dav_condition(tree)
+    if query is None and tree_cond is None:
         return None
     base = "/" + path.mount_path.strip("/") if path.mount_path.strip(
         "/") else "/"
@@ -199,7 +203,10 @@ async def _server_find(
         return None
     entries: list[SearchEntry] = [start]
     if maxdepth != 0:
-        found = await search_files(accessor, path, query)
+        found = await search_files(accessor,
+                                   path,
+                                   query or FilesSearchQuery(),
+                                   extra_condition=tree_cond)
         if found is None:
             return None
         entries.extend(found)
