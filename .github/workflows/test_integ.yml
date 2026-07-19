@@ -81,6 +81,14 @@ jobs:
             data:
               - 'integ/**'
               - 'python/**'
+              - 'typescript/packages/core/src/index.ts'
+              - 'typescript/packages/core/src/types.ts'
+              - 'typescript/packages/node/src/accessor/nextcloud.ts'
+              - 'typescript/packages/node/src/commands/builtin/nextcloud/**'
+              - 'typescript/packages/node/src/core/nextcloud/**'
+              - 'typescript/packages/node/src/ops/nextcloud/**'
+              - 'typescript/packages/node/src/resource/nextcloud/**'
+              - 'typescript/packages/node/src/resource/registry.ts'
               - '.github/workflows/test_integ.yml'
             fuse:
               - 'integ/fuse.py'
@@ -715,6 +723,24 @@ jobs:
         working-directory: python
         run: uv sync --all-extras --no-extra camel
 
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.32.1
+
+      - name: Install TypeScript dependencies
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Build TypeScript Nextcloud packages
+        working-directory: typescript
+        run: pnpm --filter @struktoai/mirage-core build && pnpm --filter @struktoai/mirage-node build
+
       - name: Run dify integ (mock server) and diff against truth
         run: |
           ./python/.venv/bin/python integ/dify.py > /tmp/dify.out
@@ -748,6 +774,10 @@ jobs:
 
       - name: Run declarative battery on nextcloud
         run: ./python/.venv/bin/python integ/runners/python/main.py --target nextcloud
+
+      - name: Run TypeScript declarative battery on nextcloud
+        working-directory: integ
+        run: pnpm exec tsx runners/typescript/main.ts --target nextcloud
 
   integ-fuse:
     needs: changes
