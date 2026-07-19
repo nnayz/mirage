@@ -12,13 +12,13 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
+from functools import partial
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.patch import patch as generic_patch
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          with_index)
+                                                          Operation, bound_op)
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -28,19 +28,20 @@ async def patch(
     accessor: Accessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     p: str | None = None,
     R: bool = False,
     i: PathSpec | None = None,
     N: bool = False,
-    index: IndexCacheStore | None = None,
+    index: IndexCacheStore = NULL_INDEX,
     **flags,
 ) -> tuple[ByteSource | None, IOResult]:
     return await generic_patch(paths,
-                               read_bytes=with_index(ops.read_bytes, index),
-                               write_bytes=ops.write,
+                               read_bytes=bound_op(ops.read_bytes, accessor,
+                                                   index),
+                               write_bytes=partial(
+                                   ops.require(Operation.WRITE), accessor),
                                has_resource=ops.is_mounted(accessor),
-                               accessor=accessor,
                                stdin=stdin,
                                p=p,
                                R=R,
@@ -48,4 +49,7 @@ async def patch(
                                N=N)
 
 
-BUILDER = Builder('patch', patch, None, True, None)
+BUILDER = Builder('patch',
+                  patch,
+                  write=True,
+                  requirements=frozenset({Operation.WRITE}))

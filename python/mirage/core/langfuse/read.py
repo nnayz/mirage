@@ -13,9 +13,10 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
+from typing import Any
 
 from mirage.accessor.langfuse import LangfuseAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.langfuse._client import (fetch_dataset_items,
                                           fetch_dataset_runs, fetch_prompt,
                                           fetch_trace)
@@ -24,11 +25,11 @@ from mirage.utils.errors import enoent
 from mirage.utils.key_prefix import mount_prefix_of
 
 
-def _json_bytes(data: dict) -> bytes:
+def _json_bytes(data: dict[str, Any]) -> bytes:
     return json.dumps(data, ensure_ascii=False, indent=2).encode()
 
 
-def _jsonl_bytes(items: list[dict]) -> bytes:
+def _jsonl_bytes(items: list[dict[str, Any]]) -> bytes:
     if not items:
         return b""
     lines = [
@@ -41,20 +42,16 @@ def _jsonl_bytes(items: list[dict]) -> bytes:
 async def read(
     accessor: LangfuseAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> bytes:
     """Read a file as bytes.
 
     Args:
         accessor (LangfuseAccessor): langfuse accessor.
         path (str): resource-relative path.
-        index (IndexCacheStore | None): index cache.
+        index (IndexCacheStore): index cache.
         prefix (str): mount prefix for virtual index keys.
     """
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     virtual = path.virtual
     mount_prefix_of(path.virtual, path.resource_path)
     key = path.resource_path

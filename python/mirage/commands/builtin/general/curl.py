@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Callable
+from typing import Any, Callable
 
 from mirage.accessor.base import Accessor, NOOPAccessor
 from mirage.commands.builtin.utils.http import (_http_form_request,
@@ -54,8 +54,7 @@ async def curl(
     L: bool = False,
     s: bool = False,
     S: bool = False,
-    jina: bool = False,
-    dispatch: Callable | None = None,
+    dispatch: Callable[..., Any] | None = None,
     cwd: PathSpec | None = None,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
@@ -80,8 +79,7 @@ async def curl(
         result = _http_request(texts[0],
                                method=method,
                                headers=headers,
-                               data=body,
-                               jina=jina)
+                               data=body)
     if o is not None:
         o_str = o.virtual if isinstance(o, PathSpec) else o
         if dispatch is not None:

@@ -1,11 +1,11 @@
-import fnmatch
 from collections.abc import Awaitable, Callable
 
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.utils.output import (format_optional_records,
                                                   format_records)
 from mirage.io.types import IOResult
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.fnmatch import fnmatch
 from mirage.utils.key_prefix import rekey
 
 _BRANCH = "├── "
@@ -28,7 +28,7 @@ async def _walk(
     dirs_only: bool,
     match_pattern: str | None,
     warnings: list[str],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
 ) -> list[str]:
     lines: list[str] = []
     try:
@@ -51,13 +51,12 @@ async def _walk(
             continue
         if not show_hidden and s.name.startswith("."):
             continue
-        if ignore_pattern and fnmatch.fnmatch(s.name, ignore_pattern):
+        if ignore_pattern and fnmatch(s.name, ignore_pattern):
             continue
         if dirs_only and s.type != FileType.DIRECTORY:
             continue
         not_dir = s.type != FileType.DIRECTORY
-        if match_pattern and not_dir and not fnmatch.fnmatch(
-                s.name, match_pattern):
+        if match_pattern and not_dir and not fnmatch(s.name, match_pattern):
             continue
         filtered.append((entry_spec, s))
 
@@ -97,7 +96,7 @@ async def tree(
     ignore_pattern: str | None = None,
     dirs_only: bool = False,
     match_pattern: str | None = None,
-    index: IndexCacheStore | None = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> tuple[bytes, IOResult]:
     warnings: list[str] = []
     lines = await _walk(path,

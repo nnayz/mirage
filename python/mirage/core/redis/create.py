@@ -21,7 +21,7 @@ from mirage.utils.path import norm
 
 async def create(accessor: RedisAccessor, path: PathSpec) -> None:
     store = accessor.store
-    p = norm(path)
+    p = norm(path.mount_path)
     await store.set_file(p, b"")
     await store.set_modified(p, now_iso())
     await invalidate_after_write(path)

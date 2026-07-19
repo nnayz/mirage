@@ -16,12 +16,12 @@ import type { Accessor } from '../../../../accessor/base.ts'
 import { IOResult, type ByteSource } from '../../../../io/types.ts'
 import type { PathSpec } from '../../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../../config.ts'
-import type { FiletypeEntry, ReadBytesFn, StatEntryFn } from '../extensions.ts'
+import type { FiletypeEntry, FiletypeReadBytesFn, StatEntryFn } from '../extensions.ts'
 
 const ENC = new TextEncoder()
 
 export async function ftGrep<A extends Accessor>(
-  readBytes: ReadBytesFn<A>,
+  readBytes: FiletypeReadBytesFn<A>,
   _statEntry: StatEntryFn<A>,
   entry: FiletypeEntry,
   accessor: A,
@@ -36,10 +36,17 @@ export async function ftGrep<A extends Accessor>(
   if (first === undefined) return [null, new IOResult()]
   const pattern = texts[0] ?? ''
   const ignoreCase = opts.flags.i === true
+  const countOnly = opts.flags.c === true
   try {
     const raw = await readBytes(accessor, first, opts.index ?? undefined)
-    const out: ByteSource = await entry.module.grep(raw, pattern, ignoreCase)
-    return [out, new IOResult({ cache: [first.mountPath] })]
+    const result = await entry.module.grep(raw, pattern, ignoreCase)
+    if (countOnly) {
+      const text = new TextDecoder().decode(result).trim()
+      const lines = text === '' ? 0 : text.split('\n').length
+      const out: ByteSource = ENC.encode(String(Math.max(0, lines - 1)))
+      return [out, new IOResult({ cache: [first.mountPath] })]
+    }
+    return [result, new IOResult({ cache: [first.mountPath] })]
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return [

@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.trello import TrelloAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.trello._client import (list_board_labels, list_board_lists,
                                         list_board_members, list_list_cards,
                                         list_workspace_boards, list_workspaces)
@@ -29,16 +29,12 @@ VIRTUAL_ROOTS = ("workspaces", )
 
 async def readdir(
     accessor: TrelloAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = None,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    path = (path.dir if path.pattern else path).mount_path
+    virtual = path_spec.virtual
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     idx_key = "/" + key if key else "/"
 
@@ -46,10 +42,9 @@ async def readdir(
         return [f"{prefix}/workspaces"]
 
     if key == "workspaces":
-        if index is not None:
-            listing = await index.list_dir(idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
+        listing = await index.list_dir(idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
         workspaces = await list_workspaces(accessor.config)
         if accessor.config.workspace_id:
             workspaces = [
@@ -67,25 +62,23 @@ async def readdir(
                 vfs_name=dirname,
             )
             entries.append((dirname, entry))
-        if index is not None:
-            await index.set_dir(idx_key, entries)
+        await index.set_dir(idx_key, entries)
         return [f"{prefix}/workspaces/{name}" for name, _ in entries]
 
     parts = key.split("/")
 
     if len(parts) == 2 and parts[0] == "workspaces":
-        if index is not None:
+        result = await index.get(idx_key)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/workspaces",
+                directory=prefix + "/workspaces",
+                resource_path=mount_key(prefix + "/workspaces", prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(idx_key)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/workspaces",
-                    directory=prefix + "/workspaces",
-                    resource_path=mount_key(prefix + "/workspaces", prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(idx_key)
-            if result.entry is None:
-                raise enoent(virtual)
+        if result.entry is None:
+            raise enoent(virtual)
         return [
             f"{prefix}/{key}/workspace.json",
             f"{prefix}/{key}/boards",
@@ -93,24 +86,21 @@ async def readdir(
 
     if len(parts) == 3 and parts[0] == "workspaces" and parts[2] == "boards":
         ws_vkey = "/" + "/".join(parts[:2])
-        if index is not None:
+        result = await index.get(ws_vkey)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/workspaces",
+                directory=prefix + "/workspaces",
+                resource_path=mount_key(prefix + "/workspaces", prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(ws_vkey)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/workspaces",
-                    directory=prefix + "/workspaces",
-                    resource_path=mount_key(prefix + "/workspaces", prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(ws_vkey)
-            if result.entry is None:
-                raise enoent(virtual)
-            ws_id = result.entry.id
-            listing = await index.list_dir(idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
-        else:
+        if result.entry is None:
             raise enoent(virtual)
+        ws_id = result.entry.id
+        listing = await index.list_dir(idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
         boards = await list_workspace_boards(accessor.config, ws_id)
         if accessor.config.board_ids:
             boards = [
@@ -133,19 +123,18 @@ async def readdir(
         return [f"{prefix}/{key}/{name}" for name, _ in entries]
 
     if len(parts) == 4 and parts[0] == "workspaces" and parts[2] == "boards":
-        if index is not None:
+        result = await index.get(idx_key)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/" + "/".join(parts[:3]),
+                directory=prefix + "/" + "/".join(parts[:3]),
+                resource_path=mount_key(prefix + "/" + "/".join(parts[:3]),
+                                        prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(idx_key)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/" + "/".join(parts[:3]),
-                    directory=prefix + "/" + "/".join(parts[:3]),
-                    resource_path=mount_key(prefix + "/" + "/".join(parts[:3]),
-                                            prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(idx_key)
-            if result.entry is None:
-                raise enoent(virtual)
+        if result.entry is None:
+            raise enoent(virtual)
         return [
             f"{prefix}/{key}/board.json",
             f"{prefix}/{key}/members",
@@ -156,25 +145,22 @@ async def readdir(
     if (len(parts) == 5 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "members"):
         board_vkey = "/" + "/".join(parts[:4])
-        if index is not None:
+        result = await index.get(board_vkey)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/" + "/".join(parts[:3]),
+                directory=prefix + "/" + "/".join(parts[:3]),
+                resource_path=mount_key(prefix + "/" + "/".join(parts[:3]),
+                                        prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(board_vkey)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/" + "/".join(parts[:3]),
-                    directory=prefix + "/" + "/".join(parts[:3]),
-                    resource_path=mount_key(prefix + "/" + "/".join(parts[:3]),
-                                            prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(board_vkey)
-            if result.entry is None:
-                raise enoent(virtual)
-            board_id = result.entry.id
-            listing = await index.list_dir(idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
-        else:
+        if result.entry is None:
             raise enoent(virtual)
+        board_id = result.entry.id
+        listing = await index.list_dir(idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
         members = await list_board_members(accessor.config, board_id)
         entries = []
         for member in members:
@@ -196,25 +182,22 @@ async def readdir(
     if (len(parts) == 5 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "labels"):
         board_vkey = "/" + "/".join(parts[:4])
-        if index is not None:
+        result = await index.get(board_vkey)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/" + "/".join(parts[:3]),
+                directory=prefix + "/" + "/".join(parts[:3]),
+                resource_path=mount_key(prefix + "/" + "/".join(parts[:3]),
+                                        prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(board_vkey)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/" + "/".join(parts[:3]),
-                    directory=prefix + "/" + "/".join(parts[:3]),
-                    resource_path=mount_key(prefix + "/" + "/".join(parts[:3]),
-                                            prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(board_vkey)
-            if result.entry is None:
-                raise enoent(virtual)
-            board_id = result.entry.id
-            listing = await index.list_dir(idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
-        else:
+        if result.entry is None:
             raise enoent(virtual)
+        board_id = result.entry.id
+        listing = await index.list_dir(idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
         labels = await list_board_labels(accessor.config, board_id)
         entries = []
         for label in labels:
@@ -236,25 +219,22 @@ async def readdir(
     if (len(parts) == 5 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "lists"):
         board_vkey = "/" + "/".join(parts[:4])
-        if index is not None:
+        result = await index.get(board_vkey)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/" + "/".join(parts[:3]),
+                directory=prefix + "/" + "/".join(parts[:3]),
+                resource_path=mount_key(prefix + "/" + "/".join(parts[:3]),
+                                        prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(board_vkey)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/" + "/".join(parts[:3]),
-                    directory=prefix + "/" + "/".join(parts[:3]),
-                    resource_path=mount_key(prefix + "/" + "/".join(parts[:3]),
-                                            prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(board_vkey)
-            if result.entry is None:
-                raise enoent(virtual)
-            board_id = result.entry.id
-            listing = await index.list_dir(idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
-        else:
+        if result.entry is None:
             raise enoent(virtual)
+        board_id = result.entry.id
+        listing = await index.list_dir(idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
         lists = await list_board_lists(accessor.config, board_id)
         entries = []
         for lst in lists:
@@ -274,19 +254,18 @@ async def readdir(
 
     if (len(parts) == 6 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "lists"):
-        if index is not None:
+        result = await index.get(idx_key)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/" + "/".join(parts[:5]),
+                directory=prefix + "/" + "/".join(parts[:5]),
+                resource_path=mount_key(prefix + "/" + "/".join(parts[:5]),
+                                        prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(idx_key)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/" + "/".join(parts[:5]),
-                    directory=prefix + "/" + "/".join(parts[:5]),
-                    resource_path=mount_key(prefix + "/" + "/".join(parts[:5]),
-                                            prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(idx_key)
-            if result.entry is None:
-                raise enoent(virtual)
+        if result.entry is None:
+            raise enoent(virtual)
         return [
             f"{prefix}/{key}/list.json",
             f"{prefix}/{key}/cards",
@@ -295,25 +274,22 @@ async def readdir(
     if (len(parts) == 7 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "lists" and parts[6] == "cards"):
         list_vkey = "/" + "/".join(parts[:6])
-        if index is not None:
+        result = await index.get(list_vkey)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/" + "/".join(parts[:5]),
+                directory=prefix + "/" + "/".join(parts[:5]),
+                resource_path=mount_key(prefix + "/" + "/".join(parts[:5]),
+                                        prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(list_vkey)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/" + "/".join(parts[:5]),
-                    directory=prefix + "/" + "/".join(parts[:5]),
-                    resource_path=mount_key(prefix + "/" + "/".join(parts[:5]),
-                                            prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(list_vkey)
-            if result.entry is None:
-                raise enoent(virtual)
-            list_id = result.entry.id
-            listing = await index.list_dir(idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
-        else:
+        if result.entry is None:
             raise enoent(virtual)
+        list_id = result.entry.id
+        listing = await index.list_dir(idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
         cards = await list_list_cards(accessor.config, list_id)
         entries = []
         for card in cards:
@@ -333,19 +309,18 @@ async def readdir(
 
     if (len(parts) == 8 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "lists" and parts[6] == "cards"):
-        if index is not None:
+        result = await index.get(idx_key)
+        if result.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/" + "/".join(parts[:7]),
+                directory=prefix + "/" + "/".join(parts[:7]),
+                resource_path=mount_key(prefix + "/" + "/".join(parts[:7]),
+                                        prefix),
+            )
+            await readdir(accessor, parent, index)
             result = await index.get(idx_key)
-            if result.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/" + "/".join(parts[:7]),
-                    directory=prefix + "/" + "/".join(parts[:7]),
-                    resource_path=mount_key(prefix + "/" + "/".join(parts[:7]),
-                                            prefix),
-                )
-                await readdir(accessor, parent, index)
-                result = await index.get(idx_key)
-            if result.entry is None:
-                raise enoent(virtual)
+        if result.entry is None:
+            raise enoent(virtual)
         return [f"{prefix}/{key}/card.json", f"{prefix}/{key}/comments.jsonl"]
 
     return []

@@ -18,7 +18,7 @@ from pathlib import Path
 import aiofiles
 
 from mirage.accessor.disk import DiskAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.observe.context import record
 from mirage.types import PathSpec
 
@@ -31,15 +31,10 @@ def _resolve(root: Path, path: str) -> Path:
 
 
 async def read_bytes(accessor: DiskAccessor,
-                     path: PathSpec,
-                     index: IndexCacheStore = None) -> bytes:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+                     path_spec: PathSpec,
+                     index: IndexCacheStore = NULL_INDEX) -> bytes:
+    virtual = path_spec.virtual
+    path = path_spec.mount_path
     root = accessor.root
     start_ms = int(time.monotonic() * 1000)
     p = _resolve(root, path)

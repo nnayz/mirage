@@ -16,9 +16,9 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from mirage.io.types import IOResult
-from mirage.types import DEFAULT_SESSION_ID
 from mirage.workspace.types import ExecutionNode
 
 
@@ -32,7 +32,7 @@ class JobStatus(str, Enum):
 class Job:
     id: int
     command: str
-    task: asyncio.Task
+    task: asyncio.Task[Any] | None
     cwd: str
     status: JobStatus = JobStatus.RUNNING
     stdout: bytes = b""
@@ -42,7 +42,7 @@ class Job:
     io_result: IOResult | None = None
     created_at: float = field(default_factory=time.time)
     agent: str = "unknown"
-    session_id: str = DEFAULT_SESSION_ID
+    session_id: str = ""
 
 
 class JobTable:
@@ -54,10 +54,10 @@ class JobTable:
     def submit(
         self,
         command: str,
-        task: asyncio.Task,
+        task: asyncio.Task[Any],
         cwd: str,
         agent: str = "unknown",
-        session_id: str = DEFAULT_SESSION_ID,
+        session_id: str = "",
     ) -> Job:
         job = Job(id=self._next_id,
                   command=command,
@@ -100,6 +100,7 @@ class JobTable:
         """
         if job.status != JobStatus.RUNNING:
             return
+        assert job.task is not None
         if not job.task.done():
             return
         if job.task.cancelled():
@@ -129,7 +130,8 @@ class JobTable:
         job = self._jobs.get(job_id)
         if job is None:
             return False
-        job.task.cancel()
+        if job.task is not None:
+            job.task.cancel()
         job.status = JobStatus.KILLED
         job.exit_code = 137
         job.stderr = b"Killed"
@@ -139,6 +141,7 @@ class JobTable:
         job = self._jobs[job_id]
         if job.status != JobStatus.RUNNING:
             return job
+        assert job.task is not None
         try:
             stdout, io_result, exec_node = await job.task
             job.stdout = stdout if isinstance(stdout, bytes) else b""

@@ -15,15 +15,22 @@
 import { NOOPAccessor } from '../accessor/base.ts'
 import { applyIo } from '../cache/file/io.ts'
 import type { FileCache } from '../cache/file/mixin.ts'
+import { applyOpSafeguard, runWithTimeout } from '../commands/builtin/utils/safeguard.ts'
 import { IOResult } from '../io/types.ts'
+import { mountKey } from '../utils/key_prefix.ts'
+import { rstripSlash } from '../utils/slash.ts'
 import { runWithRevisions } from '../observe/context.ts'
 import type { OpRecord } from '../observe/record.ts'
 import type { OpsRegistry } from '../ops/registry.ts'
 import { type OpKwargs } from '../ops/registry.ts'
+import { NO_FOLLOW_OPS } from '../ops/config.ts'
 import { cachesReads, type Resource } from '../resource/base.ts'
-import { ConsistencyPolicy, MountMode, PathSpec } from '../types.ts'
+import { ConsistencyPolicy, FileStat, MountMode, PathSpec } from '../types.ts'
 import type { DispatchFn } from './executor/cross_mount.ts'
-import type { Namespace } from './mount/namespace.ts'
+import type { Namespace } from './mount/namespace/namespace.ts'
+import { mergeOverlayStat } from './mount/namespace/overlay.ts'
+import { Reconciler } from './reconcile.ts'
+import { effectiveMountMode } from '../context/session_context.ts'
 
 const NOOP_ACCESSOR_INSTANCE = new NOOPAccessor()
 const DISPATCH_READ_OPS = new Set(['read', 'read_bytes'])
@@ -34,11 +41,10 @@ const DISPATCH_WRITE_OPS = new Set([
   'unlink',
   'create',
   'truncate',
+  'mkdir',
+  'rmdir',
+  'rename',
 ])
-// Ops that act on the path entry itself (lstat semantics); every other op
-// follows symlinks before mount lookup, so reads/writes go to the target
-// and the cache keys under the real path.
-const NO_FOLLOW_OPS = new Set(['unlink', 'rename', 'rmdir'])
 
 export type ResolveFn = (path: string) => Promise<[Resource, PathSpec, MountMode]>
 
@@ -46,7 +52,7 @@ export class Dispatcher {
   private readonly namespace: Namespace
   private readonly cache: FileCache & Resource
   private readonly opsRegistry: OpsRegistry
-  private readonly consistency: ConsistencyPolicy
+  readonly reconciler: Reconciler
 
   constructor(
     namespace: Namespace,
@@ -57,7 +63,7 @@ export class Dispatcher {
     this.namespace = namespace
     this.cache = cache
     this.opsRegistry = opsRegistry
-    this.consistency = consistency
+    this.reconciler = new Reconciler(cache, namespace, opsRegistry, consistency)
   }
 
   dispatch: DispatchFn = async (opName, path, args, kwargs) => {
@@ -67,51 +73,80 @@ export class Dispatcher {
       if (followed !== path.virtual) p = PathSpec.fromStrPath(followed)
     }
     const [resource, scope, mode] = await this.namespace.resolve(p.virtual, false)
+    const mount = this.namespace.mountFor(p.virtual)
     const caches = cachesReads(resource)
-    if (caches && DISPATCH_READ_OPS.has(opName)) {
-      let cached = await this.cache.get(p.virtual)
-      if (
-        cached !== null &&
-        this.consistency === ConsistencyPolicy.ALWAYS &&
-        resource.fingerprint !== undefined
-      ) {
-        let remoteFp: string | null = null
-        try {
-          remoteFp = await resource.fingerprint(scope)
-        } catch {
-          remoteFp = null
-        }
-        if (remoteFp !== null && !(await this.cache.isFresh(p.virtual, remoteFp))) {
-          await this.cache.remove(p.virtual)
-          cached = null
-        }
-      }
-      if (cached !== null) {
+    if (caches && mount !== null && DISPATCH_READ_OPS.has(opName)) {
+      const cached = await this.cache.get(p.virtual)
+      if (cached !== null && (await this.reconciler.mayServeCached(mount, p.virtual))) {
         return [cached, new IOResult({ reads: { [p.virtual]: cached } })]
       }
     }
-    if (mode === MountMode.READ && this.opsRegistry.find(opName, resource.kind)?.write === true) {
+    const mountPrefix = mount?.prefix ?? '/'
+    if (
+      effectiveMountMode(mountPrefix, mode) === MountMode.READ &&
+      this.opsRegistry.find(opName, resource.kind)?.write === true
+    ) {
       throw new Error(`mount at '${p.virtual}' is read-only`)
     }
     const fullKwargs: OpKwargs =
       kwargs?.index === undefined && resource.index !== undefined
         ? { ...(kwargs ?? {}), index: resource.index }
         : (kwargs ?? {})
-    const mount = this.namespace.mountFor(p.virtual)
-    const result = await runWithRevisions(
-      mount !== null && mount.revisions.size > 0 ? mount.revisions : null,
-      async () =>
-        this.opsRegistry.call(
-          opName,
-          resource.kind,
-          resource.accessor ?? NOOP_ACCESSOR_INSTANCE,
-          scope,
-          args ?? [],
-          fullKwargs,
-        ),
-    )
+    let fullArgs = args ?? []
+    const renameDst = opName === 'rename' && fullArgs[0] instanceof PathSpec ? fullArgs[0] : null
+    if (renameDst !== null) {
+      // Ops.rename addresses both endpoints against the source's mount,
+      // mirroring the Python dispatcher: a caller-supplied dst built
+      // from the virtual path alone would otherwise reach the backend
+      // untranslated.
+      fullArgs = [
+        new PathSpec({
+          virtual: renameDst.virtual,
+          directory: renameDst.virtual.slice(0, renameDst.virtual.lastIndexOf('/')) || '/',
+          resourcePath: mountKey(renameDst.virtual, rstripSlash(mountPrefix)),
+        }),
+        ...fullArgs.slice(1),
+      ]
+    }
+    // Per-op command safeguards bind to the executing (post-follow)
+    // mount, and the timeout window covers only the backend op — cache
+    // probes and post-write invalidation stay outside the budget —
+    // mirroring Python's Mount.execute_op.
+    const opOverride = mount?.commandSafeguards.get(opName) ?? null
+    const opTimeout = opOverride !== null ? opOverride.timeoutSeconds : null
+    let result
+    try {
+      result = await runWithRevisions(
+        mount !== null && mount.revisions.size > 0 ? mount.revisions : null,
+        async () =>
+          runWithTimeout(
+            Promise.resolve(
+              this.opsRegistry.call(
+                opName,
+                resource.kind,
+                resource.accessor ?? NOOP_ACCESSOR_INSTANCE,
+                scope,
+                fullArgs,
+                fullKwargs,
+              ),
+            ),
+            opTimeout,
+            opName,
+          ),
+      )
+    } catch (err) {
+      await this.reconciler.onOpMissing(opName, p.virtual, err)
+      throw err
+    }
+    result = await applyOpSafeguard(result, opOverride)
     if (DISPATCH_WRITE_OPS.has(opName)) {
       await this.invalidateAfterWriteByPath(p.virtual)
+      if (renameDst !== null) {
+        await this.invalidateAfterWriteByPath(renameDst.virtual)
+      }
+    }
+    if (opName === 'stat' && result instanceof FileStat) {
+      return [mergeOverlayStat(this.namespace.metaFor(p.virtual), result), new IOResult()]
     }
     return [result, new IOResult()]
   }
@@ -119,6 +154,7 @@ export class Dispatcher {
   async invalidateAfterWriteByPath(path: string): Promise<void> {
     const mount = this.namespace.mountFor(path)
     if (mount === null) return
+    await this.namespace.clearTimes(path)
     if (cachesReads(mount.resource)) {
       await this.cache.remove(path)
     }

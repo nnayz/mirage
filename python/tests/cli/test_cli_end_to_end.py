@@ -15,6 +15,7 @@
 import json
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 CONFIG_YAML = """\
@@ -58,7 +59,7 @@ def test_workspace_lifecycle(daemon, tmp_path):
     cfg = _write_config(tmp_path)
     created = _run_cli(daemon["env"], "workspace", "create", str(cfg))
     wid = created["id"]
-    assert wid.startswith("ws_")
+    assert uuid.UUID(wid).version == 7
 
     listed = _run_cli(daemon["env"], "workspace", "list")
     assert any(w["id"] == wid for w in listed)
@@ -142,7 +143,8 @@ def test_save_then_load_round_trip(daemon, tmp_path):
     _run_cli(daemon["env"], "execute", "--workspace_id", "save-test",
              "--command", "echo persisted > /report.txt")
 
-    tar_path = tmp_path / "snap.tar"
+    tar_path = tmp_path / "snapshots" / "snap.tar"
+    tar_path.parent.mkdir(exist_ok=True)
     saved = _run_cli(daemon["env"], "workspace", "snapshot", "save-test",
                      str(tar_path))
     assert saved["size"] > 0

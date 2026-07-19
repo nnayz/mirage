@@ -13,6 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import shlex
+from posixpath import dirname
+from typing import Any, Callable
 
 try:
     from agno.tools import Toolkit
@@ -38,8 +40,10 @@ class MirageToolkit(Toolkit):
 
     def __init__(self, workspace: Workspace, **kwargs) -> None:
         self._ws = workspace
-        tools = [self.execute, self.read, self.write, self.ls, self.grep]
-        async_tools = [
+        tools: list[Callable[..., Any]] = [
+            self.execute, self.read, self.write, self.ls, self.grep
+        ]
+        async_tools: list[tuple[Callable[..., Any], str]] = [
             (self.aexecute, "execute"),
             (self.aread, "read"),
             (self.awrite, "write"),
@@ -96,6 +100,10 @@ class MirageToolkit(Toolkit):
         return self._run(self.awrite(path, content))
 
     async def awrite(self, path: str, content: str) -> str:
+        parent = dirname(path) or "/"
+        mkdir = await self._ws.execute(f"mkdir -p {shlex.quote(parent)}")
+        if mkdir.exit_code != 0:
+            return io_to_str(mkdir)
         io = await self._ws.execute(f"tee {shlex.quote(path)}",
                                     stdin=content.encode("utf-8"))
         return io_to_str(io)

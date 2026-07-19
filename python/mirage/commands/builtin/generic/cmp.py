@@ -1,6 +1,5 @@
 from collections.abc import Awaitable, Callable
 
-from mirage.accessor.base import Accessor
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.errors import UsageError
 from mirage.commands.spec.types import CommandName
@@ -13,7 +12,6 @@ async def cmp_cmd(
     paths: list[PathSpec],
     *,
     read_bytes: Callable[..., Awaitable[bytes]],
-    accessor: Accessor | None = None,
     silent: bool = False,
     verbose: bool = False,
     limit: int | None = None,
@@ -21,12 +19,13 @@ async def cmp_cmd(
     skip: int | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     if len(paths) > 2:
-        raise extra_operand_error(CommandName.CMP, paths[2].raw_path)
+        raise extra_operand_error(CommandName.CMP, paths[2].raw_path
+                                  or paths[2].virtual)
     if len(paths) < 2:
         raise UsageError("cmp: requires two paths")
     p0, p1 = paths[0], paths[1]
-    data1 = await read_bytes(accessor, p0)
-    data2 = await read_bytes(accessor, p1)
+    data1 = await read_bytes(p0)
+    data2 = await read_bytes(p1)
     if skip is not None:
         data1 = data1[skip:]
         data2 = data2[skip:]

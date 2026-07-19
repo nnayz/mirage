@@ -21,14 +21,9 @@ from mirage.observe.context import record
 from mirage.types import PathSpec
 
 
-async def write_bytes(accessor: SSHAccessor, path: PathSpec,
+async def write_bytes(accessor: SSHAccessor, path_spec: PathSpec,
                       data: bytes) -> None:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+    path = path_spec.mount_path
     config = accessor.config
     sftp = await accessor.sftp()
     start_ms = int(time.monotonic() * 1000)
@@ -36,4 +31,4 @@ async def write_bytes(accessor: SSHAccessor, path: PathSpec,
     async with sftp.open(remote_path, "wb") as f:
         await f.write(data)
     record("write", path, "ssh", len(data), start_ms)
-    await invalidate_after_write(path)
+    await invalidate_after_write(path_spec)

@@ -1,9 +1,11 @@
 import logging
 from typing import Any
 
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.accessor.dify import DifyAccessor
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.dify._client import dify_post
 from mirage.core.dify.path import resolve_path
+from mirage.core.dify.read import segment_text
 from mirage.core.dify.tree import normalize_slug
 from mirage.core.dify.walk import walk
 from mirage.types import PathSpec
@@ -21,10 +23,10 @@ METHODS = {
 
 
 async def search_segments(
-    accessor,
+    accessor: DifyAccessor,
     query: str,
     paths: list[PathSpec],
-    index: IndexCacheStore,
+    index: IndexCacheStore = NULL_INDEX,
     method: str = "semantic",
     top_k: int = 10,
     threshold: float = 0.0,
@@ -59,9 +61,8 @@ async def search_segments(
             "retrieval_model": retrieval_model
         },
     )
-    output = records_to_bytes(
-        response.get("records") or [], accessor.config.slug_metadata_name,
-        mount_prefix)
+    output = records_to_bytes(response_records(response.get("records")),
+                              accessor.config.slug_metadata_name, mount_prefix)
     if paths and has_name_based_target and output == b"":
         logger.debug(
             "Dify scoped search returned no records for name-based documents; "
@@ -87,10 +88,10 @@ def validate_args(query: str, method: str, top_k: int,
 
 
 async def metadata_conditions(
-    accessor,
+    accessor: DifyAccessor,
     paths: list[PathSpec],
-    index: IndexCacheStore,
-) -> tuple[list[dict], bool]:
+    index: IndexCacheStore = NULL_INDEX,
+) -> tuple[list[dict[str, Any]], bool]:
     targets = await target_entries(accessor, paths, index)
     slug_values: list[str] = []
     name_values: list[str] = []
@@ -99,7 +100,7 @@ async def metadata_conditions(
             slug_values.append(str(entry.extra["raw_slug"]))
         else:
             name_values.append(entry.name)
-    conditions: list[dict] = []
+    conditions: list[dict[str, Any]] = []
     if slug_values:
         conditions.append({
             "name": accessor.config.slug_metadata_name,
@@ -116,14 +117,14 @@ async def metadata_conditions(
 
 
 async def target_entries(
-    accessor,
+    accessor: DifyAccessor,
     paths: list[PathSpec],
-    index: IndexCacheStore,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> dict[str, IndexEntry]:
     targets: dict[str, IndexEntry] = {}
     for path in paths:
         resolved = await resolve_path(accessor, path, index)
-        if resolved.entry is not None and not resolved.is_dir:
+        if not resolved.is_dir:
             targets[resolved.entry.id] = resolved.entry
             continue
         if resolved.is_dir:
@@ -137,10 +138,20 @@ async def target_entries(
                     child, rekey(path.virtual, path.resource_path, child))
                 child_resolved = await resolve_path(accessor, child_spec,
                                                     index)
-                if (child_resolved.entry is not None
-                        and not child_resolved.is_dir):
+                if not child_resolved.is_dir:
                     targets[child_resolved.entry.id] = child_resolved.entry
     return targets
+
+
+def response_records(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError("Dify search response records must be a list")
+    records: list[dict[str, Any]] = []
+    for record in value:
+        if not isinstance(record, dict):
+            raise ValueError("Dify search response records must be objects")
+        records.append(record)
+    return records
 
 
 def records_to_bytes(
@@ -156,7 +167,7 @@ def records_to_bytes(
         header = format_record_header(record, slug_metadata_name, mount_prefix)
         if header is None:
             continue
-        content = segment_content(segment)
+        content = segment_text(segment)
         contents.append(f"{header}\n{content}")
     if not contents:
         return b""
@@ -192,7 +203,7 @@ def record_path(
     if raw_path is None:
         return None
     try:
-        normalized = normalize_slug(raw_path)
+        normalized: str = normalize_slug(raw_path)
     except ValueError:
         logger.debug("Skipping Dify record with invalid slug/name: %r",
                      raw_path)
@@ -221,12 +232,3 @@ def document_path(
     if name is None:
         return None
     return str(name)
-
-
-def segment_content(segment: dict[str, Any]) -> str:
-    content = segment.get("content")
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    return str(content)

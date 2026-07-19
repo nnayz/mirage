@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.trello import TrelloAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.trello._client import (get_board, get_card, list_board_labels,
                                         list_board_lists, list_board_members,
                                         list_card_comments, list_workspaces)
@@ -30,7 +30,7 @@ from mirage.utils.errors import enoent
 
 async def read_bytes(
     config: TrelloConfig,
-    path: PathSpec,
+    path: str,
     virtual: str,
 ) -> bytes:
     key = path.strip("/")
@@ -103,15 +103,10 @@ async def read_bytes(
 
 async def read(
     accessor: TrelloAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = None,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> bytes:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+    virtual = path_spec.virtual
+    path = path_spec.mount_path
 
     return await read_bytes(accessor.config, path, virtual)

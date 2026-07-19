@@ -22,7 +22,7 @@ from mirage.utils.path import norm
 async def truncate(accessor: RedisAccessor, path: PathSpec,
                    length: int) -> None:
     store = accessor.store
-    p = norm(path)
+    p = norm(path.mount_path)
     data = await store.get_file(p)
     if data is None:
         data = b""

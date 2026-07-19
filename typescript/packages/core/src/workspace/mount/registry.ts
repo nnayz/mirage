@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mountKey } from '../../utils/key_prefix.ts'
+import type { Runtime } from '../executor/runtime.ts'
 import type { FileCache } from '../../cache/file/mixin.ts'
 import { CacheManager } from '../../cache/manager.ts'
 import { GENERAL_COMMANDS } from '../../commands/builtin/general/index.ts'
@@ -22,17 +23,31 @@ import { ConsistencyPolicy, MountMode, PathSpec } from '../../types.ts'
 import { MountEntry } from './mount.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
+// The one thing the registry needs from a reconciler. Depending on this local
+// interface (not the concrete Reconciler) keeps the dependency pointing down:
+// `reconcile` imports the mount layer, not the other way round. The Reconciler
+// satisfies it structurally.
+interface ReadReconciler {
+  reconcileRead(mount: MountEntry, path: string): Promise<void>
+}
+
 export const DEV_PREFIX = '/dev/'
 
+// Raised when a path-bound command is unsupported by its backend.
+// Rendered in the GNU shape `<cmd>: <operand>: <reason>` with the
+// EOPNOTSUPP strerror, naming the offending path like coreutils does;
+// the backend name stays on the error for programmatic use (#394).
 export class MountCommandUnsupported extends Error {
   readonly cmdName: string
   readonly backend: string
+  readonly operand: string
 
-  constructor(cmdName: string, backend: string) {
-    super(`${cmdName}: not supported on the ${backend} backend`)
+  constructor(cmdName: string, backend: string, operand: string) {
+    super(`${cmdName}: ${operand}: Operation not supported`)
     this.name = 'MountCommandUnsupported'
     this.cmdName = cmdName
     this.backend = backend
+    this.operand = operand
   }
 }
 
@@ -48,6 +63,15 @@ export class MountRegistry {
   private consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY
   private readonly defaultMode: MountMode
   private cacheStore: FileCache | null = null
+  private reconciler: ReadReconciler | null = null
+  // The world's vfs runtime, set by Workspace after construction.
+  // Catch-all when its captures are empty; explicit captures make
+  // unclaimed commands an admission failure (126).
+  vfsRuntime: Runtime | null = null
+
+  setReconciler(reconciler: ReadReconciler): void {
+    this.reconciler = reconciler
+  }
 
   /**
    * Attach the workspace file cache and build per-mount CacheManagers.
@@ -299,13 +323,8 @@ export class MountRegistry {
 
   isExecAllowed(): boolean {
     for (const m of this.mountList) {
-      const prefixNoTrail = rstripSlash(m.prefix) || '/'
-      if (prefixNoTrail === '/') return m.mode === MountMode.EXEC
-    }
-    if (this.defaultMode === MountMode.EXEC) return true
-    for (const m of this.mountList) {
       if (m.prefix === DEV_PREFIX) continue
-      if (m.mode === MountMode.EXEC) return true
+      if (m.effectiveMode() === MountMode.EXEC) return true
     }
     return false
   }
@@ -324,6 +343,24 @@ export class MountRegistry {
     return null
   }
 
+  /**
+   * How many leading words form a registered command name. Command names
+   * may span several words ("gws docs documents get"), git-style. A nested
+   * name resolves from anywhere its owning mount is reachable, so this
+   * scans every mount (mirroring mountForCommand) and returns the longest
+   * prefix any mount recognises, or 1 (bare first token) when none does.
+   */
+  matchCommandPrefix(words: string[]): number {
+    if (words.length === 0) return 0
+    let best = 1
+    const candidates = [...this.mountList]
+    if (this.rootRef !== null) candidates.push(this.rootRef)
+    for (const mount of candidates) {
+      best = Math.max(best, mount.longestCommandMatch(words))
+    }
+    return best
+  }
+
   async resolveMount(
     cmdName: string,
     pathScopes: readonly PathSpec[],
@@ -332,58 +369,30 @@ export class MountRegistry {
     const mountPath = pathScopes.length > 0 ? (pathScopes[0]?.virtual ?? cwd) : cwd
     let mount = this.mountFor(mountPath)
     if (mount !== null && mount.resolveCommand(cmdName) == null && pathScopes.length > 0) {
-      throw new MountCommandUnsupported(cmdName, mount.resource.kind)
+      throw new MountCommandUnsupported(cmdName, mount.resource.kind, pathScopes[0]?.rawPath ?? cwd)
     }
     if (mount?.resolveCommand(cmdName) == null) {
       mount = this.mountForCommand(cmdName)
     }
     if (mount === null) return null
     // Warm reads are served in place by withReadCache, so a read-only command
-    // stays on its real mount. The cache is a hidden store (not a mount);
-    // under ALWAYS we evict stale entries from it here so the read-through
-    // serves fresh bytes.
+    // stays on its real mount. Single-mount reads do not go through the
+    // dispatcher, so this is where they reconcile against backend truth: the
+    // shared Reconciler evicts a stale cache entry and GCs an orphaned overlay
+    // when the backend reports the path gone.
     const baseCmd = mount.resolveCommand(cmdName)
     if (
-      this.cacheStore !== null &&
+      this.reconciler !== null &&
       pathScopes.length > 0 &&
       cachesReads(mount.resource) &&
       baseCmd?.write !== true &&
       this.consistency === ConsistencyPolicy.ALWAYS
     ) {
-      await this.evictStale(mount, this.cacheStore, pathScopes)
+      for (const scope of pathScopes) {
+        await this.reconciler.reconcileRead(mount, scope.virtual)
+      }
     }
     return mount
-  }
-
-  private async evictStale(
-    realMount: MountEntry,
-    cache: FileCache,
-    pathScopes: readonly PathSpec[],
-  ): Promise<void> {
-    const resource = realMount.resource
-    if (resource.fingerprint === undefined) return
-    const mountPrefix = rstripSlash(realMount.prefix)
-    for (const scope of pathScopes) {
-      const key = scope.virtual
-      if (!(await cache.exists(key))) continue
-      const prefixedScope = new PathSpec({
-        virtual: scope.virtual,
-        directory: scope.directory,
-        pattern: scope.pattern,
-        resolved: scope.resolved,
-        resourcePath: mountKey(scope.virtual, mountPrefix),
-      })
-      let remoteFp: string | null = null
-      try {
-        remoteFp = await resource.fingerprint(prefixedScope)
-      } catch {
-        continue
-      }
-      if (remoteFp === null) continue
-      if (!(await cache.isFresh(key, remoteFp))) {
-        await cache.remove(key)
-      }
-    }
   }
 }
 

@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import dataclasses
+from typing import Any, cast
 
 try:
     import redis as sync_redis
@@ -23,12 +24,12 @@ except ImportError as _err:
 from mirage.accessor.redis import RedisAccessor
 from mirage.commands.builtin.redis import COMMANDS as REDIS_COMMANDS
 from mirage.core.redis.append import append_bytes
+from mirage.core.redis.constants import SCOPE_ERROR
 from mirage.core.redis.copy import copy
 from mirage.core.redis.create import create
 from mirage.core.redis.du import du, du_all
 from mirage.core.redis.exists import exists
 from mirage.core.redis.find import find
-from mirage.core.redis.glob import resolve_glob as _resolve_glob
 from mirage.core.redis.mkdir import mkdir
 from mirage.core.redis.read import read_bytes
 from mirage.core.redis.readdir import readdir
@@ -46,7 +47,10 @@ from mirage.resource.redis.prompt import PROMPT
 from mirage.resource.redis.store import RedisStore
 from mirage.resource.secrets import REDACTED_SECRET
 from mirage.types import PathSpec, ResourceName
+from mirage.utils.glob_walk import make_resolve_glob
 from mirage.utils.key_prefix import mount_key
+
+_resolve_glob = make_resolve_glob(readdir, SCOPE_ERROR)
 
 _REDIS_OPS = {
     "read_bytes": read_bytes,
@@ -72,9 +76,10 @@ _REDIS_OPS = {
 
 class RedisResource(BaseResource):
 
+    accessor: RedisAccessor
     name: str = ResourceName.REDIS
     index_ttl: float = 0
-    _ops: dict = _REDIS_OPS
+    _ops: dict[str, Any] = _REDIS_OPS
     PROMPT: str = PROMPT
 
     def __init__(
@@ -87,8 +92,8 @@ class RedisResource(BaseResource):
         self.accessor = RedisAccessor(self._store)
         for fn in REDIS_COMMANDS:
             self.register(fn)
-        for fn in REDIS_OPS:
-            self.register_op(fn)
+        for ro in REDIS_OPS:
+            self.register_op(ro)
 
     async def resolve_glob(self, paths, prefix: str = ""):
         if prefix:
@@ -99,7 +104,7 @@ class RedisResource(BaseResource):
             ]
         return await _resolve_glob(self.accessor, paths, self._index)
 
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         prefix = self._store._prefix
         url = self._store._url
         client = sync_redis.Redis.from_url(url)
@@ -110,13 +115,37 @@ class RedisResource(BaseResource):
             for key in client.scan_iter(file_pattern):
                 if isinstance(key, bytes):
                     key = key.decode()
-                data = client.get(key)
+                # redis-py's sync client is typed with an async-or-sync
+                # union (ResponseT); this path is sync, so narrow it.
+                data = cast("bytes | None", client.get(key))
                 if data is not None:
                     files[key[strip:]] = data
             dir_key = f"{prefix}dir"
-            members = client.smembers(dir_key)
+            members = cast("set[bytes]", client.smembers(dir_key))
             dirs = sorted(m.decode() if isinstance(m, bytes) else m
                           for m in members)
+            attrs: dict[str, dict[str, str]] = {}
+            attrs_pattern = f"{prefix}attrs:*"
+            astrip = len(f"{prefix}attrs:")
+            for key in client.scan_iter(attrs_pattern):
+                if isinstance(key, bytes):
+                    key = key.decode()
+                raw = cast("dict[bytes, bytes]", client.hgetall(key))
+                attrs[key[astrip:]] = {
+                    (k.decode() if isinstance(k, bytes) else k):
+                    (v.decode() if isinstance(v, bytes) else v)
+                    for k, v in raw.items()
+                }
+            modified: dict[str, str] = {}
+            mod_pattern = f"{prefix}modified:*"
+            mstrip = len(f"{prefix}modified:")
+            for key in client.scan_iter(mod_pattern):
+                if isinstance(key, bytes):
+                    key = key.decode()
+                val = cast("bytes | None", client.get(key))
+                if val is not None:
+                    modified[key[mstrip:]] = (val.decode() if isinstance(
+                        val, bytes) else val)
         finally:
             client.close()
         return {
@@ -128,9 +157,11 @@ class RedisResource(BaseResource):
             "key_prefix": prefix,
             "files": files,
             "dirs": dirs,
+            "attrs": attrs,
+            "modified": modified,
         }
 
-    def load_state(self, state: dict) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         files = state.get("files", {})
         dirs = state.get("dirs", ["/"])
         prefix = self._store._prefix
@@ -141,6 +172,17 @@ class RedisResource(BaseResource):
                 pipe.set(f"{prefix}file:{p}", data)
             for d in dirs:
                 pipe.sadd(f"{prefix}dir", d)
+            for p, fields in state.get("attrs", {}).items():
+                if fields:
+                    pipe.hset(f"{prefix}attrs:{p}", mapping=fields)
+            for p, ts in state.get("modified", {}).items():
+                pipe.set(f"{prefix}modified:{p}", ts)
             pipe.execute()
         finally:
             client.close()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        await self._store.close()
+        await super().close()

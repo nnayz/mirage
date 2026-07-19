@@ -17,7 +17,7 @@ import logging
 import asyncssh
 
 from mirage.accessor.ssh import SSHAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.ssh._client import _abs
 from mirage.core.ssh.constants import SCOPE_ERROR
 from mirage.types import PathSpec
@@ -27,16 +27,12 @@ from mirage.utils.key_prefix import mount_prefix_of
 logger = logging.getLogger(__name__)
 
 
-async def readdir(accessor: SSHAccessor, path: PathSpec,
-                  index: IndexCacheStore) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    if isinstance(path, PathSpec):
-        prefix = mount_prefix_of(path.virtual, path.resource_path)
-        path = path.directory if path.pattern else path.virtual
+async def readdir(accessor: SSHAccessor,
+                  path_spec: PathSpec,
+                  index: IndexCacheStore = NULL_INDEX) -> list[str]:
+    virtual = path_spec.virtual
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    path = path_spec.directory if path_spec.pattern else path_spec.virtual
     if prefix and path.startswith(prefix):
         rest = path[len(prefix):]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
@@ -56,9 +52,12 @@ async def readdir(accessor: SSHAccessor, path: PathSpec,
         base = "/" + path.strip("/")
         names: list[str] = []
         for entry in entries:
-            if entry.filename in (".", ".."):
+            name = entry.filename
+            if isinstance(name, bytes):
+                name = name.decode()
+            if name in (".", ".."):
                 continue
-            child = base.rstrip("/") + "/" + entry.filename
+            child = base.rstrip("/") + "/" + name
             names.append(child)
         names = sorted(names)
         if len(names) > SCOPE_ERROR:

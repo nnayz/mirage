@@ -12,9 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { GDOCS_IO } from '../../commands/builtin/gdocs/io.ts'
+import { ResourceName } from '../../types.ts'
+import { makeGenericOps } from '../generic/factory.ts'
 import type { RegisteredOp } from '../registry.ts'
 import { readOp } from './read.ts'
-import { readdirOp } from './readdir.ts'
-import { statOp } from './stat.ts'
 
-export const GDOCS_VFS_OPS: readonly RegisteredOp[] = [readdirOp, readOp, statOp] as const
+// The only read is the rendered filetype op, so the factory's plain
+// read is suppressed via overrides.
+export const GDOCS_OPS: readonly RegisteredOp[] = [
+  ...makeGenericOps(ResourceName.GDOCS, GDOCS_IO, {
+    overrides: new Set(['read']),
+  }),
+  readOp,
+]

@@ -17,6 +17,7 @@ import { GENERAL_BC } from './bc.ts'
 import { GENERAL_CURL } from './curl.ts'
 import { GENERAL_DATE } from './date.ts'
 import { GENERAL_EXPR } from './expr.ts'
+import { GENERAL_JS, GENERAL_NODE } from './js.ts'
 import { GENERAL_PYTHON, GENERAL_PYTHON3 } from './python.ts'
 import { GENERAL_SEQ } from './seq.ts'
 import { GENERAL_WGET } from './wget.ts'
@@ -26,6 +27,8 @@ export const GENERAL_COMMANDS: readonly RegisteredCommand[] = [
   ...GENERAL_CURL,
   ...GENERAL_DATE,
   ...GENERAL_EXPR,
+  ...GENERAL_JS,
+  ...GENERAL_NODE,
   ...GENERAL_PYTHON,
   ...GENERAL_PYTHON3,
   ...GENERAL_SEQ,

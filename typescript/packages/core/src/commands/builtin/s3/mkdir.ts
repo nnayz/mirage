@@ -13,13 +13,16 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { S3Accessor } from '../../../accessor/s3.ts'
-import { resolveGlob } from '../../../core/s3/glob.ts'
+import { resolveGlobOf } from '../generic_bind/index.ts'
+import { S3_IO } from './io.ts'
 import { mkdir as s3Mkdir } from '../../../core/s3/mkdir.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { type PathSpec, ResourceName } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { writeMetadataProvision } from '../generic_bind/provision.ts'
+
+const resolveGlob = resolveGlobOf(S3_IO)
 
 const ENC = new TextEncoder()
 

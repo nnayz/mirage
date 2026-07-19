@@ -14,22 +14,13 @@
 
 import asyncio
 import logging
-import secrets
 import time
-from typing import Iterable
+from typing import Any, Iterable
 
 from mirage import Workspace, WorkspaceRunner
+from mirage.utils.ids import new_workspace_id
 
 logger = logging.getLogger(__name__)
-
-
-def new_workspace_id() -> str:
-    """Mint a fresh workspace id of the form ``ws_<16 hex chars>``.
-
-    Returns:
-        str: opaque, URL-safe, collision-resistant id.
-    """
-    return f"ws_{secrets.token_hex(8)}"
 
 
 class WorkspaceEntry:
@@ -66,8 +57,9 @@ class WorkspaceRegistry:
         """
         self._entries: dict[str, WorkspaceEntry] = {}
         self.idle_grace_seconds = idle_grace_seconds
-        self.exit_event = exit_event or asyncio.Event()
-        self._idle_task: asyncio.Task | None = None
+        self.exit_event = (exit_event
+                           if exit_event is not None else asyncio.Event())
+        self._idle_task: asyncio.Task[Any] | None = None
 
     def __contains__(self, workspace_id: str) -> bool:
         return workspace_id in self._entries

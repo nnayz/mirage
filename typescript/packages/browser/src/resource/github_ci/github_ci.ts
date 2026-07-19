@@ -17,7 +17,7 @@ import {
   type FileStat,
   GITHUB_CI_COMMANDS,
   GITHUB_CI_PROMPT,
-  GITHUB_CI_VFS_OPS,
+  GITHUB_CI_OPS,
   GitHubCIAccessor,
   HttpCITransport,
   type IndexCacheStore,
@@ -29,10 +29,12 @@ import {
   ResourceName,
   githubCiRead,
   githubCiReaddir,
-  githubCiResolveGlob,
+  makeResolveGlob,
   githubCiStat,
 } from '@struktoai/mirage-core'
 import { redactGitHubCIConfig, type GitHubCIConfig, type GitHubCIConfigRedacted } from './config.ts'
+
+const githubCiResolveGlob = makeResolveGlob(githubCiReaddir)
 
 export interface GitHubCIResourceState {
   type: string
@@ -74,7 +76,7 @@ export class GitHubCIResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return GITHUB_CI_VFS_OPS
+    return GITHUB_CI_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -87,11 +89,6 @@ export class GitHubCIResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return githubCiStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

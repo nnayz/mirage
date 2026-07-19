@@ -11,10 +11,18 @@ description: Set up FUSE support for MIRAGE with the TypeScript SDK.
 
 ## System FUSE
 
-Install the OS-level FUSE kernel support first:
+Install the OS-level FUSE kernel support first (see the
+[support matrix](/home/setup/fuse) for the full OS overview):
 
 - [macOS FUSE Setup](/home/setup/macos), macFUSE + kernel extension + Apple Silicon recovery mode steps.
 - [Linux FUSE Setup](/home/setup/linux), `fuse3` install and `/etc/fuse.conf`.
+
+<Note>
+  **No Windows support in TypeScript.** `@zkochan/fuse-native` targets macOS
+  and Linux only; its legacy Windows path builds against the unmaintained
+  Dokany-based `fuse-shared-library-win32`, not WinFsp. Python's FUSE mounts
+  run on Windows experimentally, see [Windows FUSE Setup](/home/setup/windows).
+</Note>
 
 ## Install the Node Binding
 
@@ -105,8 +113,17 @@ mounts:
 Programmatically, set `fuse` per mount: `{ '/data': new Mount(dataResource, { fuse: '/tmp/data-repo' }), '/s3': new Mount(s3Resource, { fuse: true }) }`.
 `ws.fuseMountpoints` returns a `{ prefix: path }` map of the live mountpoints.
 
+## Size semantics for API-backed files
+
+Some resources (Linear, Trello, Slack, ...) cannot report a file's size
+without fetching its content, so over the FUSE mount those files behave like
+Linux `/proc` files: they stat as **0 bytes until first open** and become
+fully readable the moment anything opens them. See
+[Limitations → Size-unknown API files](/typescript/limitations#3-size-unknown-api-files-stat-as-0-bytes-until-first-open)
+for the per-tool table and the mechanics (`direct_io` + `attr_timeout=0`).
+
 <Note>
-  FUSE on Node has a runtime constraint worth knowing, `fs-monkey` can't patch ESM `node:fs` imports. See [TypeScript Limitations](/typescript/limitations) for details and workarounds.
+  FUSE on Node has two runtime constraints worth knowing: `fs-monkey` can't patch ESM `node:fs` imports, and synchronous access to your own mount from the mounting process deadlocks the event loop that serves it. See [TypeScript Limitations](/typescript/limitations) for details and workarounds.
 </Note>
 
 <Warning>
@@ -116,3 +133,18 @@ Programmatically, set `fuse` per mount: `{ '/data': new Mount(dataResource, { fu
   `fuse` on a single mount per workspace (or run extra mounts in separate
   processes).
 </Warning>
+
+## Symlinks and Permissions
+
+Symlinks live in Mirage's namespace, not in any backend. Links created with
+`ln -s` in the Mirage shell (or with `ln -s` inside the mountpoint) appear as
+real symlinks over FUSE: `ls -l` shows `lrwxrwxrwx`, `readlink` prints the
+target, and reads follow the link. Absolute targets are displayed relative to
+the link's directory so they always resolve inside the mountpoint.
+
+Permission bits shown over FUSE come from Mirage's metadata (`chmod`,
+`chown`, `touch` results), and they are **display only**: access control is
+enforced by Mirage mount modes, not by the kernel. For that reason, never
+mount with the `default_permissions` FUSE option. It would make the kernel
+enforce the displayed bits, and a `chmod 000` could lock Mirage out of its
+own files.

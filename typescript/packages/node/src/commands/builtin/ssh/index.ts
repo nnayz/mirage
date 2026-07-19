@@ -21,8 +21,7 @@ import {
 import type { SSHAccessor } from '../../../accessor/ssh.ts'
 import { read as sshRead } from '../../../core/ssh/read.ts'
 import { stat as sshStat } from '../../../core/ssh/stat.ts'
-import { SSH_CMD_OPS } from './ops.ts'
-import { SSH_SED } from './sed.ts'
+import { SSH_IO } from './io.ts'
 
 export const SSH_COMMANDS: readonly RegisteredCommand[] = [
   ...makeFiletypeCommands<SSHAccessor>({
@@ -30,6 +29,5 @@ export const SSH_COMMANDS: readonly RegisteredCommand[] = [
     readBytes: sshRead,
     statEntry: sshStat,
   }),
-  ...makeGenericCommands<SSHAccessor>(ResourceName.SSH, SSH_CMD_OPS),
-  ...SSH_SED,
+  ...makeGenericCommands<SSHAccessor>(ResourceName.SSH, SSH_IO),
 ]

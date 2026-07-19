@@ -13,14 +13,16 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import dataclasses
+import os
 from pathlib import Path
+from typing import Any
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.commands.builtin.disk import COMMANDS as DISK_COMMANDS
 from mirage.core.disk.append import append_bytes
+from mirage.core.disk.constants import SCOPE_ERROR
 from mirage.core.disk.copy import copy
 from mirage.core.disk.create import create
-from mirage.core.disk.glob import resolve_glob as _resolve_glob
 from mirage.core.disk.mkdir import mkdir
 from mirage.core.disk.read import read_bytes
 from mirage.core.disk.readdir import readdir
@@ -36,7 +38,10 @@ from mirage.ops.disk import OPS as DISK_OPS
 from mirage.resource.base import BaseResource
 from mirage.resource.disk.prompt import PROMPT
 from mirage.types import PathSpec, ResourceName
+from mirage.utils.glob_walk import make_resolve_glob
 from mirage.utils.key_prefix import mount_key
+
+_resolve_glob = make_resolve_glob(readdir, SCOPE_ERROR)
 
 _DISK_OPS = {
     "read_bytes": read_bytes,
@@ -59,8 +64,9 @@ _DISK_OPS = {
 class DiskResource(BaseResource):
 
     name: str = ResourceName.DISK
+    accessor: DiskAccessor
     index_ttl: float = 60
-    _ops: dict = _DISK_OPS
+    _ops: dict[str, Any] = _DISK_OPS
     PROMPT: str = PROMPT
 
     def __init__(self, root: str) -> None:
@@ -69,8 +75,8 @@ class DiskResource(BaseResource):
         self.accessor = DiskAccessor(self.root)
         for fn in DISK_COMMANDS:
             self.register(fn)
-        for fn in DISK_OPS:
-            self.register_op(fn)
+        for ro in DISK_OPS:
+            self.register_op(ro)
 
     async def resolve_glob(self, paths, prefix: str = ""):
         if prefix:
@@ -81,27 +87,30 @@ class DiskResource(BaseResource):
             ]
         return await _resolve_glob(self.accessor, paths, self._index)
 
-    async def fingerprint(self, path: str) -> str | None:
-        try:
-            remote = await disk_stat(self.accessor, path)
-            return remote.modified
-        except FileNotFoundError:
-            return None
-
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         files: dict[str, bytes] = {}
+        modes: dict[str, int] = {}
         for p in self.root.rglob("*"):
             if p.is_file():
                 rel = p.relative_to(self.root).as_posix()
                 files[rel] = p.read_bytes()
+                # Capture the real inode mode: it is the base truth for
+                # disk permissions (the sidecar is gone), so restore must
+                # reapply it or a chmod would reset to the host umask.
+                modes[rel] = p.stat().st_mode & 0o7777
         return {
             "type": self.name,
             "files": files,
+            "modes": modes,
         }
 
-    def load_state(self, state: dict) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         files = state.get("files", {})
+        modes = state.get("modes", {})
         for rel, data in files.items():
             target = self.root / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
+            mode = modes.get(rel)
+            if mode is not None:
+                os.chmod(target, mode)

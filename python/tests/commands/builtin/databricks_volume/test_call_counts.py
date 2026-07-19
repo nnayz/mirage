@@ -43,7 +43,8 @@ def _rig(
     files = FakeFiles()
     accessor = DatabricksVolumeAccessor(config, FakeClient(files))
     index = RAMIndexCacheStore(ttl=600)
-    return accessor, files, index, backend_path(config, "/")
+    return accessor, files, index, backend_path(config,
+                                                PathSpec.from_str_path("/"))
 
 
 def _seed_flat(files: FakeFiles, root: str, count: int = 5) -> None:
@@ -161,7 +162,7 @@ async def test_find_size_reads_size_from_index():
     files.directory_metadata.add(f"{root}/sub")
     results = await _run_find(accessor, index, type="f", size="+3c")
     assert sorted(r.rsplit("/", 1)[-1]
-                  for r in results) == ["f2.txt", "f3.txt", "f4.txt"]
+                  for r in results) == ["f3.txt", "f4.txt"]
     assert files.list_directory_calls == [f"{root}/sub"]
     child_metadata = [c for c in files.get_metadata_calls if "/sub/" in c]
     assert child_metadata == []

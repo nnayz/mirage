@@ -14,17 +14,16 @@
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
-
 from mirage.accessor.ssh import SSHAccessor
 from mirage.commands.builtin.ssh import COMMANDS as SSH_COMMANDS
 from mirage.core.ssh.append import append_bytes
+from mirage.core.ssh.config import SSHConfig
+from mirage.core.ssh.constants import SCOPE_ERROR
 from mirage.core.ssh.copy import copy
 from mirage.core.ssh.create import create
 from mirage.core.ssh.du import du, du_all
 from mirage.core.ssh.exists import exists
 from mirage.core.ssh.find import find
-from mirage.core.ssh.glob import resolve_glob as _resolve_glob
 from mirage.core.ssh.mkdir import mkdir
 from mirage.core.ssh.read import read_bytes
 from mirage.core.ssh.readdir import readdir
@@ -40,6 +39,9 @@ from mirage.ops.ssh import OPS as SSH_OPS
 from mirage.resource.base import BaseResource
 from mirage.resource.ssh.prompt import PROMPT
 from mirage.types import ResourceName
+from mirage.utils.glob_walk import make_resolve_glob
+
+_resolve_glob = make_resolve_glob(readdir, SCOPE_ERROR)
 
 _SSH_OPS = {
     "read_bytes": read_bytes,
@@ -64,21 +66,9 @@ _SSH_OPS = {
 }
 
 
-class SSHConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    host: str
-    hostname: str | None = None
-    port: int | None = None
-    username: str | None = None
-    identity_file: str | None = None
-    root: str = "/"
-    timeout: int = 30
-    known_hosts: str | None = None
-
-
 class SSHResource(BaseResource):
 
+    accessor: SSHAccessor
     name: str = ResourceName.SSH
     caches_reads: bool = True
     _ops: dict[str, Any] = _SSH_OPS
@@ -90,23 +80,14 @@ class SSHResource(BaseResource):
         self.accessor = SSHAccessor(self.config)
         for fn in SSH_COMMANDS:
             self.register(fn)
-        for fn in SSH_OPS:
-            self.register_op(fn)
+        for ro in SSH_OPS:
+            self.register_op(ro)
 
     async def resolve_glob(self, paths, prefix: str = ""):
         return await _resolve_glob(self.accessor, paths, self._index)
 
-    async def fingerprint(self, path: str) -> str | None:
-        try:
-            remote = await ssh_stat(self.accessor, path)
-            size = remote.size or 0
-            mtime = remote.modified or ""
-            return f"{mtime}:{size}"
-        except FileNotFoundError:
-            return None
-
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
 
-    def load_state(self, state: dict) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         pass

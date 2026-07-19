@@ -18,18 +18,20 @@ from mirage.cache.file import io as cache_io
 from mirage.cache.manager import CacheManager
 from mirage.io import IOResult
 from mirage.observe.record import OpRecord
+from mirage.ops.config import NO_FOLLOW_OPS
 from mirage.types import ConsistencyPolicy, FileStat, PathSpec
+from mirage.utils.key_prefix import mount_key
 from mirage.workspace.mount import MountEntry
 from mirage.workspace.mount.namespace import Namespace
+from mirage.workspace.mount.namespace.overlay import merge_overlay_stat
+from mirage.workspace.reconcile import Reconciler
 from mirage.workspace.session import assert_mount_allowed
 
 _DISPATCH_READ_OPS = frozenset({"read", "read_bytes"})
-_DISPATCH_WRITE_OPS = frozenset(
-    {"write", "write_bytes", "append", "unlink", "create", "truncate"})
-# Ops that act on the path entry itself (lstat semantics); every other op
-# follows symlinks before mount lookup, so reads/writes go to the target
-# and the cache keys under the real path.
-_NO_FOLLOW_OPS = frozenset({"unlink", "rename", "rmdir"})
+_DISPATCH_WRITE_OPS = frozenset({
+    "write", "write_bytes", "append", "unlink", "create", "truncate", "mkdir",
+    "rmdir", "rename"
+})
 
 
 class Dispatcher:
@@ -49,11 +51,15 @@ class Dispatcher:
                  consistency: ConsistencyPolicy) -> None:
         self._namespace = namespace
         self._cache = cache
-        self._consistency = consistency
+        self._reconciler = Reconciler(cache, namespace, consistency)
+
+    @property
+    def reconciler(self) -> Reconciler:
+        return self._reconciler
 
     async def dispatch(self, op: str, path: PathSpec,
                        **kwargs: Any) -> tuple[Any, IOResult]:
-        if op not in _NO_FOLLOW_OPS:
+        if op not in NO_FOLLOW_OPS:
             followed = self._namespace.follow(path.virtual)
             if followed != path.virtual:
                 path = PathSpec.from_str_path(followed)
@@ -63,27 +69,32 @@ class Dispatcher:
 
         if caches_reads and op in _DISPATCH_READ_OPS:
             cached = await self._cache.get(path.virtual)
-            if cached is not None:
-                if self._consistency == ConsistencyPolicy.ALWAYS:
-                    try:
-                        remote_stat = await mount.execute_op(
-                            "stat", path.virtual)
-                    except FileNotFoundError:
-                        await self._cache.remove(path.virtual)
-                        raise
-                    if (remote_stat is not None
-                            and remote_stat.fingerprint is not None):
-                        fresh = await self._cache.is_fresh(
-                            path.virtual, remote_stat.fingerprint)
-                        if not fresh:
-                            await self._cache.remove(path.virtual)
-                            cached = None
-                if cached is not None:
-                    return cached, IOResult(reads={path.virtual: cached})
+            if cached is not None and await self._reconciler.may_serve_cached(
+                    mount, path.virtual):
+                return cached, IOResult(reads={path.virtual: cached})
 
-        result = await mount.execute_op(op, path.virtual, **kwargs)
+        if op == "rename" and isinstance(kwargs.get("dst"), PathSpec):
+            # Ops.rename addresses both endpoints against the source's
+            # mount; mirror that here so the backend sees a
+            # mount-relative destination.
+            dst = kwargs["dst"]
+            kwargs["dst"] = PathSpec(
+                virtual=dst.virtual,
+                directory=dst.virtual.rsplit("/", 1)[0] or "/",
+                resource_path=mount_key(dst.virtual, mount.prefix.rstrip("/")),
+            )
+        try:
+            result = await mount.execute_op(op, path.virtual, **kwargs)
+        except FileNotFoundError:
+            await self._reconciler.on_op_missing(op, path.virtual)
+            raise
+        if op == "stat" and isinstance(result, FileStat):
+            result = merge_overlay_stat(self._namespace.meta_for(path.virtual),
+                                        result)
         if op in _DISPATCH_WRITE_OPS:
-            await self.invalidate_after_write(mount, path.virtual)
+            await self.invalidate_after_write(mount, path)
+            if op == "rename" and isinstance(kwargs.get("dst"), PathSpec):
+                await self.invalidate_after_write(mount, kwargs["dst"])
         return result, IOResult()
 
     async def stat(self, path: str) -> FileStat:
@@ -134,13 +145,15 @@ class Dispatcher:
             mount = self._namespace.mount_for(path)
         except ValueError:
             return
-        await self.invalidate_after_write(mount, path)
+        spec = PathSpec.from_str_path(
+            path, mount_key(path, mount.prefix.rstrip("/")))
+        await self.invalidate_after_write(mount, spec)
 
     async def invalidate_after_write(self, mount: MountEntry,
-                                     path: str) -> None:
+                                     path: PathSpec) -> None:
+        await self._namespace.clear_times(path.virtual)
         manager = mount.cache_manager
         if manager is None:
-            manager = CacheManager(self._cache,
-                                   getattr(mount.resource, "index", None),
+            manager = CacheManager(self._cache, mount.resource.index,
                                    mount.prefix, mount.resource.caches_reads)
         await manager.invalidate_after_write(path)

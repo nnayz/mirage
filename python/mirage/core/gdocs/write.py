@@ -12,14 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.core.gdocs._client import DOCS_API_BASE, TokenManager, google_post
+from typing import Any
+
+from mirage.core.gdocs._client import TokenManager, docs_base, google_post
 
 
 async def append_text(
     token_manager: TokenManager,
     doc_id: str,
     text: str,
-) -> dict:
+) -> dict[str, Any]:
     """Append text to the end of a Google Doc.
 
     Args:
@@ -40,5 +42,5 @@ async def append_text(
             }
         }]
     }
-    url = f"{DOCS_API_BASE}/documents/{doc_id}:batchUpdate"
+    url = f"{docs_base(token_manager)}/documents/{doc_id}:batchUpdate"
     return await google_post(token_manager, url, payload)

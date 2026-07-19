@@ -5,13 +5,16 @@ from pydantic import BaseModel, ConfigDict
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.commands.builtin.nextcloud import COMMANDS as NEXTCLOUD_COMMANDS
-from mirage.core.nextcloud.glob import resolve_glob as _resolve_glob
-from mirage.core.nextcloud.stat import stat as nextcloud_stat
+from mirage.core.nextcloud.constants import SCOPE_ERROR
+from mirage.core.nextcloud.readdir import readdir
 from mirage.ops.nextcloud import OPS as NEXTCLOUD_OPS
 from mirage.resource.base import BaseResource
 from mirage.resource.nextcloud.prompt import PROMPT
 from mirage.types import PathSpec, ResourceName
+from mirage.utils.glob_walk import make_resolve_glob
 from mirage.utils.key_prefix import mount_key
+
+_resolve_glob = make_resolve_glob(readdir, SCOPE_ERROR)
 
 _NEXTCLOUD_OPS: dict[str, Any] = {}
 
@@ -28,6 +31,7 @@ class NextcloudConfig(BaseModel):
 
 class NextcloudResource(BaseResource):
 
+    accessor: NextcloudAccessor
     name: str = ResourceName.NEXTCLOUD
     caches_reads: bool = True
     _ops: dict[str, Any] = _NEXTCLOUD_OPS
@@ -52,14 +56,7 @@ class NextcloudResource(BaseResource):
             ]
         return await _resolve_glob(self.accessor, paths, self._index)
 
-    async def fingerprint(self, path: str) -> str | None:
-        try:
-            remote = await nextcloud_stat(self.accessor, path)
-            return remote.extra.get("etag")
-        except FileNotFoundError:
-            return None
-
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         redacted = ["password"]
         cfg = self.config.model_dump()
         for f in redacted:
@@ -72,5 +69,5 @@ class NextcloudResource(BaseResource):
             "config": cfg,
         }
 
-    def load_state(self, state: dict) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         pass

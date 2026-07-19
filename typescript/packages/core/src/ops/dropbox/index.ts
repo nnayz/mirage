@@ -12,9 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { DROPBOX_IO } from '../../commands/builtin/dropbox/io.ts'
+import { ResourceName } from '../../types.ts'
+import { makeGenericOps } from '../generic/factory.ts'
 import type { RegisteredOp } from '../registry.ts'
-import { readOp } from './read.ts'
-import { readdirOp } from './readdir.ts'
-import { statOp } from './stat.ts'
 
-export const DROPBOX_VFS_OPS: readonly RegisteredOp[] = [readdirOp, readOp, statOp] as const
+export const DROPBOX_OPS: readonly RegisteredOp[] = makeGenericOps(
+  ResourceName.DROPBOX,
+  DROPBOX_IO,
+  { emulateTruncate: true },
+)

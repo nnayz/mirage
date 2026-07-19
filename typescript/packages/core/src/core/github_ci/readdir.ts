@@ -233,3 +233,28 @@ export async function readdir(
 
   return []
 }
+
+export function isDirName(child: string): boolean {
+  // Entries are recognized by extension, so classification never needs
+  // the stat fallback.
+  const name = child.split('/').pop() ?? ''
+  return !(
+    name.endsWith('.json') ||
+    name.endsWith('.jsonl') ||
+    name.endsWith('.log') ||
+    name.endsWith('.zip')
+  )
+}
+
+export function isCrossRunRoot(path: PathSpec): boolean {
+  let original = path.virtual
+  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+  if (prefix !== '' && original.startsWith(prefix)) {
+    const rest = original.slice(prefix.length)
+    if (prefix.endsWith('/') || rest === '' || rest.startsWith('/')) {
+      original = rest === '' ? '/' : rest
+    }
+  }
+  const stripped = stripSlash(original)
+  return stripped === '' || stripped === 'runs'
+}

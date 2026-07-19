@@ -15,6 +15,7 @@
 import { randomBytes } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import type { WorkspaceRegistry } from '../registry.ts'
+import type { MountMode } from '@struktoai/mirage-core'
 
 export interface SessionsRoutesDeps {
   registry: WorkspaceRegistry
@@ -32,14 +33,16 @@ interface WsSessionParams {
 interface CreateSessionBody {
   sessionId?: string
   /**
-   * Optional list of mount prefixes this session is permitted to access.
-   * When omitted (or null), the session can reach every mount on the
-   * workspace. When provided, dispatch / commands / WorkspaceFS reject
-   * paths that resolve to mounts outside this set with a capability
-   * error. Infrastructure mounts (cache root, observer, /dev) are always
-   * implicitly allowed.
+   * Optional per-mount modes for this session. A map assigns each
+   * prefix a role ceiling ('read', 'write', 'exec'); an array of
+   * prefixes keeps each mount at its own configured mode. When omitted
+   * (or null), the session can reach every mount on the workspace.
+   * A mount outside the granted set is rejected with a capability error;
+   * a listed mount is narrowed to the weaker of its own mode and the
+   * session's mode. Infrastructure mounts (implicit scratch root,
+   * observer, /dev) are always implicitly allowed.
    */
-  allowedMounts?: string[] | null
+  mounts?: Record<string, string> | string[] | null
 }
 
 export function registerSessionsRoutes(app: FastifyInstance, deps: SessionsRoutesDeps): void {
@@ -52,27 +55,36 @@ export function registerSessionsRoutes(app: FastifyInstance, deps: SessionsRoute
       }
       const sid = req.body.sessionId ?? `sess_${randomBytes(6).toString('hex')}`
       const ws = deps.registry.get(wsId).runner.ws
+      await ws.ensureSessionsLoaded()
       if (ws.listSessions().some((s) => s.sessionId === sid)) {
         return reply.status(409).send({ detail: `session id already exists: ${sid}` })
       }
-      const allowed =
-        Array.isArray(req.body.allowedMounts) && req.body.allowedMounts.length > 0
-          ? new Set(req.body.allowedMounts)
-          : null
-      const sess = ws.createSession(sid, allowed !== null ? { allowedMounts: allowed } : {})
+      const mounts = req.body.mounts ?? null
+      const empty = Array.isArray(mounts) ? mounts.length === 0 : false
+      let sess
+      try {
+        sess = ws.createSession(
+          sid,
+          mounts !== null && !empty
+            ? { mounts: mounts as Record<string, MountMode> | string[] }
+            : {},
+        )
+      } catch (err) {
+        return reply.status(422).send({ detail: err instanceof Error ? err.message : String(err) })
+      }
+      await ws.flushSessions()
       return reply.status(201).send({ sessionId: sess.sessionId, cwd: sess.cwd })
     },
   )
 
-  app.get<{ Params: WsIdParams }>('/v1/workspaces/:wsId/sessions', (req, reply) => {
+  app.get<{ Params: WsIdParams }>('/v1/workspaces/:wsId/sessions', async (req, reply) => {
     const { wsId } = req.params
     if (!deps.registry.has(wsId)) {
       return reply.status(404).send({ detail: 'workspace not found' })
     }
-    return deps.registry
-      .get(wsId)
-      .runner.ws.listSessions()
-      .map((s) => ({ sessionId: s.sessionId, cwd: s.cwd }))
+    const ws = deps.registry.get(wsId).runner.ws
+    await ws.ensureSessionsLoaded()
+    return ws.listSessions().map((s) => ({ sessionId: s.sessionId, cwd: s.cwd }))
   })
 
   app.delete<{ Params: WsSessionParams }>(

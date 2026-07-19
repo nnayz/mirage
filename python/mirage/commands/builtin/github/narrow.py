@@ -17,11 +17,11 @@ from collections.abc import Callable
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.constants import PatternType
+from mirage.commands.builtin.github.io import resolve_glob
 from mirage.commands.builtin.grep_helper import classify_pattern, search_query
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.spec.types import FlagView
 from mirage.core.github.constants import SCOPE_WARN
-from mirage.core.github.glob import resolve_glob
 from mirage.core.github.scope import (count_scope_files, scope_relative_key,
                                       should_use_search)
 from mirage.core.github.search import narrow_paths
@@ -61,7 +61,7 @@ async def narrow_scope(
             search actually narrowed the set.
     """
     key = scope_relative_key(paths[0])
-    file_count = count_scope_files(index._entries, key)
+    file_count = count_scope_files(await index.entries(), key)
     query = search_query(pattern,
                          fixed_string) if pattern is not None else None
     use_search = (query is not None and should_use_search(
@@ -69,6 +69,7 @@ async def narrow_scope(
         on_default_branch=(accessor.ref == accessor.default_branch),
     ) and file_count > SCOPE_WARN)
     if use_search:
+        assert query is not None
         narrowed = await narrow_paths(accessor.config, accessor.owner,
                                       accessor.repo, query, paths)
         if narrowed:
@@ -106,12 +107,12 @@ def files_only_shortcircuit(
     Returns:
         tuple[ByteSource, IOResult] | None: the formatted file list, or None.
     """
-    if not fl.bool("args_l") or pattern is None:
+    if not fl.as_bool("args_l") or pattern is None:
         return None
-    if (fl.bool("i") or fl.bool("w") or fl.bool("v") or fl.bool("c")
-            or fl.bool("o")):
+    if (fl.as_bool("i") or fl.as_bool("w") or fl.as_bool("v")
+            or fl.as_bool("c") or fl.as_bool("o")):
         return None
-    fixed = fl.bool("F")
+    fixed = fl.as_bool("F")
     pt = classify_pattern(pattern, fixed)
     fully_literal = fixed or pt == PatternType.EXACT or (
         pt == PatternType.SIMPLE and "." not in pattern)

@@ -18,6 +18,7 @@ from typing import Any, Callable
 from mirage.commands.builtin.utils.safeguard import apply_safeguard
 from mirage.io import IOResult
 from mirage.io.types import materialize
+from mirage.runtime.route import RoutingDecision
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.job_table import JobTable
 from mirage.workspace.mount import MountRegistry
@@ -28,16 +29,17 @@ from mirage.workspace.types import ExecutionNode
 
 
 async def run_command_tree(
-    dispatch: Callable,
+    dispatch: Callable[..., Any],
     registry: MountRegistry,
     namespace: Namespace,
     job_table: JobTable,
-    execute_fn: Callable,
+    execute_fn: Callable[..., Any],
     agent_id: str,
     ast: Any,
     session: Session,
     stdin: Any,
     cancel: asyncio.Event | None,
+    routing_decision: RoutingDecision | None = None,
 ) -> tuple[IOResult, ExecutionNode]:
     """Run a parsed command tree and finalize its output stream.
 
@@ -61,6 +63,9 @@ async def run_command_tree(
         session (Session): shell session state.
         stdin (Any): input stream.
         cancel (asyncio.Event | None): event used to abort mid-flight.
+        routing_decision (RoutingDecision | None): the typed line's routing
+            decision, threaded to every command dispatch; None runs on
+            the static bindings.
 
     Returns:
         tuple[IOResult, ExecutionNode]: the finalized result (with
@@ -78,9 +83,10 @@ async def run_command_tree(
         session,
         stdin,
         cancel=cancel,
+        routing_decision=routing_decision,
     )
     stdout = await apply_barrier(stdout, io, BarrierPolicy.VALUE)
-    if io.safeguard is not None:
+    if io.safeguard is not None and stdout is not None:
         stdout, sg_io = await apply_safeguard(stdout, io.safeguard)
         if sg_io.stderr is not None:
             existing = await materialize(io.stderr)

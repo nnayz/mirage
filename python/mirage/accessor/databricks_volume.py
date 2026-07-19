@@ -17,12 +17,17 @@ from typing import Any
 from mirage.accessor.base import Accessor
 from mirage.resource.databricks_volume.config import DatabricksVolumeConfig
 
+WorkspaceClient: Any
+WorkspaceConfig: Any
 try:
-    from databricks.sdk import WorkspaceClient
-    from databricks.sdk.config import Config as WorkspaceConfig
+    from databricks.sdk import WorkspaceClient as _WorkspaceClient
+    from databricks.sdk.config import Config as _WorkspaceConfig
 except ImportError:
-    WorkspaceConfig = None
     WorkspaceClient = None
+    WorkspaceConfig = None
+else:
+    WorkspaceClient = _WorkspaceClient
+    WorkspaceConfig = _WorkspaceConfig
 
 
 class DatabricksVolumeAccessor(Accessor):
@@ -42,7 +47,7 @@ class DatabricksVolumeAccessor(Accessor):
                 raise ImportError("DatabricksVolumeResource requires the "
                                   "'databricks' extra. Install with: "
                                   "pip install mirage-ai[databricks]")
-            kwargs = {
+            kwargs: dict[str, Any] = {
                 "host": self.config.host,
                 "token": self.config.token,
                 "profile": self.config.profile,

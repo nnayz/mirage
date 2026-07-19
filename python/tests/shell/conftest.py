@@ -18,7 +18,7 @@ import subprocess
 import pytest
 
 from mirage.resource.ram import RAMResource
-from mirage.types import DEFAULT_SESSION_ID, MountMode
+from mirage.types import MountMode
 from mirage.workspace import Workspace
 
 
@@ -36,7 +36,7 @@ class ShellTestEnv:
             {"/data": (self.mem, MountMode.WRITE)},
             mode=MountMode.WRITE,
         )
-        self.ws.get_session(DEFAULT_SESSION_ID).cwd = "/data"
+        self.ws.get_session(self.ws.default_session_id).cwd = "/data"
 
     def create_file(self, name: str, content: bytes):
         local_path = self.tmp_path / name
@@ -69,6 +69,16 @@ class ShellTestEnv:
     def mirage_exit(self, cmd: str, stdin: bytes | None = None) -> int:
         io = asyncio.run(self.ws.execute(cmd, stdin=stdin))
         return io.exit_code
+
+    def mirage_result(self,
+                      cmd: str,
+                      stdin: bytes | None = None) -> tuple[int, str, str]:
+
+        async def _run():
+            io = await self.ws.execute(cmd, stdin=stdin)
+            return io.exit_code, await io.stdout_str(), await io.stderr_str()
+
+        return asyncio.run(_run())
 
     def native_exit(self, cmd: str) -> int:
         result = subprocess.run(

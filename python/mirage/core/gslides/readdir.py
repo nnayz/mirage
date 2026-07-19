@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.gslides import GSlidesAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.google.date_glob import glob_to_modified_range
 from mirage.core.google.drive import GoogleFileSuffix, list_all_files
 from mirage.resource.gslides.slide_entry import make_filename
@@ -31,20 +31,15 @@ def is_dir_name(child: str) -> bool:
 
 async def readdir(
     accessor: GSlidesAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = None,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
+    virtual = path_spec.virtual
     modified_range = None
-    if isinstance(path, PathSpec):
-        prefix = mount_prefix_of(path.virtual, path.resource_path)
-        if path.pattern:
-            modified_range = glob_to_modified_range(path.pattern)
-        path = path.directory if path.pattern else path.virtual
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    if path_spec.pattern:
+        modified_range = glob_to_modified_range(path_spec.pattern)
+    path = path_spec.directory if path_spec.pattern else path_spec.virtual
     if prefix and path.startswith(prefix):
         rest = path[len(prefix):]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
@@ -58,18 +53,16 @@ async def readdir(
     if key not in ("owned", "shared"):
         raise enoent(virtual)
 
-    if index is not None and not modified_range:
+    if not modified_range:
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
 
-    range_kwargs: dict[str, str] = {}
-    if modified_range:
-        range_kwargs["modified_after"] = modified_range[0]
-        range_kwargs["modified_before"] = modified_range[1]
-    files = await list_all_files(accessor.token_manager,
-                                 mime_type=MIME,
-                                 **range_kwargs)
+    files = await list_all_files(
+        accessor.token_manager,
+        mime_type=MIME,
+        modified_after=modified_range[0] if modified_range else None,
+        modified_before=modified_range[1] if modified_range else None)
     is_owned = key == "owned"
     entries = []
     for f in files:
@@ -79,20 +72,24 @@ async def readdir(
         if file_owned != is_owned:
             continue
         filename = make_filename(f["name"], f["id"], f.get("modifiedTime", ""))
+        source_size = int(f.get("size") or f.get("quotaBytesUsed") or 0)
+        # size stays None: Drive reports the source document's storage size,
+        # not the rendered JSON length (FileStat.size must be render-derived
+        # or None, see the CLAUDE.md FUSE rules). The source size lives in
+        # extra.
         entry = IndexEntry(
             id=f["id"],
             name=f["name"],
             resource_type="gslides/file",
             remote_time=f.get("modifiedTime", ""),
             vfs_name=filename,
-            size=int(f.get("size") or f.get("quotaBytesUsed") or 0) or None,
+            extra={"source_size": source_size} if source_size else {},
         )
         entries.append((filename, entry))
 
-    if index is not None:
-        if modified_range:
-            for name, entry in entries:
-                await index.put(f"{virtual_key}/{name}", entry)
-        else:
-            await index.set_dir(virtual_key, entries)
+    if modified_range:
+        for name, entry in entries:
+            await index.put(f"{virtual_key}/{name}", entry)
+    else:
+        await index.set_dir(virtual_key, entries)
     return [f"{prefix}/{key}/{name}" for name, _ in entries]

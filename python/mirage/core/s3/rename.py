@@ -19,19 +19,10 @@ from mirage.core.s3._client import _client_kwargs, _key, async_session
 from mirage.types import PathSpec
 
 
-async def rename(accessor: S3Accessor, src: PathSpec, dst: PathSpec) -> None:
-    if isinstance(src, str):
-        src = PathSpec(virtual=src,
-                       directory=src,
-                       resource_path=src.strip("/"))
-    if isinstance(src, PathSpec):
-        src = src.mount_path
-    if isinstance(dst, str):
-        dst = PathSpec(virtual=dst,
-                       directory=dst,
-                       resource_path=dst.strip("/"))
-    if isinstance(dst, PathSpec):
-        dst = dst.mount_path
+async def rename(accessor: S3Accessor, src_spec: PathSpec,
+                 dst_spec: PathSpec) -> None:
+    src = src_spec.mount_path
+    dst = dst_spec.mount_path
     config = accessor.config
     session = async_session(config)
     async with session.client(**_client_kwargs(config)) as client:
@@ -44,5 +35,5 @@ async def rename(accessor: S3Accessor, src: PathSpec, dst: PathSpec) -> None:
             Key=_key(dst, config),
         )
         await client.delete_object(Bucket=config.bucket, Key=_key(src, config))
-    await invalidate_after_write(dst)
-    await invalidate_after_unlink(src)
+    await invalidate_after_write(dst_spec)
+    await invalidate_after_unlink(src_spec)

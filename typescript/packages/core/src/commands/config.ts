@@ -17,7 +17,8 @@ import type { IndexCacheStore } from '../cache/index/index.ts'
 import { IOResult, type ByteSource } from '../io/types.ts'
 import type { Resource } from '../resource/base.ts'
 import type { CommandSafeguard, PathSpec } from '../types.ts'
-import type { PyodideRuntime } from '../workspace/executor/python/runtime.ts'
+import type { Runtime } from '../workspace/executor/runtime.ts'
+import type { StatOverlay } from '../ops/config.ts'
 import type { AggregateResult } from './builtin/aggregators.ts'
 import { renderHelp } from './spec/help.ts'
 import { CommandSpec, OperandKind, Option } from './spec/types.ts'
@@ -52,7 +53,8 @@ export interface CommandOpts {
   sessionId?: string
   env?: Record<string, string>
   execAllowed?: boolean
-  pythonRuntime?: PyodideRuntime
+  runtime?: Runtime
+  statOverlay?: StatOverlay
 }
 
 export type CommandFnResult = [ByteSource | null, IOResult] | null

@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import math
-from collections.abc import AsyncIterator
+from typing import Any
 
 from mirage.accessor.base import Accessor, NOOPAccessor
 from mirage.commands.builtin.generic_bind.provision import pure_provision
@@ -32,7 +32,7 @@ _MATH_FUNCS = {
     "sqrt": math.sqrt,
 }
 
-_SAFE_BUILTINS = {"__builtins__": {}}
+_SAFE_BUILTINS: dict[str, Any] = {"__builtins__": {}}
 
 
 def _eval_bc(expression: str, use_math: bool) -> str:
@@ -54,7 +54,7 @@ async def bc(
     accessor: Accessor = NOOPAccessor(),
     paths: list[PathSpec] | None = None,
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     args_l: bool = False,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:

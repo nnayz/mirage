@@ -13,19 +13,26 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { readFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import {
   buildResource,
   CommandSafeguard,
   ConsistencyPolicy,
+  ScriptSource,
   MountMode,
   OnExceed,
   RAMFileCacheStore,
+  RAMWorkspaceStateStore,
   RedisFileCacheStore,
+  RedisWorkspaceStateStore,
+  buildRuntime,
+  type RuntimeEntry,
   type FileCache,
   type IndexConfig,
   type RedisIndexConfig,
   type Resource,
+  type WorkspaceStateStore,
 } from '@struktoai/mirage-node'
 
 const VALID_MODES = new Set<string>([MountMode.READ, MountMode.WRITE, MountMode.EXEC])
@@ -38,6 +45,46 @@ function coerceMountMode(value: string | undefined, fallback: MountMode): MountM
 }
 
 const VALID_CONSISTENCY = new Set<string>([ConsistencyPolicy.LAZY, ConsistencyPolicy.ALWAYS])
+
+/** True for the docker-style single-line `.py` path form. */
+function isScriptPath(value: string): boolean {
+  return !value.includes('\n') && value.trim().endsWith('.py')
+}
+
+// Config carries a reference, the wire carries content (the docker
+// build-context model): the value must be a path to a .py file, read
+// at load time. In code, scripts are functions; config is the only
+// door for script source.
+function loadScriptSource(value: string): ScriptSource {
+  if (!isScriptPath(value)) {
+    throw new Error(
+      `a config script must reference a .py file (e.g. script: guard.py), got '${value}'`,
+    )
+  }
+  return new ScriptSource(readFileSync(value.trim(), 'utf-8'))
+}
+
+function buildRuntimeEntries(entries: unknown[]): RuntimeEntry[] {
+  const out: RuntimeEntry[] = []
+  for (const entry of entries) {
+    if (typeof entry === 'string') {
+      out.push(buildRuntime(entry))
+      continue
+    }
+    if (!isPlainObject(entry)) throw new Error('runtime entry must be a name or a mapping')
+    const { name, script, ...options } = entry
+    if (typeof name !== 'string' || name === '') {
+      throw new Error("runtime entry needs a non-empty 'name'")
+    }
+    if (script !== undefined && typeof script !== 'string') {
+      throw new Error('a runtime entry script must be a .py path string')
+    }
+    const built = buildRuntime(name, options)
+    if (script !== undefined) built.script = loadScriptSource(script)
+    out.push(built)
+  }
+  return out
+}
 
 function coerceConsistency(value: string | undefined): ConsistencyPolicy {
   if (value === undefined) return ConsistencyPolicy.LAZY
@@ -89,6 +136,20 @@ function normalizeConfigKeys(raw: Record<string, unknown>): Record<string, unkno
   const out = camelizeKeys(raw)
   if (isPlainObject(out.cache)) out.cache = camelizeKeys(out.cache)
   if (isPlainObject(out.index)) out.index = camelizeKeys(out.index)
+  if (isPlainObject(out.store)) {
+    const store = camelizeKeys(out.store)
+    for (const group of ['namespace', 'observer', 'workspace']) {
+      if (isPlainObject(store[group])) {
+        store[group] = camelizeKeys(store[group])
+      }
+    }
+    out.store = store
+  }
+  if (Array.isArray(out.runtimes)) {
+    out.runtimes = out.runtimes.map((entry): unknown =>
+      isPlainObject(entry) ? camelizeKeys(entry) : entry,
+    )
+  }
   return out
 }
 
@@ -188,14 +249,47 @@ interface RedisIndexBlock {
   keyPrefix?: string
 }
 
+interface RamStoreGroupBlock {
+  type?: 'ram'
+}
+
+interface RedisStoreGroupBlock {
+  type: 'redis'
+  url?: string
+  keyPrefix?: string
+}
+
+type StoreGroupBlock = RamStoreGroupBlock | RedisStoreGroupBlock
+
+/**
+ * The workspace state store: one block, four planes. The top-level
+ * type/url/keyPrefix pick the default backend for every control-plane
+ * group (namespace nodes, observer events, sessions + workspace
+ * metadata); the optional per-group overrides redirect one group to a
+ * different backend. Sessions and workspace metadata move together by
+ * design, so there is one `workspace` override, not two.
+ */
+interface StoreBlock {
+  type?: 'ram' | 'redis'
+  url?: string
+  keyPrefix?: string
+  namespace?: StoreGroupBlock | null
+  observer?: StoreGroupBlock | null
+  workspace?: StoreGroupBlock | null
+}
+
 export interface WorkspaceConfigRaw {
   mounts: Record<string, MountBlock>
+  runtimes?: (string | Record<string, unknown>)[] | null
+  route?: string | null
   mode?: string
   consistency?: string
   defaultSessionId?: string
   defaultAgentId?: string
+  workspaceId?: string
   cache?: RamCacheBlock | RedisCacheBlock | null
   index?: RamIndexBlock | RedisIndexBlock | null
+  store?: StoreBlock | null
 }
 
 function readProcessEnv(): Record<string, string> {
@@ -226,6 +320,28 @@ export function loadWorkspaceConfig(
   return normalized as unknown as WorkspaceConfigRaw
 }
 
+/**
+ * Resolve relative script paths against the config file's directory.
+ *
+ * A path-form `script`/`route` in a config file means "next to the
+ * file" (the docker build-context model), never "wherever the server
+ * happens to run". In-memory object configs are untouched.
+ */
+function absolutizeScripts(raw: WorkspaceConfigRaw, base: string): void {
+  const route = raw.route
+  if (typeof route === 'string' && isScriptPath(route) && !isAbsolute(route.trim())) {
+    raw.route = join(base, route.trim())
+  }
+  if (!Array.isArray(raw.runtimes)) return
+  for (const entry of raw.runtimes) {
+    if (typeof entry === 'string') continue
+    const script = entry.script
+    if (typeof script === 'string' && isScriptPath(script) && !isAbsolute(script.trim())) {
+      entry.script = join(base, script.trim())
+    }
+  }
+}
+
 export function loadWorkspaceConfigFile(
   path: string,
   env?: Record<string, string>,
@@ -235,7 +351,9 @@ export function loadWorkspaceConfigFile(
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`config source must be a mapping`)
   }
-  return loadWorkspaceConfig(parsed as Record<string, unknown>, env)
+  const config = loadWorkspaceConfig(parsed as Record<string, unknown>, env)
+  absolutizeScripts(config, dirname(resolve(path)))
+  return config
 }
 
 export interface WorkspaceArgs {
@@ -243,10 +361,14 @@ export interface WorkspaceArgs {
   options: {
     mode: MountMode
     consistency: ConsistencyPolicy
-    sessionId: string
-    agentId: string
+    sessionId?: string
+    agentId?: string
     cache?: FileCache & Resource
     index?: IndexConfig
+    workspaceId?: string
+    store?: WorkspaceStateStore
+    runtimes?: RuntimeEntry[]
+    route?: ScriptSource
   }
   fuseMounts: Record<string, boolean | string>
 }
@@ -285,6 +407,33 @@ function buildIndex(
   return cfg
 }
 
+function buildStoreGroup(block: StoreGroupBlock): WorkspaceStateStore {
+  if (block.type === 'redis') {
+    return new RedisWorkspaceStateStore({
+      ...(block.url !== undefined ? { url: block.url } : {}),
+      ...(block.keyPrefix !== undefined ? { keyPrefix: block.keyPrefix } : {}),
+    })
+  }
+  return new RAMWorkspaceStateStore()
+}
+
+function buildStateStore(block: StoreBlock | null | undefined): WorkspaceStateStore | undefined {
+  if (block === null || block === undefined) return undefined
+  const overrides = {
+    ...(block.namespace != null ? { namespace: buildStoreGroup(block.namespace) } : {}),
+    ...(block.observer != null ? { observer: buildStoreGroup(block.observer) } : {}),
+    ...(block.workspace != null ? { workspace: buildStoreGroup(block.workspace) } : {}),
+  }
+  if (block.type === 'redis') {
+    return new RedisWorkspaceStateStore({
+      ...(block.url !== undefined ? { url: block.url } : {}),
+      ...(block.keyPrefix !== undefined ? { keyPrefix: block.keyPrefix } : {}),
+      ...overrides,
+    })
+  }
+  return new RAMWorkspaceStateStore(overrides)
+}
+
 export async function configToWorkspaceArgs(cfg: WorkspaceConfigRaw): Promise<WorkspaceArgs> {
   const wsMode = coerceMountMode(cfg.mode, MountMode.WRITE)
   const consistency = coerceConsistency(cfg.consistency)
@@ -298,15 +447,24 @@ export async function configToWorkspaceArgs(cfg: WorkspaceConfigRaw): Promise<Wo
   }
   const cache = buildCache(cfg.cache)
   const index = buildIndex(cfg.index)
+  const stateStore = buildStateStore(cfg.store)
   return {
     resources,
     options: {
       mode: wsMode,
       consistency,
-      sessionId: cfg.defaultSessionId ?? 'default',
-      agentId: cfg.defaultAgentId ?? 'default',
+      ...(cfg.defaultSessionId !== undefined ? { sessionId: cfg.defaultSessionId } : {}),
+      ...(cfg.defaultAgentId !== undefined ? { agentId: cfg.defaultAgentId } : {}),
+      ...(cfg.workspaceId !== undefined ? { workspaceId: cfg.workspaceId } : {}),
       ...(cache !== undefined ? { cache } : {}),
       ...(index !== undefined ? { index } : {}),
+      ...(stateStore !== undefined ? { store: stateStore } : {}),
+      ...(cfg.runtimes !== undefined && cfg.runtimes !== null
+        ? { runtimes: buildRuntimeEntries(cfg.runtimes) }
+        : {}),
+      ...(cfg.route !== undefined && cfg.route !== null
+        ? { route: loadScriptSource(cfg.route) }
+        : {}),
     },
     fuseMounts,
   }

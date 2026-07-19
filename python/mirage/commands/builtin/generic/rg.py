@@ -3,10 +3,8 @@ from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
 from dataclasses import dataclass
 from functools import partial
 
-from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
-from mirage.cache.read_through import (cache_aware_read_bytes,
-                                       cache_aware_read_stream)
+from mirage.cache.read_through import (cache_aware_bound_bytes,
+                                       cache_aware_bound_stream)
 from mirage.commands.builtin.grep_helper import (compile_pattern,
                                                  grep_count_has_matches,
                                                  grep_lines, grep_stream,
@@ -58,29 +56,29 @@ def parse_flags(fl: FlagView, never_match: bool) -> RgFlags:
         never_match (bool): zero-pattern sentinel from resolve_pattern; it is
             a regex, so it suppresses -F.
     """
-    a_ctx = fl.int("A")
-    b_ctx = fl.int("B")
-    c_ctx = fl.int("C")
+    a_ctx = fl.as_int("A")
+    b_ctx = fl.as_int("B")
+    c_ctx = fl.as_int("C")
     context_after = a_ctx if a_ctx is not None else 0
     context_before = b_ctx if b_ctx is not None else 0
     if c_ctx is not None:
         # rg family: -C overrides -A/-B (grep keeps -A/-B precedence)
         context_before = context_after = c_ctx
     return RgFlags(
-        ignore_case=fl.bool("i"),
-        invert=fl.bool("v"),
-        line_numbers=fl.bool("n"),
-        count_only=fl.bool("c"),
-        files_only=fl.bool("args_l"),
-        whole_word=fl.bool("w"),
-        fixed_string=fl.bool("F") and not never_match,
-        only_matching=fl.bool("o"),
-        with_filename=fl.bool("H"),
-        no_filename=fl.bool("args_I"),
-        hidden=fl.bool("hidden"),
-        file_type=fl.str("type"),
-        glob_pattern=fl.str("glob"),
-        max_count=fl.int("m"),
+        ignore_case=fl.as_bool("i"),
+        invert=fl.as_bool("v"),
+        line_numbers=fl.as_bool("n"),
+        count_only=fl.as_bool("c"),
+        files_only=fl.as_bool("args_l"),
+        whole_word=fl.as_bool("w"),
+        fixed_string=fl.as_bool("F") and not never_match,
+        only_matching=fl.as_bool("o"),
+        with_filename=fl.as_bool("H"),
+        no_filename=fl.as_bool("args_I"),
+        hidden=fl.as_bool("hidden"),
+        file_type=fl.as_str("type"),
+        glob_pattern=fl.as_str("glob"),
+        max_count=fl.as_int("m"),
         context_after=context_after,
         context_before=context_before,
     )
@@ -92,12 +90,10 @@ async def rg(
     flags: Mapping[str, object] | None = None,
     *,
     readdir: Callable[..., Awaitable[list[str]]],
-    stat: Callable[[PathSpec], Awaitable[FileStat]],
+    stat: Callable[..., Awaitable[FileStat]],
     read_bytes: Callable[..., Awaitable[bytes]],
     read_stream: Callable[..., AsyncIterator[bytes]] | None,
-    accessor: Accessor | None = None,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
-    index: IndexCacheStore | None = None,
+    stdin: ByteSource | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Run ripgrep-style fallback search over backend paths or stdin.
 
@@ -117,43 +113,24 @@ async def rg(
         read_bytes (Callable[..., Awaitable[bytes]]): Whole-file reader.
         read_stream (Callable[..., AsyncIterator[bytes]] | None): Optional
             stream reader.
-        accessor (Accessor | None): Backend accessor passed
-            through wrapper helpers.
-        stdin (AsyncIterator[bytes] | bytes | None): Input used when paths is
-            empty.
-        index (IndexCacheStore | None): Optional cache index for wrapped
-            backend calls.
 
     Returns:
         tuple[ByteSource | None, IOResult]: Output stream and exit metadata.
     """
-    read_bytes = cache_aware_read_bytes(read_bytes)
+    read_bytes = cache_aware_bound_bytes(read_bytes)
     if read_stream is not None:
-        read_stream = cache_aware_read_stream(read_stream)
+        read_stream = cache_aware_bound_stream(read_stream)
     fl = FlagView(flags, spec=SPECS["rg"])
     pattern, never_match = await resolve_pattern(
-        texts, fl, read_bytes, accessor, index,
-        "rg: usage: rg [flags] pattern [path]")
+        texts, fl, read_bytes, "rg: usage: rg [flags] pattern [path]")
     f = parse_flags(fl, never_match)
 
     if paths:
         mount_prefix = mount_prefix_of(paths[0].virtual,
                                        paths[0].resource_path)
-        rd = partial(call_readdir,
-                     readdir,
-                     accessor,
-                     index=index,
-                     prefix=mount_prefix)
-        st = partial(call_stat,
-                     stat,
-                     accessor,
-                     index=index,
-                     prefix=mount_prefix)
-        rb = partial(call_read_bytes,
-                     read_bytes,
-                     accessor,
-                     index=index,
-                     prefix=mount_prefix)
+        rd = partial(call_readdir, readdir, prefix=mount_prefix)
+        st = partial(call_stat, stat, prefix=mount_prefix)
+        rb = partial(call_read_bytes, read_bytes, prefix=mount_prefix)
 
         is_dir = False
         try:
@@ -200,6 +177,7 @@ async def rg(
                     hidden=f.hidden,
                     warnings=warnings_f,
                     file_prefix=p.raw_path if label else None,
+                    no_filename=f.no_filename,
                 )
                 results.extend(rebase_raw(hits_full, p.virtual, p.raw_path))
             stderr = format_optional_records(warnings_f)
@@ -233,10 +211,10 @@ async def rg(
             return format_records(all_results), IOResult()
 
         if read_stream is not None:
-            source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
+            source: AsyncIterator[bytes] = read_stream(paths[0])
         else:
-            data = await rb(paths[0].virtual)
-            source = _wrap_bytes(data)
+            raw_bytes = await rb(paths[0].virtual)
+            source = _wrap_bytes(raw_bytes)
         stream = grep_stream(
             source,
             pat,

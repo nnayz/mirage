@@ -37,6 +37,7 @@ def _du_sync(root: Path, path: str) -> int:
             try:
                 total += os.path.getsize(os.path.join(dirpath, f))
             except OSError:
+                # unreadable entry: GNU du skips it and totals the rest
                 pass
     return total
 
@@ -63,24 +64,14 @@ def _du_all_sync(root: Path, path: str) -> tuple[list[tuple[str, int]], int]:
     return entries, total
 
 
-async def du(accessor: DiskAccessor, path: PathSpec) -> int:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+async def du(accessor: DiskAccessor, path_spec: PathSpec) -> int:
+    path = path_spec.mount_path
     return await asyncio.to_thread(_du_sync, accessor.root, path)
 
 
 async def du_all(
     accessor: DiskAccessor,
-    path: PathSpec,
+    path_spec: PathSpec,
 ) -> tuple[list[tuple[str, int]], int]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+    path = path_spec.mount_path
     return await asyncio.to_thread(_du_all_sync, accessor.root, path)

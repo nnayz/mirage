@@ -22,11 +22,10 @@ import { makeGenericCommands } from '../generic_bind/index.ts'
 import { S3_DU } from './du.ts'
 import { S3_MKDIR } from './mkdir.ts'
 import { S3_RM } from './rm.ts'
-import { S3_SED } from './sed.ts'
 import { S3_STAT } from './stat.ts'
 import { S3_TEE } from './tee.ts'
 import { S3_TOUCH } from './touch.ts'
-import { S3_CMD_OPS } from './ops.ts'
+import { S3_IO } from './io.ts'
 
 const S3_OVERRIDES = new Set(['stat', 'du', 'rm', 'mkdir', 'tee', 'touch'])
 
@@ -36,7 +35,7 @@ export const S3_COMMANDS: readonly RegisteredCommand[] = [
     readBytes: s3Read,
     statEntry: s3Stat,
   }),
-  ...makeGenericCommands<S3Accessor>(ResourceName.S3, S3_CMD_OPS, {
+  ...makeGenericCommands<S3Accessor>(ResourceName.S3, S3_IO, {
     overrides: S3_OVERRIDES,
   }),
   ...S3_STAT,
@@ -45,5 +44,4 @@ export const S3_COMMANDS: readonly RegisteredCommand[] = [
   ...S3_MKDIR,
   ...S3_TEE,
   ...S3_TOUCH,
-  ...S3_SED,
 ]

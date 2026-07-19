@@ -14,27 +14,11 @@
 
 import { describe, expect, it } from 'vitest'
 import { ResourceName } from '@struktoai/mirage-core'
-import {
-  appendOp,
-  createOp,
-  DISK_OPS,
-  mkdirOp,
-  readdirOp,
-  readFeatherOp,
-  readHdf5Op,
-  readOp,
-  readParquetOp,
-  renameOp,
-  rmdirOp,
-  statOp,
-  truncateOp,
-  unlinkOp,
-  writeOp,
-} from './index.ts'
+import { DISK_OPS } from './index.ts'
 
 describe('DISK_OPS', () => {
-  it('registers the expected 14 ops with resource=disk', () => {
-    expect(DISK_OPS).toHaveLength(14)
+  it('registers the expected 15 ops with resource=disk', () => {
+    expect(DISK_OPS).toHaveLength(15)
     for (const op of DISK_OPS) expect(op.resource).toBe(ResourceName.DISK)
   })
 
@@ -49,6 +33,7 @@ describe('DISK_OPS', () => {
         'readdir',
         'rename',
         'rmdir',
+        'setattr',
         'stat',
         'truncate',
         'unlink',
@@ -67,24 +52,17 @@ describe('DISK_OPS', () => {
   it('write-side ops are flagged write:true', () => {
     const writes = new Set(DISK_OPS.filter((o) => o.write).map((o) => o.name))
     expect(writes).toEqual(
-      new Set(['append', 'create', 'mkdir', 'rename', 'rmdir', 'truncate', 'unlink', 'write']),
+      new Set([
+        'append',
+        'create',
+        'mkdir',
+        'rename',
+        'rmdir',
+        'setattr',
+        'truncate',
+        'unlink',
+        'write',
+      ]),
     )
-  })
-
-  it('exports each op individually', () => {
-    expect(appendOp.name).toBe('append')
-    expect(createOp.name).toBe('create')
-    expect(mkdirOp.name).toBe('mkdir')
-    expect(readOp.name).toBe('read')
-    expect(readFeatherOp.filetype).toBe('.feather')
-    expect(readHdf5Op.filetype).toBe('.hdf5')
-    expect(readParquetOp.filetype).toBe('.parquet')
-    expect(readdirOp.name).toBe('readdir')
-    expect(renameOp.name).toBe('rename')
-    expect(rmdirOp.name).toBe('rmdir')
-    expect(statOp.name).toBe('stat')
-    expect(truncateOp.name).toBe('truncate')
-    expect(unlinkOp.name).toBe('unlink')
-    expect(writeOp.name).toBe('write')
   })
 })

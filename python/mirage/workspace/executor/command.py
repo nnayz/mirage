@@ -14,7 +14,7 @@
 
 import functools
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from mirage.commands.builtin.find_parse import (FindParseError, find_expr_tail,
                                                 parse_find_expression)
@@ -31,10 +31,13 @@ from mirage.commands.spec.usage import (missing_value_error,
 from mirage.io import IOResult
 from mirage.io.stream import async_chain, materialize, wrap_cachable_streams
 from mirage.io.types import ByteSource
+from mirage.runtime.base import Runtime
+from mirage.runtime.route import RoutingDecision
+from mirage.runtime.table import VfsRuntime
 from mirage.shell.call_stack import CallStack
 from mirage.shell.job_table import JobTable
 from mirage.shell.types import ERREXIT_EXEMPT_TYPES
-from mirage.types import PathSpec, word_text
+from mirage.types import FileStat, PathSpec, word_text
 from mirage.utils.errors import FS_ERRORS, format_fs_error
 from mirage.workspace.executor.control import ReturnSignal
 from mirage.workspace.executor.fanout import (_fan_out_traversal,
@@ -45,6 +48,7 @@ from mirage.workspace.executor.jobs import (handle_jobs, handle_kill,
 from mirage.workspace.mount import (MountCommandUnsupported, MountEntry,
                                     MountRegistry)
 from mirage.workspace.mount.namespace import Namespace
+from mirage.workspace.mount.namespace.overlay import merge_overlay_stat
 from mirage.workspace.route import JOB_BUILTINS, Consumer, route
 from mirage.workspace.session import Session, assert_mount_allowed
 from mirage.workspace.types import ExecutionNode
@@ -139,7 +143,52 @@ def _check_mount_root_guard_raw(
     return None
 
 
-def _scalar_find_flags(flag_kwargs: dict) -> dict:
+def _admission_denial(cmd_name: str) -> IOResult:
+    """The 126 result for a command no runtime accepted.
+
+    Args:
+        cmd_name (str): the refused command.
+    """
+    msg = f"mirage: {cmd_name}: no runtime accepted this line\n"
+    return IOResult(exit_code=126, stderr=msg.encode())
+
+
+def _line_runtime(
+        cmd_name: str, registry: MountRegistry, routing: RoutingDecision | None
+) -> tuple[Runtime | None, IOResult | None]:
+    """Resolve a command against the line's routing decision.
+
+    With no decision, the workspace's static bindings apply. With one,
+    the command's runtime is looked up in the decision: its binding,
+    or the decision's fallback when no entry captures it. A resolved
+    VfsRuntime means the executor serves the command itself (the vfs
+    runtime has no interpreter door); None means no runtime accepted
+    it: exit 126, like a shell refusing to exec.
+
+    Args:
+        cmd_name (str): the command being dispatched.
+        registry (MountRegistry): registry holding static bindings and
+            the world's vfs runtime.
+        routing (RoutingDecision | None): the typed line's decision.
+    """
+    if routing is None:
+        vfs = registry.vfs_runtime
+        restricted = isinstance(vfs, VfsRuntime) and vfs.restricted
+        runtime = registry.runtime_bindings.get(cmd_name)
+        if runtime is vfs and vfs is not None:
+            return None, None
+        if runtime is None and restricted:
+            return None, _admission_denial(cmd_name)
+        return runtime, None
+    runtime = routing.bindings.get(cmd_name, routing.fallback)
+    if runtime is None:
+        return None, _admission_denial(cmd_name)
+    if isinstance(runtime, VfsRuntime):
+        return None, None
+    return runtime, None
+
+
+def _scalar_find_flags(flag_kwargs: dict[str, object]) -> dict[str, Any]:
     # `repeatable=True` on find value-flags makes parse_to_kwargs emit
     # lists; bespoke backend wrappers read these as scalars. Migrated
     # backends read the expression from `texts` and ignore flag_kwargs.
@@ -149,23 +198,37 @@ def _scalar_find_flags(flag_kwargs: dict) -> dict:
     }
 
 
+def _namespace_stat_overlay(namespace: Namespace, virtual: str,
+                            stat: FileStat) -> FileStat:
+    """Merge namespace attr overlays into one stat row (ls rendering).
+
+    Args:
+        namespace (Namespace): addressing authority holding the overlay.
+        virtual (str): absolute virtual path of the statted entry.
+        stat (FileStat): backend stat result.
+    """
+    return merge_overlay_stat(namespace.meta_for(virtual), stat)
+
+
 async def run_on_mount(
     registry: MountRegistry,
     session: Session,
-    dispatch: Callable,
+    dispatch: Callable[..., Any],
     namespace: Namespace | None,
     cmd_name: str,
     paths: list[PathSpec],
     texts: list[str],
-    flag_kwargs: dict,
+    flag_kwargs: dict[str, object],
     stdin: ByteSource | None = None,
     resolve_hint: PathSpec | None = None,
     mount: MountEntry | None = None,
+    routing_decision: RoutingDecision | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Run one already-parsed command on the mount that owns its paths.
 
-    The shared single-mount execution tail: mount resolution, grant checks,
-    ``execute_cmd``, filesystem-error formatting, ls/find post-processing,
+    The shared single-mount execution tail: mount resolution, session
+    mode checks, ``execute_cmd``, filesystem-error formatting, ls/find
+    post-processing,
     and read/write key prefixing. ``handle_command`` uses it for the normal
     path, and passes it (bound) to the cross-mount runners so each operand
     executes natively on its owning mount.
@@ -183,8 +246,8 @@ async def run_on_mount(
         stdin (ByteSource | None): Standard input for the command.
         resolve_hint (PathSpec | None): Mount-resolution path when ``paths``
             is empty (a stream command running in stdin mode).
-        mount: Pre-resolved mount; skips resolution and grant checks, which
-            the caller already performed.
+        mount: Pre-resolved mount; skips resolution and session mode
+            checks, which the caller already performed.
     """
     if mount is None:
         resolve_paths = paths or ([resolve_hint] if resolve_hint else [])
@@ -208,6 +271,16 @@ async def run_on_mount(
     if cmd_name == "find":
         flag_kwargs = _scalar_find_flags(flag_kwargs)
 
+    # ls renders stat rows from the backend's own stat, which never sees
+    # namespace attr overlays (chmod/chown/touch on overlay backends);
+    # inject the merge so ls -l and the ops facade agree.
+    stat_overlay = (functools.partial(_namespace_stat_overlay, namespace)
+                    if cmd_name == "ls" and namespace is not None else None)
+
+    line_runtime, denial = _line_runtime(cmd_name, registry, routing_decision)
+    if denial is not None:
+        return None, denial
+
     try:
         stdout, io = await mount.execute_cmd(
             cmd_name,
@@ -220,6 +293,8 @@ async def run_on_mount(
             session_id=session.session_id,
             env=session.env,
             exec_allowed=registry.is_exec_allowed(),
+            runtime=line_runtime,
+            stat_overlay=stat_overlay,
         )
     except UsageError as exc:
         # Command-owned usage errors (extra operands, missing patterns)
@@ -234,7 +309,7 @@ async def run_on_mount(
     if cmd_name == "ls" and io.exit_code == 0:
         stdout = await _inject_child_mounts(stdout, registry, paths,
                                             flag_kwargs, session.cwd)
-        if namespace is not None and namespace.symlinks:
+        if namespace is not None and namespace.has_links():
             stdout = await _inject_links(stdout, namespace, paths, flag_kwargs,
                                          session.cwd)
 
@@ -398,8 +473,8 @@ def _option_error(cmd_name: str,
 
 
 async def handle_command(
-    execute_node: Callable,
-    dispatch: Callable,
+    execute_node: Callable[..., Any],
+    dispatch: Callable[..., Any],
     registry: MountRegistry,
     parts: list[str | PathSpec],
     session: Session,
@@ -407,6 +482,7 @@ async def handle_command(
     call_stack: CallStack | None = None,
     job_table: JobTable | None = None,
     namespace: Namespace | None = None,
+    routing_decision: RoutingDecision | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Execute a simple command.
 
@@ -437,14 +513,14 @@ async def handle_command(
     # Shell functions
     if cmd_name in session.functions:
         func_body = session.functions[cmd_name]
-        cs = call_stack or CallStack()
+        cs = call_stack if call_stack is not None else CallStack()
         # Positional args carry the word as typed ($1 stays sub/a.txt).
         text_args = [word_text(p) for p in parts[1:]]
         cs.push(text_args, function_name=cmd_name)
         saved_locals: dict[str, str | None] = {}
         session._local_vars = saved_locals
         try:
-            all_stdout: list = []
+            all_stdout: list[Any] = []
             merged_io = IOResult()
             last_exec = ExecutionNode(command=cmd_name, exit_code=0)
             for cmd in func_body:
@@ -527,13 +603,18 @@ async def handle_command(
                        if find_expr_tokens is not None else cross_parsed.texts)
         cross_refusal = _option_error(cmd_name, cross_parsed)
         if cross_refusal is not None:
-            msg, code = cross_refusal
+            refusal_msg, code = cross_refusal
             return None, IOResult(exit_code=code,
-                                  stderr=msg), ExecutionNode(command=cmd_str,
-                                                             exit_code=code,
-                                                             stderr=msg)
-        run_single = functools.partial(run_on_mount, registry, session,
-                                       dispatch, namespace)
+                                  stderr=refusal_msg), ExecutionNode(
+                                      command=cmd_str,
+                                      exit_code=code,
+                                      stderr=refusal_msg)
+        run_single = functools.partial(run_on_mount,
+                                       registry,
+                                       session,
+                                       dispatch,
+                                       namespace,
+                                       routing_decision=routing_decision)
         stdout, io = await handle_cross_mount(cmd_name,
                                               path_scopes,
                                               cross_texts,
@@ -554,6 +635,7 @@ async def handle_command(
             try:
                 mounts.append(registry.mount_for(s.virtual))
             except ValueError:
+                # a scope outside any mount contributes nothing here
                 pass
         io.safeguard = (resolve_across_mounts(cmd_name, mounts)
                         if mounts else resolve_safeguard(cmd_name))
@@ -567,14 +649,15 @@ async def handle_command(
             try:
                 mount_prefixes.add(registry.mount_for(s.virtual).prefix)
             except ValueError:
+                # a scope outside any mount contributes nothing here
                 pass
         if len(mount_prefixes) > 1:
             prefixes_str = ", ".join(sorted(mount_prefixes))
-            err = (f"{cmd_name}: paths span multiple mounts "
-                   f"({prefixes_str}), cross-mount not supported\n")
+            span_err = (f"{cmd_name}: paths span multiple mounts "
+                        f"({prefixes_str}), cross-mount not supported\n")
             return None, IOResult(
                 exit_code=1,
-                stderr=err.encode(),
+                stderr=span_err.encode(),
             ), ExecutionNode(command=cmd_str, exit_code=1)
 
     try:
@@ -598,7 +681,7 @@ async def handle_command(
             target = registry.mount_for(ps.virtual)
             assert_mount_allowed(target.prefix)
     except PermissionError as exc:
-        err = f"{exc}\n".encode()
+        err = f"{cmd_name}: {exc}\n".encode()
         return None, IOResult(exit_code=1,
                               stderr=err), ExecutionNode(command=cmd_str,
                                                          exit_code=1,
@@ -613,11 +696,12 @@ async def handle_command(
                                                  single_parsed.warnings)
     refusal = _option_error(cmd_name, single_parsed)
     if refusal is not None:
-        msg, code = refusal
+        refusal_msg, code = refusal
         return None, IOResult(exit_code=code,
-                              stderr=msg), ExecutionNode(command=cmd_str,
-                                                         exit_code=code,
-                                                         stderr=msg)
+                              stderr=refusal_msg), ExecutionNode(
+                                  command=cmd_str,
+                                  exit_code=code,
+                                  stderr=refusal_msg)
 
     if find_expr_tokens is not None:
         texts = find_expr_tokens
@@ -647,7 +731,8 @@ async def handle_command(
                                     texts,
                                     flag_kwargs,
                                     stdin=stdin,
-                                    mount=mount)
+                                    mount=mount,
+                                    routing_decision=routing_decision)
 
     if warn_bytes:
         existing = await materialize(io.stderr) if io.stderr else b""
@@ -663,7 +748,7 @@ async def _inject_links(
     stdout: ByteSource | None,
     namespace: Namespace,
     paths: list[PathSpec],
-    flag_kwargs: dict,
+    flag_kwargs: dict[str, object],
     cwd: str,
 ) -> ByteSource | None:
     """Append symlink entries living under the listed directory.
@@ -717,7 +802,7 @@ async def _inject_child_mounts(
     stdout: ByteSource | None,
     registry: MountRegistry,
     paths: list[PathSpec],
-    flag_kwargs: dict,
+    flag_kwargs: dict[str, object],
     cwd: str,
 ) -> ByteSource | None:
     if flag_kwargs.get("d") is True or flag_kwargs.get("R") is True:

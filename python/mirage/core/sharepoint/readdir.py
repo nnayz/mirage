@@ -1,19 +1,19 @@
+from functools import partial
+
 from mirage.accessor.sharepoint import SharePointAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry, ResourceType
-from mirage.core.sharepoint._client import GraphError, graph_list, item_url
-from mirage.core.sharepoint._resolver import list_drives, list_sites, resolve
+from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
+                                ResourceType)
+from mirage.core.msgraph.drive_ops import readdir_items
+from mirage.core.sharepoint._resolver import (drive_loc, list_drives,
+                                              list_sites, resolve)
 from mirage.core.sharepoint.stat import stat
-from mirage.types import FileType, PathSpec
-from mirage.utils.errors import enoent
+from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
 
 
-async def readdir(accessor: SharePointAccessor, path: PathSpec,
-                  index: IndexCacheStore) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
+async def readdir(accessor: SharePointAccessor,
+                  path: PathSpec,
+                  index: IndexCacheStore = NULL_INDEX) -> list[str]:
     original = path
     prefix = mount_prefix_of(path.virtual, path.resource_path) or ""
     raw = path.directory if path.pattern else path.virtual
@@ -60,43 +60,6 @@ async def readdir(accessor: SharePointAccessor, path: PathSpec,
     if resolved.drive_id is None:
         return []
 
-    drive_id = resolved.drive_id
-    item_path = resolved.item_path or ""
-    url = item_url(drive_id,
-                   "/" + item_path if item_path else "/",
-                   action="/children")
-    try:
-        children = await graph_list(accessor.config, url)
-    except GraphError as exc:
-        if exc.status != 404:
-            raise
-        info = await stat(accessor, original)
-        if info.type != FileType.DIRECTORY:
-            raise NotADirectoryError(virtual_key) from exc
-        raise enoent(virtual_key) from exc
-    base = "/" + stripped if stripped else ""
-    names: list[str] = []
-    index_entries: list[tuple[str, IndexEntry]] = []
-    for child in children:
-        cname = child.get("name", "")
-        key = f"{base}/{cname}"
-        names.append(key)
-        if "folder" in child:
-            entry = IndexEntry(id=key,
-                               name=cname,
-                               resource_type=ResourceType.FOLDER,
-                               size=child.get("size"),
-                               remote_time=child.get("lastModifiedDateTime",
-                                                     ""))
-        else:
-            entry = IndexEntry(id=key,
-                               name=cname,
-                               resource_type=ResourceType.FILE,
-                               size=child.get("size"),
-                               remote_time=child.get("lastModifiedDateTime",
-                                                     ""))
-        index_entries.append((cname, entry))
-    names = sorted(names)
-    virtual_entries = sorted((prefix + e if prefix else e) for e in names)
-    await index.set_dir(virtual_key, index_entries)
-    return virtual_entries
+    return await readdir_items(accessor.config, drive_loc(resolved, stripped),
+                               index, prefix, stripped, virtual_key,
+                               partial(stat, accessor, original, index))

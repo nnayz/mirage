@@ -12,55 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import asyncio
-import os
-import posixpath
-import sys
-from typing import Callable
+from typing import Any, Callable
 
 from mirage.accessor.base import Accessor, NOOPAccessor
-from mirage.commands.builtin.utils.stream import _read_stdin_async
+from mirage.commands.builtin.general.interpreter import (resolve_source,
+                                                         run_code)
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.io.types import ByteSource, IOResult
+from mirage.io.types import ByteSource, CommandOutput
+from mirage.runtime.base import Runtime
+from mirage.runtime.python import MontyRuntime
 from mirage.types import PathSpec
-
-
-def _resolve_script(name: str, cwd: PathSpec | None) -> PathSpec:
-    if name.startswith("/"):
-        path = posixpath.normpath(name)
-    else:
-        base = cwd.virtual.rstrip("/") if cwd is not None else ""
-        path = posixpath.normpath((base + "/" + name) if base else "/" + name)
-    last_slash = path.rfind("/")
-    directory = path[:last_slash + 1] if last_slash >= 0 else "/"
-    return PathSpec(resource_path=(path).strip("/"),
-                    virtual=path,
-                    directory=directory,
-                    resolved=True)
-
-
-async def _run_python_subprocess(
-    code: str,
-    stdin_data: bytes | None,
-    args: list[str],
-    env: dict[str, str] | None,
-) -> tuple[bytes, bytes | None, int]:
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-c",
-        code,
-        *args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env={
-            **os.environ,
-            **(env or {})
-        },
-    )
-    stdout, stderr = await proc.communicate(input=stdin_data)
-    return stdout, stderr or None, proc.returncode
 
 
 async def _python3(
@@ -69,58 +31,25 @@ async def _python3(
     *texts: str,
     c: str | None = None,
     stdin: ByteSource | None = None,
-    dispatch: Callable | None = None,
+    dispatch: Callable[..., Any] | None = None,
     cwd: PathSpec | None = None,
     env: dict[str, str] | None = None,
     exec_allowed: bool = True,
+    runtime: Runtime | None = None,
     **_extra: object,
-) -> tuple[ByteSource | None, IOResult]:
-    if not exec_allowed:
-        err = b"python3: root mount '/' is not in EXEC mode\n"
-        return None, IOResult(exit_code=126, stderr=err)
-
-    paths = paths or []
-    text_list = list(texts)
-    code: str | None = c
-    has_code = code is not None
-    script_path: PathSpec | None = None
-    arg_strs: list[str]
-    if has_code:
-        arg_strs = [p.virtual for p in paths] + text_list
-    elif paths:
-        script_path = paths[0]
-        arg_strs = [p.virtual for p in paths[1:]] + text_list
-    elif text_list:
-        script_path = _resolve_script(text_list[0], cwd)
-        arg_strs = text_list[1:]
-    else:
-        arg_strs = []
-
-    if code is None and script_path is not None:
-        if dispatch is None:
-            err = b"python3: no dispatch available to read script\n"
-            return None, IOResult(exit_code=1, stderr=err)
-        try:
-            data, _ = await dispatch("read", script_path)
-        except FileNotFoundError:
-            err = f"python3: {script_path.virtual}: No such file\n".encode()
-            return None, IOResult(exit_code=1, stderr=err)
-        code = data.decode(errors="replace") if isinstance(data, bytes) else ""
-
-    stdin_data = await _read_stdin_async(stdin)
-    if code is None:
-        if stdin_data:
-            code = stdin_data.decode(errors="replace")
-            stdin_data = None
-        else:
-            return None, IOResult(exit_code=1, stderr=b"python3: no input\n")
-
-    stdout, stderr, exit_code = await _run_python_subprocess(
-        code, stdin_data, arg_strs, env)
-    return stdout if stdout else None, IOResult(
-        exit_code=exit_code,
-        stderr=stderr,
-    )
+) -> CommandOutput:
+    error, prepared = await resolve_source("python3", paths, texts, c, stdin,
+                                           dispatch, cwd, exec_allowed)
+    if error is not None or prepared is None:
+        assert error is not None
+        return error
+    return await run_code("python3",
+                          prepared,
+                          env, {},
+                          runtime,
+                          fallback=MontyRuntime,
+                          fallback_errors=(ImportError, ),
+                          dispatch=dispatch)
 
 
 python3 = command("python3", resource=None, spec=SPECS["python3"])(_python3)

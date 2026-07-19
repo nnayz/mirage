@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readdir, readFile, stat as fsStat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   BaseResource,
   PathSpec,
   ResourceName,
+  makeResolveGlob,
   mountKey,
   mountPrefixOf,
   type FileStat,
@@ -28,12 +29,12 @@ import {
 } from '@struktoai/mirage-core'
 import { DISK_COMMANDS } from '../../commands/builtin/disk/index.ts'
 import { appendBytes as appendCore } from '../../core/disk/append.ts'
+import { SCOPE_ERROR } from '../../core/disk/constants.ts'
 import { copy as copyCore } from '../../core/disk/copy.ts'
 import { create as createCore } from '../../core/disk/create.ts'
 import { du as duCore, duAll as duAllCore } from '../../core/disk/du.ts'
 import { exists as existsCore } from '../../core/disk/exists.ts'
 import { find as findCore, type FindOptions as DiskFindOptions } from '../../core/disk/find.ts'
-import { resolveGlob as globCore } from '../../core/disk/glob.ts'
 import { mkdir as mkdirCore } from '../../core/disk/mkdir.ts'
 import { read as readCoreFn } from '../../core/disk/read.ts'
 import { readdir as readdirCore } from '../../core/disk/readdir.ts'
@@ -49,6 +50,8 @@ import { DiskAccessor } from '../../accessor/disk.ts'
 import { DISK_OPS } from '../../ops/disk/index.ts'
 import { DISK_PROMPT } from './prompt.ts'
 
+const globCore = makeResolveGlob(readdirCore, SCOPE_ERROR)
+
 export interface DiskResourceOptions {
   root: string
 }
@@ -56,6 +59,7 @@ export interface DiskResourceOptions {
 export interface DiskResourceState {
   type: string
   files: Record<string, Uint8Array>
+  modes?: Record<string, number>
 }
 
 async function walkFiles(root: string, current: string, out: string[]): Promise<void> {
@@ -184,15 +188,6 @@ export class DiskResource extends BaseResource implements Resource {
     return findCore(this.accessor, p, options as DiskFindOptions)
   }
 
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    try {
-      const remote = await statCore(this.accessor, p)
-      return remote.modified ?? null
-    } catch {
-      return null
-    }
-  }
-
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
     const effective = prefix
       ? paths.map((p) =>
@@ -213,16 +208,22 @@ export class DiskResource extends BaseResource implements Resource {
   async getState(): Promise<DiskResourceState> {
     await mkdir(this.root, { recursive: true })
     const files: Record<string, Uint8Array> = {}
+    const modes: Record<string, number> = {}
     const fileList: string[] = []
     await walkFiles(this.root, this.root, fileList)
     for (const full of fileList) {
       const rel = path.relative(this.root, full).split(path.sep).join('/')
       const data = await readFile(full)
       files[rel] = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      // Capture the real inode mode: it is the base truth for disk
+      // permissions (the sidecar is gone), so restore must reapply it or
+      // a chmod would reset to the host umask.
+      modes[rel] = (await fsStat(full)).mode & 0o7777
     }
     return {
       type: this.kind,
       files,
+      modes,
     }
   }
 
@@ -232,6 +233,8 @@ export class DiskResource extends BaseResource implements Resource {
       const full = path.join(this.root, rel)
       await mkdir(path.dirname(full), { recursive: true })
       await writeFile(full, data)
+      const mode = state.modes?.[rel]
+      if (mode !== undefined) await chmod(full, mode)
     }
   }
 }

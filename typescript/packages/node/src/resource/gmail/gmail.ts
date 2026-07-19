@@ -16,7 +16,7 @@ import {
   BaseResource,
   GMAIL_COMMANDS,
   GMAIL_PROMPT,
-  GMAIL_VFS_OPS,
+  GMAIL_OPS,
   GMAIL_WRITE_PROMPT,
   GmailAccessor,
   PathSpec,
@@ -24,7 +24,7 @@ import {
   TokenManager,
   gmailRead,
   gmailReaddir,
-  gmailResolveGlob,
+  makeResolveGlob,
   gmailStat,
   mountKey,
   mountPrefixOf,
@@ -34,6 +34,8 @@ import {
   type Resource,
 } from '@struktoai/mirage-core'
 import { redactGmailConfig, type GmailConfig, type GmailConfigRedacted } from './config.ts'
+
+const gmailResolveGlob = makeResolveGlob(gmailReaddir)
 
 export interface GmailResourceState {
   type: string
@@ -69,7 +71,7 @@ export class GmailResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return GMAIL_VFS_OPS
+    return GMAIL_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -82,11 +84,6 @@ export class GmailResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return gmailStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

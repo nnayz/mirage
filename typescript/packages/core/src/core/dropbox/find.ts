@@ -13,33 +13,26 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { DropboxAccessor } from '../../accessor/dropbox.ts'
-import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { FindOptions } from '../../resource/base.ts'
 import type { PathSpec } from '../../types.ts'
 import { walkFind } from '../generic/find.ts'
-import { readdir } from './readdir.ts'
+import { isDirName, readdir } from './readdir.ts'
 import { stat } from './stat.ts'
 
-function isDirName(child: string): boolean | null {
-  // Cold reads mark folders with a trailing slash; warm index-cache hits
-  // return slash-less keys, so fall back to stat for classification.
-  return child.endsWith('/') ? true : null
-}
-
-export async function find(
+// Same readdir/stat walk the generic fallback uses, wired as a find op
+// so the cp builder (which plans recursive copies through find) works.
+export function find(
   accessor: DropboxAccessor,
   path: PathSpec,
-  options: FindOptions = {},
-  index?: IndexCacheStore,
+  options: FindOptions,
 ): Promise<string[]> {
   return walkFind(
     path,
     {
-      readdir: (spec, idx) => readdir(accessor, spec, idx),
-      stat: (spec, idx) => stat(accessor, spec, idx),
-      isDirName,
+      readdir: (spec, index) => readdir(accessor, spec, index),
+      stat: (spec, index) => stat(accessor, spec, index),
+      isDirName: (child) => isDirName(child),
     },
     options,
-    index,
   )
 }

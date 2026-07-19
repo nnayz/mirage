@@ -18,7 +18,9 @@ import { asyncChain } from '../../../io/stream.ts'
 import { IOResult } from '../../../io/types.ts'
 import type { ByteSource } from '../../../io/types.ts'
 import type { CallStack } from '../../../shell/call_stack.ts'
+import { ExitSignal } from '../../../shell/errors.ts'
 import { SET_FLAG_TO_OPTION } from '../../../shell/types.ts'
+import type { Namespace } from '../../mount/namespace/namespace.ts'
 import type { Session } from '../../session/session.ts'
 import { ExecutionNode } from '../../types.ts'
 import { ReturnSignal } from '../command.ts'
@@ -104,17 +106,20 @@ export function handlePrintenv(name: string | null, session: Session): Result {
   return [out, new IOResult(), new ExecutionNode({ command: 'printenv', exitCode: 0 })]
 }
 
-export function handleWhoami(session: Session): Result {
-  const user = session.env.USER
-  if (user === undefined) {
-    const err = new TextEncoder().encode('whoami: USER not set\n')
+export function handleWhoami(namespace: Namespace): Result {
+  // GNU whoami reports the effective user and never consults $USER; the
+  // workspace user (launch agentId, shared via the namespace store) is
+  // the effective identity here. With no claimed identity it fails like
+  // GNU does for a uid with no passwd entry.
+  if (namespace.user === null) {
+    const err = new TextEncoder().encode('whoami: cannot find name for user ID\n')
     return [
       null,
       new IOResult({ exitCode: 1, stderr: err }),
       new ExecutionNode({ command: 'whoami', exitCode: 1, stderr: err }),
     ]
   }
-  const out = new TextEncoder().encode(`${user}\n`)
+  const out = new TextEncoder().encode(`${namespace.user}\n`)
   return [out, new IOResult(), new ExecutionNode({ command: 'whoami', exitCode: 0 })]
 }
 
@@ -236,6 +241,26 @@ export function handleReturn(args: readonly string[]): Result {
     )
   }
   throw new ReturnSignal(first !== undefined ? Number(first) : 0)
+}
+
+/** Exit the shell, with bash's argument checks. */
+export function handleExit(args: readonly string[], session: Session): Result {
+  const first = args[0]
+  if (first !== undefined && !isShiftCount(first)) {
+    // bash exits with 2 after the diagnostic.
+    throw new ExitSignal(2, new TextEncoder().encode(`exit: ${first}: numeric argument required\n`))
+  }
+  if (args.length > 1) {
+    // bash refuses to exit and the command fails with 1.
+    const err = new TextEncoder().encode('exit: too many arguments\n')
+    return [
+      null,
+      new IOResult({ exitCode: 1, stderr: err }),
+      new ExecutionNode({ command: 'exit', exitCode: 1, stderr: err }),
+    ]
+  }
+  const code = first !== undefined ? Number(first) : session.lastExitCode
+  throw new ExitSignal(((code % 256) + 256) % 256)
 }
 
 /**

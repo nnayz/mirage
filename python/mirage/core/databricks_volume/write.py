@@ -18,9 +18,8 @@ from io import BytesIO
 
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
 from mirage.cache.context import invalidate_after_write
-from mirage.cache.index import IndexCacheStore
-from mirage.core.databricks_volume._helpers import (ensure_path_spec,
-                                                    parent_path)
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.databricks_volume._helpers import parent_path
 from mirage.core.databricks_volume.errors import is_not_found
 from mirage.core.databricks_volume.path import backend_path
 from mirage.observe.context import record
@@ -72,9 +71,8 @@ async def write_bytes(
     accessor: DatabricksVolumeAccessor,
     path: PathSpec,
     data: bytes,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> None:
-    path = ensure_path_spec(path)
     parent = parent_path(path)
     remote_parent = backend_path(accessor.config, parent)
     remote_path = backend_path(accessor.config, path)

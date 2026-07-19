@@ -17,7 +17,7 @@ import {
   type FileStat,
   DROPBOX_COMMANDS,
   DROPBOX_PROMPT,
-  DROPBOX_VFS_OPS,
+  DROPBOX_OPS,
   DropboxAccessor,
   DropboxTokenManager,
   type IndexCacheStore,
@@ -29,10 +29,12 @@ import {
   ResourceName,
   dropboxRead,
   dropboxReaddir,
-  dropboxResolveGlob,
+  makeResolveGlob,
   dropboxStat,
 } from '@struktoai/mirage-core'
 import { redactDropboxConfig, type DropboxConfig, type DropboxConfigRedacted } from './config.ts'
+
+const dropboxResolveGlob = makeResolveGlob(dropboxReaddir)
 
 export interface DropboxResourceState {
   type: string
@@ -54,9 +56,14 @@ export class DropboxResource implements Resource {
       clientId: config.clientId,
       ...(config.clientSecret !== undefined ? { clientSecret: config.clientSecret } : {}),
       refreshToken: config.refreshToken,
+      ...(config.endpoint !== undefined ? { endpoint: config.endpoint } : {}),
       ...(config.refreshFn !== undefined ? { refreshFn: config.refreshFn } : {}),
     })
-    this.accessor = new DropboxAccessor({ tokenManager: tm })
+    this.accessor = new DropboxAccessor({
+      tokenManager: tm,
+      ...(config.rootPath !== undefined ? { rootPath: config.rootPath } : {}),
+      ...(config.contentSearch !== undefined ? { contentSearch: config.contentSearch } : {}),
+    })
     this.index = new RAMIndexCacheStore({ ttl: 86_400 })
   }
 
@@ -73,7 +80,7 @@ export class DropboxResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return DROPBOX_VFS_OPS
+    return DROPBOX_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -86,11 +93,6 @@ export class DropboxResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return dropboxStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

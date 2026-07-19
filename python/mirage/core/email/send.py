@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from email.message import EmailMessage
+from typing import Any
 
 import aiosmtplib
 
@@ -21,13 +22,16 @@ from mirage.resource.secrets import reveal_secret
 
 
 async def _smtp_send(config: EmailConfig, msg: EmailMessage) -> None:
+    # start_tls=None upgrades opportunistically when the server advertises
+    # STARTTLS and stays plaintext otherwise, mirroring nodemailer's
+    # behavior in the TS backend (which only forces TLS on port 465).
     await aiosmtplib.send(
         msg,
         hostname=config.smtp_host,
         port=config.smtp_port,
         username=config.username,
         password=reveal_secret(config.password),
-        start_tls=True,
+        start_tls=None,
     )
 
 
@@ -36,7 +40,7 @@ async def send_message(
     to: str,
     subject: str,
     body: str,
-) -> dict:
+) -> dict[str, Any]:
     msg = EmailMessage()
     msg["From"] = config.username
     msg["To"] = to
@@ -48,9 +52,9 @@ async def send_message(
 
 async def reply_message(
     config: EmailConfig,
-    original: dict,
+    original: dict[str, Any],
     body: str,
-) -> dict:
+) -> dict[str, Any]:
     msg = EmailMessage()
     msg["From"] = config.username
     msg["To"] = original["from"]["email"]
@@ -70,9 +74,9 @@ async def reply_message(
 
 async def reply_all_message(
     config: EmailConfig,
-    original: dict,
+    original: dict[str, Any],
     body: str,
-) -> dict:
+) -> dict[str, Any]:
     all_recipients: set[str] = set()
     all_recipients.add(original["from"]["email"])
     for r in original.get("to", []):
@@ -100,9 +104,9 @@ async def reply_all_message(
 
 async def forward_message(
     config: EmailConfig,
-    original: dict,
+    original: dict[str, Any],
     to: str,
-) -> dict:
+) -> dict[str, Any]:
     msg = EmailMessage()
     msg["From"] = config.username
     msg["To"] = to

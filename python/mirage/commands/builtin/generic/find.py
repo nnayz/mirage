@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.find_eval import (FindArgs, FindEntry,
                                                args_to_tree, keep,
+                                               prefix_path_nodes,
                                                tree_has_empty)
 from mirage.commands.builtin.find_helper import (_parse_depth, _parse_mtime,
                                                  _parse_size)
@@ -11,6 +12,7 @@ from mirage.commands.builtin.find_parse import parse_find_expression
 from mirage.commands.builtin.utils.output import format_records
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, FindType, PathSpec
+from mirage.utils.dates import iso_timestamp
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.path import rebase_raw
 
@@ -80,10 +82,11 @@ async def apply_mtime_filter(
     filtered: list[str] = []
     for r in results:
         try:
-            spec = PathSpec(virtual=r,
-                            directory=r,
+            virtual = apply_mount_prefix([r], mount_prefix)[0]
+            spec = PathSpec(virtual=virtual,
+                            directory=virtual,
                             resolved=False,
-                            resource_path=mount_key(r, mount_prefix))
+                            resource_path=mount_key(virtual, mount_prefix))
             s = await stat(spec)
         except (FileNotFoundError, ValueError):
             continue
@@ -144,6 +147,12 @@ async def find(
         except (FileNotFoundError, ValueError) as exc:
             stderr = f"find: '{search_path.raw_path}': {exc}".encode()
             return b"", IOResult(stderr=stderr, exit_code=1)
+    root_prefix = mount_prefix_of(search_path.virtual,
+                                  search_path.resource_path)
+    # `-path` matches the display path as printed; stamp the mount
+    # prefix onto Path nodes before the backend walks mount-relative
+    # keys (#396).
+    args.tree = prefix_path_nodes(args_to_tree(args), root_prefix)
     results = await find_core(
         search_path,
         name=args.name,
@@ -159,8 +168,6 @@ async def find(
         empty=args.empty,
         tree=args.tree,
     )
-    root_prefix = mount_prefix_of(search_path.virtual,
-                                  search_path.resource_path)
     if stat is not None:
         results = await apply_mtime_filter(results,
                                            mtime_min=args.mtime_min,
@@ -175,22 +182,14 @@ async def find(
 def _modified_ts(modified: str | None) -> float | None:
     # Missing or unparseable timestamps exclude the entry from -mtime
     # matching, mirroring the TS implementation's NaN handling.
-    if not modified:
-        return None
-    try:
-        dt = datetime.fromisoformat(modified)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.timestamp()
+    return iso_timestamp(modified)
 
 
 async def _stat_entry(
     stat: Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]],
     path: str,
     prefix: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
 ) -> FileStat | None:
     spec = PathSpec(virtual=path,
                     directory=path,
@@ -211,7 +210,7 @@ async def _is_empty_entry(
     path: str,
     is_dir: bool,
     prefix: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
 ) -> bool:
     if is_dir:
         spec = PathSpec(virtual=path,
@@ -232,7 +231,7 @@ async def _walk_collect(
     stat: Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]],
     is_dir_name: Callable[[str], bool | None],
     spec: PathSpec,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     maxdepth: int | None,
     depth: int,
     acc: list[tuple[str, bool]],
@@ -271,7 +270,7 @@ async def walk_find(
                       Awaitable[list[str]]],
     stat: Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]],
     is_dir_name: Callable[[str], bool | None],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     args: FindArgs,
 ) -> list[str]:
     collected: list[tuple[str, bool]] = []
@@ -286,7 +285,7 @@ async def walk_find(
     # depth 1.
     await _walk_collect(readdir, stat, is_dir_name, search_path, index,
                         args.maxdepth, 1, collected)
-    tree = args_to_tree(args)
+    tree = prefix_path_nodes(args_to_tree(args), prefix)
     need_empty = tree_has_empty(tree)
     results: list[str] = []
     for p, is_dir in sorted(collected):
@@ -309,26 +308,28 @@ async def walk_find(
                           is_empty=is_empty)
         if not keep(entry, tree, args.mindepth):
             continue
-        need_size = not is_dir and (args.min_size is not None
-                                    or args.max_size is not None)
+        need_size = (args.min_size is not None or args.max_size is not None)
         need_mtime = args.mtime_min is not None or args.mtime_max is not None
-        if need_size or need_mtime:
+        st = None
+        if (need_size and not is_dir) or need_mtime:
             st = await _stat_entry(stat, p, prefix, index)
             if st is None:
                 continue
-            if need_size:
-                size = st.size or 0
-                if args.min_size is not None and size < args.min_size:
-                    continue
-                if args.max_size is not None and size > args.max_size:
-                    continue
-            if need_mtime:
-                ts = _modified_ts(st.modified)
-                if ts is None:
-                    continue
-                if args.mtime_min is not None and ts < args.mtime_min:
-                    continue
-                if args.mtime_max is not None and ts > args.mtime_max:
-                    continue
+        if need_size:
+            # Directories count as size 0 for -size: GNU compares the inode
+            # size (e.g. 4096 on ext4); see CLAUDE.md Rules.
+            size = 0 if is_dir else ((st.size if st is not None else 0) or 0)
+            if args.min_size is not None and size < args.min_size:
+                continue
+            if args.max_size is not None and size > args.max_size:
+                continue
+        if need_mtime and st is not None:
+            ts = _modified_ts(st.modified)
+            if ts is None:
+                continue
+            if args.mtime_min is not None and ts < args.mtime_min:
+                continue
+            if args.mtime_max is not None and ts > args.mtime_max:
+                continue
         results.append(p)
     return results

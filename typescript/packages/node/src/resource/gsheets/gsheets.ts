@@ -16,7 +16,7 @@ import {
   BaseResource,
   GSHEETS_COMMANDS,
   GSHEETS_PROMPT,
-  GSHEETS_VFS_OPS,
+  GSHEETS_OPS,
   GSHEETS_WRITE_PROMPT,
   GSheetsAccessor,
   PathSpec,
@@ -24,7 +24,7 @@ import {
   TokenManager,
   gsheetsRead,
   gsheetsReaddir,
-  gsheetsResolveGlob,
+  makeResolveGlob,
   gsheetsStat,
   mountKey,
   mountPrefixOf,
@@ -34,6 +34,8 @@ import {
   type Resource,
 } from '@struktoai/mirage-core'
 import { redactGSheetsConfig, type GSheetsConfig, type GSheetsConfigRedacted } from './config.ts'
+
+const gsheetsResolveGlob = makeResolveGlob(gsheetsReaddir)
 
 export interface GSheetsResourceState {
   type: string
@@ -56,6 +58,8 @@ export class GSheetsResource extends BaseResource implements Resource {
       clientId: config.clientId,
       clientSecret: config.clientSecret,
       refreshToken: config.refreshToken,
+      ...(config.refreshFn !== undefined ? { refreshFn: config.refreshFn } : {}),
+      ...(config.apiBase !== undefined ? { apiBase: config.apiBase } : {}),
     })
     this.accessor = new GSheetsAccessor({ tokenManager: tm })
   }
@@ -73,7 +77,7 @@ export class GSheetsResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return GSHEETS_VFS_OPS
+    return GSHEETS_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -86,11 +90,6 @@ export class GSheetsResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return gsheetsStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

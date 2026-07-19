@@ -18,6 +18,9 @@ export interface DropboxConfig {
   clientId: string
   clientSecret: string
   refreshToken: string
+  rootPath?: string
+  contentSearch?: boolean
+  endpoint?: string
   refreshFn?: (refreshToken: string) => Promise<{ accessToken: string; expiresIn: number }>
 }
 
@@ -25,12 +28,18 @@ export interface DropboxConfigRedacted {
   clientId: string
   clientSecret: '<REDACTED>'
   refreshToken: '<REDACTED>'
+  rootPath?: string
+  contentSearch?: boolean
+  endpoint?: string
 }
 
 const DropboxConfigSchema = z.object({
   clientId: z.string(),
   clientSecret: secretStr(),
   refreshToken: secretStr(),
+  rootPath: z.string().optional(),
+  contentSearch: z.boolean().optional(),
+  endpoint: z.string().optional(),
 })
 
 export function redactDropboxConfig(config: DropboxConfig): DropboxConfigRedacted {
@@ -43,6 +52,8 @@ export function normalizeDropboxConfig(input: Record<string, unknown>): DropboxC
       client_id: 'clientId',
       client_secret: 'clientSecret',
       refresh_token: 'refreshToken',
+      root_path: 'rootPath',
+      content_search: 'contentSearch',
     },
   }) as unknown as DropboxConfig
 }

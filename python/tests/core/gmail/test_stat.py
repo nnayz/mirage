@@ -59,6 +59,7 @@ async def _populate_index(idx):
              name="Test Email",
              resource_type="gmail/message",
              vfs_name="Test_Email__msg1.gmail.json",
+             extra={"size_estimate": 4321},
          )),
         ("Test_Email__msg1",
          IndexEntry(
@@ -132,6 +133,10 @@ async def test_stat_message(accessor, index):
     assert result.name == "Test_Email__msg1.gmail.json"
     assert result.type == FileType.JSON
     assert result.extra["message_id"] == "msg1"
+    # rendered .gmail.json length is unknown until read; the source
+    # estimate is surfaced via extra only
+    assert result.size is None
+    assert result.extra["size_estimate"] == 4321
 
 
 @pytest.mark.asyncio
@@ -215,11 +220,14 @@ async def test_stat_real_label_via_api(accessor, index):
 
 
 @pytest.mark.asyncio
-async def test_stat_index_none_raises(accessor):
-    with pytest.raises(FileNotFoundError):
-        await stat(
-            accessor,
-            PathSpec(resource_path=mount_key("/gmail/INBOX/x.gmail.json",
-                                             "/gmail"),
-                     virtual="/gmail/INBOX/x.gmail.json",
-                     directory="/gmail/INBOX/x.gmail.json"), None)
+async def test_stat_propagates_parent_refresh_failure(accessor, index):
+    failure = RuntimeError("gmail unavailable")
+    with patch("mirage.core.gmail.stat._readdir",
+               new_callable=AsyncMock,
+               side_effect=failure):
+        with pytest.raises(RuntimeError, match="gmail unavailable"):
+            await stat(
+                accessor,
+                PathSpec.from_str_path("/INBOX/missing.gmail.json"),
+                index,
+            )

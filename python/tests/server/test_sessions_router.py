@@ -16,6 +16,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from mirage.server import build_app
+from mirage.types import MountMode
 
 
 def _minimal_config() -> dict:
@@ -52,7 +53,7 @@ async def test_create_list_delete_session_round_trip():
         r = await client.get(f"/v1/workspaces/{wid}/sessions")
         ids = {s["session_id"] for s in r.json()}
         assert "agent_a" in ids
-        assert "default" in ids
+        assert len(ids) == 2
 
         r = await client.delete(f"/v1/workspaces/{wid}/sessions/agent_a")
         assert r.status_code == 200
@@ -101,7 +102,7 @@ async def test_delete_unknown_session_404():
 
 
 @pytest.mark.asyncio
-async def test_create_session_with_allowed_mounts():
+async def test_create_session_with_mount_list():
     app = build_app(idle_grace_seconds=10.0)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport,
@@ -111,15 +112,58 @@ async def test_create_session_with_allowed_mounts():
             f"/v1/workspaces/{wid}/sessions",
             json={
                 "session_id": "agent_a",
-                "allowed_mounts": ["/"],
+                "mounts": ["/"],
             },
         )
         assert r.status_code == 201, r.text
 
         registry = app.state.registry
         sess = registry.get(wid).runner.ws.get_session("agent_a")
-        assert sess.allowed_mounts is not None
-        assert "/" in sess.allowed_mounts
+        assert sess.mount_modes is not None
+        assert sess.mount_modes.get("/") == MountMode.EXEC
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_mount_modes():
+    app = build_app(idle_grace_seconds=10.0)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport,
+                           base_url="http://test") as client:
+        wid = await _create_workspace(client)
+        r = await client.post(
+            f"/v1/workspaces/{wid}/sessions",
+            json={
+                "session_id": "agent_b",
+                "mounts": {
+                    "/": "read"
+                },
+            },
+        )
+        assert r.status_code == 201, r.text
+
+        registry = app.state.registry
+        sess = registry.get(wid).runner.ws.get_session("agent_b")
+        assert sess.mount_modes is not None
+        assert sess.mount_modes.get("/") == MountMode.READ
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_bad_role():
+    app = build_app(idle_grace_seconds=10.0)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport,
+                           base_url="http://test") as client:
+        wid = await _create_workspace(client)
+        r = await client.post(
+            f"/v1/workspaces/{wid}/sessions",
+            json={
+                "session_id": "agent_c",
+                "mounts": {
+                    "/": "admin"
+                },
+            },
+        )
+        assert r.status_code == 422, r.text
 
 
 @pytest.mark.asyncio

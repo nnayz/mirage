@@ -13,19 +13,21 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.notion import NotionAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
-                                               keep, start_basename)
+                                               keep, start_basename,
+                                               tree_has_empty)
 from mirage.core.notion.readdir import readdir
 from mirage.core.notion.stat import stat
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.dates import matches_mtime
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 
 
 async def _collect(
     accessor: NotionAccessor,
     path: PathSpec,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     out: list[tuple[str, FileStat]],
 ) -> None:
     file_stat = await stat(accessor, path, index)
@@ -60,10 +62,9 @@ async def find(
     mindepth: int | None = None,
     empty: bool = False,
     tree: PredNode | None = None,
-    index: IndexCacheStore | None = None,
+    *,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec.from_str_path(path)
     start_name = start_basename(path)
     base = path.mount_path
     base = "/" + base.strip("/") if base.strip("/") else "/"
@@ -76,7 +77,8 @@ async def find(
                                                     path_pattern=path_pattern,
                                                     type=type,
                                                     name_exclude=name_exclude,
-                                                    or_names=or_names)
+                                                    or_names=or_names,
+                                                    empty=empty)
     for entry_path, file_stat in collected:
         rel = entry_path
         if mount_prefix_of(
@@ -90,17 +92,31 @@ async def find(
         depth = 0 if rel == base else rel.count("/") - base_depth
         if maxdepth is not None and depth > maxdepth:
             continue
+        is_empty = None
+        if tree_has_empty(tree):
+            if is_dir:
+                child_prefix = entry_path.rstrip("/") + "/"
+                is_empty = not any(
+                    other != entry_path and other.startswith(child_prefix)
+                    for other, _ in collected)
+            else:
+                is_empty = (file_stat.size or 0) == 0
         entry = FindEntry(key=rel,
                           name=entry_name,
                           kind="d" if is_dir else "f",
-                          depth=depth)
+                          depth=depth,
+                          is_empty=is_empty)
         if not keep(entry, tree, mindepth):
             continue
-        if not is_dir and (min_size is not None or max_size is not None):
-            size = file_stat.size or 0
+        if min_size is not None or max_size is not None:
+            # Directories count as size 0 for -size (deliberate GNU
+            # divergence).
+            size = 0 if is_dir else (file_stat.size or 0)
             if min_size is not None and size < min_size:
                 continue
             if max_size is not None and size > max_size:
                 continue
+        if not matches_mtime(file_stat.modified, mtime_min, mtime_max):
+            continue
         results.append(rel)
     return sorted(results)

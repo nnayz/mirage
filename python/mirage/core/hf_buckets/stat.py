@@ -15,19 +15,17 @@
 from opendal.exceptions import NotFound
 from opendal.types import EntryMode
 
-from mirage.accessor.hf_buckets import HfBucketsAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.accessor._hf import _HfAccessor
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 from mirage.utils.key_prefix import mount_prefix_of
 
 
-async def stat(accessor: HfBucketsAccessor,
+async def stat(accessor: _HfAccessor,
                path: PathSpec,
-               index: IndexCacheStore | None = None) -> FileStat:
-    if isinstance(path, str):
-        path = PathSpec.from_str_path(path)
+               index: IndexCacheStore = NULL_INDEX) -> FileStat:
     original_prefix = mount_prefix_of(path.virtual, path.resource_path)
     raw = path.virtual
     if original_prefix and raw.startswith(original_prefix):
@@ -35,21 +33,20 @@ async def stat(accessor: HfBucketsAccessor,
     stripped = raw.strip("/")
     if not stripped:
         return FileStat(name="/", type=FileType.DIRECTORY)
-    if index is not None:
-        virtual_key = (original_prefix + "/" +
-                       stripped if original_prefix else "/" + stripped)
-        lookup = await index.get(virtual_key)
-        if lookup.entry is not None:
-            entry = lookup.entry
-            if entry.resource_type == "folder":
-                return FileStat(name=entry.name, type=FileType.DIRECTORY)
-            return FileStat(name=entry.name,
-                            size=entry.size,
-                            type=guess_type(entry.name))
-        parent = virtual_key.rsplit("/", 1)[0] or "/"
-        parent_listing = await index.list_dir(parent)
-        if parent_listing.entries is not None:
-            raise enoent(path)
+    virtual_key = (original_prefix + "/" +
+                   stripped if original_prefix else "/" + stripped)
+    lookup = await index.get(virtual_key)
+    if lookup.entry is not None:
+        entry = lookup.entry
+        if entry.resource_type == "folder":
+            return FileStat(name=entry.name, type=FileType.DIRECTORY)
+        return FileStat(name=entry.name,
+                        size=entry.size,
+                        type=guess_type(entry.name))
+    parent = virtual_key.rsplit("/", 1)[0] or "/"
+    parent_listing = await index.list_dir(parent)
+    if parent_listing.entries is not None:
+        raise enoent(path)
     op = accessor.operator()
     key = stripped
     try:
@@ -66,13 +63,16 @@ async def stat(accessor: HfBucketsAccessor,
             fingerprint=md.etag,
             extra={"etag": md.etag} if md.etag else {},
         )
+    # Buckets have no dir objects and opendal's trailing-slash stat
+    # short-circuits to DIR client-side, so a directory exists iff
+    # something lists under its prefix (object-store semantics).
     try:
-        md_dir = await op.stat(key + "/")
-        if md_dir and md_dir.mode == EntryMode.Dir:
+        async for _ in await op.list(key + "/"):
             return FileStat(
                 name=stripped.rsplit("/", 1)[-1] or "/",
                 type=FileType.DIRECTORY,
             )
     except NotFound:
+        # NotFound maps to the canonical ENOENT raised below
         pass
     raise enoent(path)

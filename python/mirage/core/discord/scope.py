@@ -15,7 +15,7 @@
 import re
 from dataclasses import dataclass
 
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
 
@@ -56,7 +56,7 @@ def _strip_prefix(raw: str, prefix: str) -> str:
 
 async def detect_scope(
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> DiscordScope:
     """Determine scope from a path.
 
@@ -73,10 +73,6 @@ async def detect_scope(
         /<guild>/channels/<ch>/<date>/files            → files
         /<guild>/channels/<ch>/<date>/files/<blob>     → file_blob
     """
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
 
     prefix = mount_prefix_of(path.virtual, path.resource_path) or ""
 
@@ -188,7 +184,7 @@ async def detect_scope(
 
 async def coalesce_scopes(
     paths: list[PathSpec],
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> DiscordScope | None:
     if not paths:
         return None
@@ -210,11 +206,9 @@ async def coalesce_scopes(
 
 async def _resolve_guild_id(
     guild_name: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     prefix: str,
 ) -> str | None:
-    if index is None:
-        return None
     virtual_key = prefix + "/" + guild_name if prefix else "/" + guild_name
     lookup = await index.get(virtual_key)
     if lookup.entry is not None:
@@ -225,15 +219,14 @@ async def _resolve_guild_id(
 async def _resolve_ids(
     guild_name: str,
     channel_path: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     prefix: str,
 ) -> tuple[str | None, str | None]:
     guild_id = await _resolve_guild_id(guild_name, index, prefix)
     channel_id = None
-    if index is not None:
-        virtual_key = (prefix + "/" + channel_path if prefix else "/" +
-                       channel_path)
-        lookup = await index.get(virtual_key)
-        if lookup.entry is not None:
-            channel_id = lookup.entry.id
+    virtual_key = (prefix + "/" + channel_path if prefix else "/" +
+                   channel_path)
+    lookup = await index.get(virtual_key)
+    if lookup.entry is not None:
+        channel_id = lookup.entry.id
     return guild_id, channel_id

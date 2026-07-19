@@ -7,7 +7,7 @@ from mirage.commands.builtin.generic.tar import tar
 from mirage.commands.builtin.generic.tsort import tsort
 from mirage.commands.builtin.generic.unzip import unzip
 from mirage.commands.builtin.generic.zip_cmd import zip_cmd
-from mirage.types import PathSpec
+from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.key_prefix import mount_key
 
 
@@ -21,26 +21,30 @@ def _spec(path: str, prefix: str = "") -> PathSpec:
 def _make_backend(files: dict[str, bytes]):
     store = dict(files)
 
-    async def read_bytes(accessor, path, index=None):
+    async def read_bytes(path):
         key = path.virtual if isinstance(path, PathSpec) else path
         if key not in store:
             raise FileNotFoundError(key)
         return store[key]
 
-    async def write_bytes(accessor, path, data, index=None):
+    async def write_bytes(path, data):
         key = path.virtual if isinstance(path, PathSpec) else path
         store[key] = data
 
-    async def read_stream(accessor, path, index=None):
+    async def read_stream(path):
         key = path.virtual if isinstance(path, PathSpec) else path
         if key not in store:
             raise FileNotFoundError(key)
         yield store[key]
 
-    async def mkdir_fn(accessor, path, parents=False):
+    async def mkdir_fn(path, parents=False):
         pass
 
     return read_bytes, write_bytes, read_stream, mkdir_fn, store
+
+
+async def _stat_file(path) -> FileStat:
+    return FileStat(name=path.virtual, type=FileType.TEXT)
 
 
 @pytest.mark.asyncio
@@ -287,12 +291,13 @@ async def test_tar_requires_f():
 async def test_diff_identical_files():
     rb, _, _, _, _ = _make_backend({"a": b"hello\n", "b": b"hello\n"})
 
-    async def rd(accessor, path, index=None):
+    async def rd(path):
         return []
 
     out, io_res = await diff([_spec("a"), _spec("b")],
                              read_bytes=rb,
-                             readdir_fn=rd)
+                             readdir_fn=rd,
+                             stat_fn=_stat_file)
     assert out == b""
     assert io_res.exit_code == 0
 
@@ -301,12 +306,13 @@ async def test_diff_identical_files():
 async def test_diff_quiet_differ():
     rb, _, _, _, _ = _make_backend({"a": b"x\n", "b": b"y\n"})
 
-    async def rd(accessor, path, index=None):
+    async def rd(path):
         return []
 
     out, io_res = await diff([_spec("a"), _spec("b")],
                              read_bytes=rb,
                              readdir_fn=rd,
+                             stat_fn=_stat_file,
                              q=True)
     assert b"differ" in out
     assert io_res.exit_code == 1
@@ -319,12 +325,13 @@ async def test_diff_unified():
         "b": b"hello\nuniverse\n"
     })
 
-    async def rd(accessor, path, index=None):
+    async def rd(path):
         return []
 
     out, _ = await diff([_spec("a"), _spec("b")],
                         read_bytes=rb,
                         readdir_fn=rd,
+                        stat_fn=_stat_file,
                         u=True)
     assert b"-world" in out
     assert b"+universe" in out
@@ -334,11 +341,14 @@ async def test_diff_unified():
 async def test_diff_too_few_paths():
     rb, _, _, _, _ = _make_backend({"a": b"x\n"})
 
-    async def rd(accessor, path, index=None):
+    async def rd(path):
         return []
 
     with pytest.raises(ValueError, match="two paths"):
-        await diff([_spec("a")], read_bytes=rb, readdir_fn=rd)
+        await diff([_spec("a")],
+                   read_bytes=rb,
+                   readdir_fn=rd,
+                   stat_fn=_stat_file)
 
 
 @pytest.mark.asyncio

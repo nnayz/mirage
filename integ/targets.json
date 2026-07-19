@@ -1,0 +1,661 @@
+{
+  "targets": [
+    {
+      "id": "ram",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "ram",
+          "backend": "memory",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "ram",
+          "backend": "memory"
+        },
+        {
+          "path": "/res",
+          "resource": "ram",
+          "backend": "memory",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "disk",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "disk",
+          "backend": "tmpdir",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "disk",
+          "backend": "tmpdir"
+        },
+        {
+          "path": "/res",
+          "resource": "disk",
+          "backend": "tmpdir",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "redis",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "redis",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "redis",
+          "backend": "redis",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "redis",
+          "backend": "redis"
+        },
+        {
+          "path": "/res",
+          "resource": "redis",
+          "backend": "redis",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "opfs",
+      "hosts": [
+        "typescript-browser"
+      ],
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "opfs",
+          "backend": "memory",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "opfs",
+          "backend": "memory"
+        },
+        {
+          "path": "/res",
+          "resource": "opfs",
+          "backend": "memory",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "s3",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "s3",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "s3",
+          "backend": "s3",
+          "bucket": "data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "s3",
+          "backend": "s3",
+          "bucket": "data2"
+        },
+        {
+          "path": "/res",
+          "resource": "s3",
+          "backend": "s3",
+          "bucket": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "s3-prefix",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "s3",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "s3",
+          "backend": "s3",
+          "bucket": "shared",
+          "prefix": "team/reports/data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "s3",
+          "backend": "s3",
+          "bucket": "shared",
+          "prefix": "team/reports/data2"
+        },
+        {
+          "path": "/res",
+          "resource": "s3",
+          "backend": "s3",
+          "bucket": "shared",
+          "prefix": "team/reports/res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "gridfs",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gridfs",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "gridfs",
+          "backend": "gridfs",
+          "bucket": "data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "gridfs",
+          "backend": "gridfs",
+          "bucket": "data2"
+        },
+        {
+          "path": "/res",
+          "resource": "gridfs",
+          "backend": "gridfs",
+          "bucket": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "gridfs-prefix",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gridfs",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "gridfs",
+          "backend": "gridfs",
+          "bucket": "shared",
+          "prefix": "team/reports/data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "gridfs",
+          "backend": "gridfs",
+          "bucket": "shared",
+          "prefix": "team/reports/data2"
+        },
+        {
+          "path": "/res",
+          "resource": "gridfs",
+          "backend": "gridfs",
+          "bucket": "shared",
+          "prefix": "team/reports/res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "dropbox",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "dropbox",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "dropbox",
+          "backend": "dropbox",
+          "bucket": "data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "dropbox",
+          "backend": "dropbox",
+          "bucket": "data2"
+        },
+        {
+          "path": "/res",
+          "resource": "dropbox",
+          "backend": "dropbox",
+          "bucket": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "dropbox-root",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "dropbox",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "dropbox",
+          "backend": "dropbox",
+          "bucket": "shared",
+          "root": "team/reports/data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "dropbox",
+          "backend": "dropbox",
+          "bucket": "shared",
+          "root": "team/reports/data2"
+        },
+        {
+          "path": "/res",
+          "resource": "dropbox",
+          "backend": "dropbox",
+          "bucket": "shared",
+          "root": "team/reports/res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "onedrive",
+      "hosts": [
+        "python"
+      ],
+      "service": "onedrive",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "onedrive",
+          "backend": "onedrive",
+          "fixture": "files/v1",
+          "prefix": "data"
+        },
+        {
+          "path": "/data2",
+          "resource": "onedrive",
+          "backend": "onedrive",
+          "prefix": "xm2"
+        },
+        {
+          "path": "/res",
+          "resource": "onedrive",
+          "backend": "onedrive",
+          "prefix": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "ssh",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "ssh",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "ssh",
+          "backend": "ssh",
+          "root": "data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "ssh",
+          "backend": "ssh",
+          "root": "xm2"
+        },
+        {
+          "path": "/res",
+          "resource": "ssh",
+          "backend": "ssh",
+          "root": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "nextcloud",
+      "hosts": [
+        "python"
+      ],
+      "service": "nextcloud",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "nextcloud",
+          "backend": "webdav",
+          "root": "data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "nextcloud",
+          "backend": "webdav",
+          "root": "xm2"
+        },
+        {
+          "path": "/res",
+          "resource": "nextcloud",
+          "backend": "webdav",
+          "root": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "sharepoint",
+      "hosts": [
+        "python"
+      ],
+      "service": "sharepoint",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "sharepoint",
+          "backend": "sharepoint",
+          "drive": "data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "sharepoint",
+          "backend": "sharepoint",
+          "drive": "xm2"
+        },
+        {
+          "path": "/res",
+          "resource": "sharepoint",
+          "backend": "sharepoint",
+          "drive": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "hf",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "hf",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "hf",
+          "backend": "hf",
+          "bucket": "data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "hf",
+          "backend": "hf",
+          "bucket": "data2"
+        },
+        {
+          "path": "/res",
+          "resource": "hf",
+          "backend": "hf",
+          "bucket": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "box",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "box",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "box",
+          "backend": "box",
+          "folder": "data",
+          "seed": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "box",
+          "backend": "box",
+          "folder": "data2"
+        },
+        {
+          "path": "/res",
+          "resource": "box",
+          "backend": "box",
+          "folder": "res",
+          "seed": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "hf-prefix",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "hf",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "hf",
+          "backend": "hf",
+          "bucket": "shared",
+          "prefix": "team/reports/data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "hf",
+          "backend": "hf",
+          "bucket": "shared",
+          "prefix": "team/reports/data2"
+        },
+        {
+          "path": "/res",
+          "resource": "hf",
+          "backend": "hf",
+          "bucket": "shared",
+          "prefix": "team/reports/res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "gdrive",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "root": "data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "root": "xm2"
+        },
+        {
+          "path": "/res",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "root": "res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "gdrive-folder",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "root": "team/reports/data",
+          "fixture": "files/v1"
+        },
+        {
+          "path": "/data2",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "root": "team/reports/data2"
+        },
+        {
+          "path": "/res",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "root": "team/reports/res",
+          "fixture": "columnar/v1"
+        }
+      ]
+    },
+    {
+      "id": "gdrive-shared",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "drive": "eng",
+          "root": "team/data"
+        },
+        {
+          "path": "/data2",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "drive": "eng",
+          "root": "team/data2"
+        }
+      ]
+    },
+    {
+      "id": "gapps",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "epoch": "2026-01-01T00:00:00Z",
+      "apps": "google-apps/v1",
+      "mounts": [
+        {
+          "path": "/docs",
+          "resource": "gdocs",
+          "backend": "gdocs"
+        },
+        {
+          "path": "/sheets",
+          "resource": "gsheets",
+          "backend": "gsheets"
+        },
+        {
+          "path": "/slides",
+          "resource": "gslides",
+          "backend": "gslides"
+        }
+      ]
+    },
+    {
+      "id": "gmail",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "epoch": "2026-02-01T00:00:00Z",
+      "mail": "gmail/v1",
+      "mounts": [
+        {
+          "path": "/mail",
+          "resource": "gmail",
+          "backend": "gmail"
+        },
+        {
+          "path": "/scratch",
+          "resource": "ram",
+          "backend": "ram"
+        }
+      ]
+    },
+    {
+      "id": "email",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "email",
+      "mail": "email/v1",
+      "mounts": [
+        {
+          "path": "/mail",
+          "resource": "email",
+          "backend": "email"
+        },
+        {
+          "path": "/scratch",
+          "resource": "ram",
+          "backend": "ram"
+        }
+      ]
+    }
+  ]
+}

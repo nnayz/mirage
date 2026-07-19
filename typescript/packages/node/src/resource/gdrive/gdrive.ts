@@ -16,14 +16,14 @@ import {
   BaseResource,
   GDRIVE_COMMANDS,
   GDRIVE_PROMPT,
-  GDRIVE_VFS_OPS,
+  GDRIVE_OPS,
   GDriveAccessor,
   PathSpec,
   ResourceName,
   TokenManager,
   gdriveRead,
   gdriveReaddir,
-  gdriveResolveGlob,
+  makeResolveGlob,
   gdriveStat,
   mountKey,
   mountPrefixOf,
@@ -34,6 +34,8 @@ import {
 } from '@struktoai/mirage-core'
 import { redactGDriveConfig, type GDriveConfig, type GDriveConfigRedacted } from './config.ts'
 
+const gdriveResolveGlob = makeResolveGlob(gdriveReaddir)
+
 export interface GDriveResourceState {
   type: string
   config: GDriveConfigRedacted
@@ -42,6 +44,7 @@ export interface GDriveResourceState {
 export class GDriveResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GDRIVE
   readonly cachesReads: boolean = true
+  readonly supportsSnapshot: boolean = true
   override readonly indexTtl: number = 86_400
   readonly prompt: string = GDRIVE_PROMPT
   readonly config: GDriveConfig
@@ -54,6 +57,9 @@ export class GDriveResource extends BaseResource implements Resource {
       clientId: config.clientId,
       clientSecret: config.clientSecret,
       refreshToken: config.refreshToken,
+      ...(config.refreshFn !== undefined ? { refreshFn: config.refreshFn } : {}),
+      ...(config.apiBase !== undefined ? { apiBase: config.apiBase } : {}),
+      ...(config.folderId !== undefined ? { folderId: config.folderId } : {}),
     })
     this.accessor = new GDriveAccessor({ tokenManager: tm })
   }
@@ -71,7 +77,7 @@ export class GDriveResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return GDRIVE_VFS_OPS
+    return GDRIVE_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -84,11 +90,6 @@ export class GDriveResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return gdriveStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

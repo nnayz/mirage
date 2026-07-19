@@ -15,6 +15,7 @@
 import os
 import signal
 import time
+from typing import Any
 
 import httpx
 import typer
@@ -27,7 +28,7 @@ app = typer.Typer(no_args_is_help=True,
                   help="Manage the daemon process lifecycle.")
 
 
-def _format_status(d: dict) -> str:
+def _format_status(d: dict[str, Any]) -> str:
     if not d.get("running"):
         return f"Daemon not running. URL: {d['url']}"
     parts = [f"Running. PID {d.get('pid', '?')}"]
@@ -40,19 +41,19 @@ def _format_status(d: dict) -> str:
     return ", ".join(parts) + f". URL: {d['url']}"
 
 
-def _format_stop(d: dict) -> str:
+def _format_stop(d: dict[str, Any]) -> str:
     via = d.get("via", "?")
     pid = d.get("pid")
     return f"Stopped (via {via}{f', PID {pid}' if pid else ''})."
 
 
-def _format_restart(d: dict) -> str:
+def _format_restart(d: dict[str, Any]) -> str:
     if d.get("spawned_fresh"):
         return "Restarted (eager spawn)."
     return "Restarted; next CLI command will auto-spawn."
 
 
-def _format_kill(d: dict) -> str:
+def _format_kill(d: dict[str, Any]) -> str:
     if d.get("killed"):
         return f"Killed PID {d['pid']}."
     pid = d.get("pid")
@@ -146,6 +147,7 @@ def stop_cmd(
                  human=_format_stop)
             return
         except ProcessLookupError:
+            # the daemon exited between checks: that is the success condition
             pass
     fail(f"daemon did not exit within {timeout}s and no live PID found",
          exit_code=2)
@@ -170,6 +172,7 @@ def restart_cmd(
         try:
             client.request("POST", "/v1/shutdown")
         except httpx.RequestError:
+            # daemon not listening: fall through to the signal-based stop
             pass
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -183,6 +186,7 @@ def restart_cmd(
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
+                # the process exited on its own before the signal
                 pass
     if eager:
         with make_client() as client:

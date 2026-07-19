@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.github_ci import GitHubCIAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.github_ci.artifacts import list_artifacts
 from mirage.core.github_ci.runs import list_jobs_for_run, list_runs
 from mirage.core.github_ci.workflows import list_workflows
@@ -28,18 +28,25 @@ def _safe_name(name: str) -> str:
     return name.replace("/", "\u2215")
 
 
+def is_cross_run_root(path: PathSpec) -> bool:
+    original = path.virtual if isinstance(path, PathSpec) else path
+    prefix = mount_prefix_of(path.virtual, path.resource_path) if isinstance(
+        path, PathSpec) else ""
+    if prefix and original.startswith(prefix):
+        rest = original[len(prefix):]
+        if prefix.endswith("/") or rest == "" or rest.startswith("/"):
+            original = rest or "/"
+    return original.strip("/") in ("", "runs")
+
+
 async def readdir(
     accessor: GitHubCIAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = None,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    path = (path.dir if path.pattern else path).mount_path
+    virtual = path_spec.virtual
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     virtual_key = prefix + "/" + key if key else prefix or "/"
 
@@ -50,10 +57,9 @@ async def readdir(
 
     # /workflows
     if len(parts) == 1 and parts[0] == "workflows":
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
         workflows = await list_workflows(accessor.config)
         entries = []
         names = []
@@ -69,16 +75,14 @@ async def readdir(
             )
             entries.append((filename, entry))
             names.append(f"{prefix}/{key}/{filename}")
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
+        await index.set_dir(virtual_key, entries)
         return names
 
     # /runs
     if len(parts) == 1 and parts[0] == "runs":
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
         runs = await list_runs(accessor.config, days=accessor.config.days)
         entries = []
         names = []
@@ -94,24 +98,22 @@ async def readdir(
             )
             entries.append((dirname, entry))
             names.append(f"{prefix}/{key}/{dirname}")
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
+        await index.set_dir(virtual_key, entries)
         return names
 
     # /runs/<workflow>_<run-id>
     if len(parts) == 2 and parts[0] == "runs":
-        if index is not None:
+        lookup = await index.get(virtual_key)
+        if lookup.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/runs",
+                directory=prefix + "/runs",
+                resource_path=mount_key(prefix + "/runs", prefix),
+            )
+            await readdir(accessor, parent, index)
             lookup = await index.get(virtual_key)
-            if lookup.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/runs",
-                    directory=prefix + "/runs",
-                    resource_path=mount_key(prefix + "/runs", prefix),
-                )
-                await readdir(accessor, parent, index)
-                lookup = await index.get(virtual_key)
-            if lookup.entry is None:
-                raise enoent(virtual)
+        if lookup.entry is None:
+            raise enoent(virtual)
         base = f"{prefix}/{key}"
         return [
             f"{base}/run.json",
@@ -122,25 +124,22 @@ async def readdir(
 
     # /runs/<workflow>_<run-id>/jobs
     if len(parts) == 3 and parts[0] == "runs" and parts[2] == "jobs":
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
-            run_virtual = prefix + "/" + f"{parts[0]}/{parts[1]}"
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
+        run_virtual = prefix + "/" + f"{parts[0]}/{parts[1]}"
+        run_lookup = await index.get(run_virtual)
+        if run_lookup.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/runs",
+                directory=prefix + "/runs",
+                resource_path=mount_key(prefix + "/runs", prefix),
+            )
+            await readdir(accessor, parent, index)
             run_lookup = await index.get(run_virtual)
-            if run_lookup.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/runs",
-                    directory=prefix + "/runs",
-                    resource_path=mount_key(prefix + "/runs", prefix),
-                )
-                await readdir(accessor, parent, index)
-                run_lookup = await index.get(run_virtual)
-            if run_lookup.entry is None:
-                raise enoent(virtual)
-            run_id = run_lookup.entry.id
-        else:
+        if run_lookup.entry is None:
             raise enoent(virtual)
+        run_id = run_lookup.entry.id
         jobs = await list_jobs_for_run(accessor.config, run_id)
         entries = []
         names = []
@@ -166,31 +165,27 @@ async def readdir(
             entries.append((log_filename, entry_log))
             names.append(f"{prefix}/{key}/{json_filename}")
             names.append(f"{prefix}/{key}/{log_filename}")
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
+        await index.set_dir(virtual_key, entries)
         return names
 
     # /runs/<workflow>_<run-id>/artifacts
     if len(parts) == 3 and parts[0] == "runs" and parts[2] == "artifacts":
-        if index is not None:
-            listing = await index.list_dir(virtual_key)
-            if listing.entries is not None:
-                return listing.entries
-            run_virtual = prefix + "/" + f"{parts[0]}/{parts[1]}"
+        listing = await index.list_dir(virtual_key)
+        if listing.entries is not None:
+            return listing.entries
+        run_virtual = prefix + "/" + f"{parts[0]}/{parts[1]}"
+        run_lookup = await index.get(run_virtual)
+        if run_lookup.entry is None:
+            parent = PathSpec(
+                virtual=prefix + "/runs",
+                directory=prefix + "/runs",
+                resource_path=mount_key(prefix + "/runs", prefix),
+            )
+            await readdir(accessor, parent, index)
             run_lookup = await index.get(run_virtual)
-            if run_lookup.entry is None:
-                parent = PathSpec(
-                    virtual=prefix + "/runs",
-                    directory=prefix + "/runs",
-                    resource_path=mount_key(prefix + "/runs", prefix),
-                )
-                await readdir(accessor, parent, index)
-                run_lookup = await index.get(run_virtual)
-            if run_lookup.entry is None:
-                raise enoent(virtual)
-            run_id = run_lookup.entry.id
-        else:
+        if run_lookup.entry is None:
             raise enoent(virtual)
+        run_id = run_lookup.entry.id
         artifacts = await list_artifacts(accessor.config, run_id)
         entries = []
         names = []
@@ -207,8 +202,15 @@ async def readdir(
             )
             entries.append((filename, entry))
             names.append(f"{prefix}/{key}/{filename}")
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
+        await index.set_dir(virtual_key, entries)
         return names
 
     return []
+
+
+def is_dir_name(child: str) -> bool:
+    # Entries are recognized by extension, so classification never needs
+    # the stat fallback.
+    name = child.rsplit("/", 1)[-1]
+    return not (name.endswith(".json") or name.endswith(".jsonl")
+                or name.endswith(".log") or name.endswith(".zip"))

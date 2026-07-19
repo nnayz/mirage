@@ -16,7 +16,6 @@ import type { LinearAccessor } from '../../../accessor/linear.ts'
 import { ResourceName } from '../../../types.ts'
 import type { RegisteredCommand } from '../../config.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
-import { LINEAR_FIND } from './find.ts'
 import { LINEAR_ISSUE_ADD_LABEL } from './linear_issue_add_label.ts'
 import { LINEAR_ISSUE_ASSIGN } from './linear_issue_assign.ts'
 import { LINEAR_ISSUE_COMMENT_ADD } from './linear_issue_comment_add.ts'
@@ -27,15 +26,14 @@ import { LINEAR_ISSUE_SET_PROJECT } from './linear_issue_set_project.ts'
 import { LINEAR_ISSUE_TRANSITION } from './linear_issue_transition.ts'
 import { LINEAR_ISSUE_UPDATE } from './linear_issue_update.ts'
 import { LINEAR_SEARCH } from './linear_search.ts'
-import { LINEAR_CMD_OPS } from './ops.ts'
+import { LINEAR_IO } from './io.ts'
 
-const LINEAR_OVERRIDES = new Set(['find'])
+const LINEAR_OVERRIDES = new Set<string>()
 
 export const LINEAR_COMMANDS: readonly RegisteredCommand[] = [
-  ...makeGenericCommands<LinearAccessor>(ResourceName.LINEAR, LINEAR_CMD_OPS, {
+  ...makeGenericCommands<LinearAccessor>(ResourceName.LINEAR, LINEAR_IO, {
     overrides: LINEAR_OVERRIDES,
   }),
-  ...LINEAR_FIND,
   ...LINEAR_ISSUE_ADD_LABEL,
   ...LINEAR_ISSUE_ASSIGN,
   ...LINEAR_ISSUE_COMMENT_ADD,

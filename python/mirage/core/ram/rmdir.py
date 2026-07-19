@@ -18,13 +18,8 @@ from mirage.types import PathSpec
 from mirage.utils.path import norm
 
 
-async def rmdir(accessor: RAMAccessor, path: PathSpec) -> None:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+async def rmdir(accessor: RAMAccessor, path_spec: PathSpec) -> None:
+    path = path_spec.mount_path
     store = accessor.store
     p = norm(path)
     if p not in store.dirs:
@@ -37,4 +32,4 @@ async def rmdir(accessor: RAMAccessor, path: PathSpec) -> None:
     if children:
         raise OSError(f"directory not empty: {p}")
     store.dirs.discard(p)
-    await invalidate_after_unlink(path)
+    await invalidate_after_unlink(path_spec)

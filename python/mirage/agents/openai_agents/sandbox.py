@@ -50,12 +50,8 @@ class MirageSandboxSession(BaseSandboxSession):
     ) -> ExecResult:
         cmd_str = " ".join(str(c) for c in command)
         io_result = await self._ws.execute(cmd_str)
-        stdout = (io_result.stdout or b"")
-        stderr = (io_result.stderr or b"")
-        if isinstance(stdout, str):
-            stdout = stdout.encode("utf-8")
-        if isinstance(stderr, str):
-            stderr = stderr.encode("utf-8")
+        stdout = await io_result.materialize_stdout()
+        stderr = await io_result.materialize_stderr()
         return ExecResult(
             exit_code=io_result.exit_code,
             stdout=stdout,
@@ -86,6 +82,7 @@ class MirageSandboxSession(BaseSandboxSession):
             try:
                 await self._ws.ops.mkdir(parent)
             except (FileExistsError, ValueError):
+                # mkdir -p semantics: an existing parent is success
                 pass
         await self._ws.ops.write(str(path), content)
 

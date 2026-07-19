@@ -17,8 +17,8 @@ import pytest
 from mirage.resource.ram import RAMResource
 from mirage.server.version.api import (branch, checkout, commit, commit_state,
                                        diff_live_vs_ref, read_version,
-                                       resolve_ref, snapshot_tree, status,
-                                       status_state, version_diff, version_log)
+                                       resolve_ref, status_state, version_diff,
+                                       version_log)
 from mirage.server.version.backend import LocalBackend
 from mirage.server.version.errors import NoSuchBranchError
 from mirage.server.version.state_tree import META_PATH
@@ -26,6 +26,46 @@ from mirage.server.version.store import VersionStore
 from mirage.types import CacheKey, MountMode, StateKey
 from mirage.workspace import Workspace
 from mirage.workspace.snapshot import to_state_dict
+
+
+async def status(store, ws, branch="main"):
+    return await status_state(store, await to_state_dict(ws), branch)
+
+
+@pytest.mark.asyncio
+async def test_checkout_restores_the_whole_world(tmp_path):
+    """Rollback = the whole system state: files, sessions (cwd, env
+    refs, mount grants), namespace symlinks, and the command history all
+    return to what the commit captured."""
+    ws = Workspace({"/m": (RAMResource(), MountMode.WRITE)},
+                   mode=MountMode.EXEC)
+    store = await VersionStore.open(LocalBackend(tmp_path), "ws")
+    await ws.execute("echo original > /m/a.txt")
+    await ws.execute("ln -s /m/a.txt /m/l.txt")
+    narrow = ws.create_session("narrow", mounts={"/m": "read"})
+    narrow.env["API_KEY"] = "@aws:prod-key"
+    await ws.flush_sessions()
+    await commit(store, ws, branch="main", message="v1")
+
+    await ws.execute("echo mutated > /m/a.txt")
+    await ws.execute("rm /m/l.txt")
+    narrow.env["API_KEY"] = "@aws:other-key"
+    narrow.mount_modes = {"/m": MountMode.WRITE}
+
+    await checkout(store, ws, "main")
+
+    result = await ws.execute("cat /m/a.txt")
+    assert (await result.stdout_str()) == "original\n"
+    result = await ws.execute("readlink /m/l.txt")
+    assert (await result.stdout_str()).strip() == "/m/a.txt"
+    restored = ws.get_session("narrow")
+    assert restored.env["API_KEY"] == "@aws:prod-key"
+    assert restored.mount_modes is not None
+    assert restored.mount_modes["/m"] == MountMode.READ
+    result = await ws.execute("history")
+    history = (await result.stdout_str())
+    assert "echo original > /m/a.txt" in history
+    assert "echo mutated > /m/a.txt" not in history
 
 
 def _cache_entry(data: bytes) -> dict:
@@ -37,20 +77,6 @@ def _cache_entry(data: bytes) -> dict:
         CacheKey.CACHED_AT: 0.0,
         CacheKey.SIZE: len(data),
     }
-
-
-@pytest.mark.asyncio
-async def test_snapshot_tree_contains_files_and_meta(tmp_path):
-    ws = Workspace({"/m": (RAMResource(), MountMode.WRITE)},
-                   mode=MountMode.WRITE)
-    await ws.execute("echo hello > /m/a.txt")
-    store = await VersionStore.open(LocalBackend(tmp_path), "ws")
-
-    tree = await snapshot_tree(store, ws)
-    contents = await store.read_tree(tree)
-
-    assert META_PATH in contents
-    assert await store.read_blob(contents["m/a.txt"]) == b"hello\n"
 
 
 @pytest.mark.asyncio

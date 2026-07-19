@@ -21,16 +21,18 @@ import type { CommandSpec } from '../../commands/spec/types.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { IOResult, materialize } from '../../io/types.ts'
 import type { Resource } from '../../resource/base.ts'
-import { assertMountAllowed, MountNotAllowedError } from '../../runtime/session_context.ts'
+import { assertMountAllowed, MountNotAllowedError } from '../../context/session_context.ts'
 import { CallStack } from '../../shell/call_stack.ts'
 import type { JobTable } from '../../shell/job_table.ts'
 import { ERREXIT_EXEMPT_TYPES } from '../../shell/types.ts'
-import { PathSpec, wordText } from '../../types.ts'
+import { type FileStat, PathSpec, wordText } from '../../types.ts'
 import type { MountEntry } from '../mount/mount.ts'
-import type { Namespace } from '../mount/namespace.ts'
+import type { Namespace } from '../mount/namespace/namespace.ts'
+import { mergeOverlayStat } from '../mount/namespace/overlay.ts'
 import { MountCommandUnsupported, type MountRegistry } from '../mount/registry.ts'
 import { Consumer, JOB_BUILTINS, route } from '../route/index.ts'
-import type { PyodideRuntime } from './python/runtime.ts'
+import { VfsRuntime, type Runtime } from './runtime.ts'
+import type { RoutingDecision } from './route/index.ts'
 import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import { asyncChain } from '../../io/stream.ts'
@@ -44,7 +46,7 @@ import {
   findExprTail,
   parseFindExpression,
 } from '../../commands/builtin/findParse.ts'
-import { maybeWithTimeout } from '../../commands/builtin/utils/safeguard.ts'
+import { CommandTimeoutError, maybeWithTimeout } from '../../commands/builtin/utils/safeguard.ts'
 import { resolveAcrossMounts, resolveSafeguard } from '../../commands/safeguard.ts'
 import type { ExecuteNodeFn } from './jobs.ts'
 import { handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
@@ -61,7 +63,44 @@ interface RunOnMountCtx {
   dispatch: DispatchFn
   namespace?: Namespace
   ensureOpen?: (resource: Resource) => Promise<void>
-  pythonRuntime?: PyodideRuntime
+  runtimeBindings?: Record<string, Runtime>
+  routingDecision?: RoutingDecision
+}
+
+/** The 126 result for a command no runtime accepted. */
+function admissionDenial(cmdName: string): IOResult {
+  const msg = `mirage: ${cmdName}: no runtime accepted this line\n`
+  return new IOResult({ exitCode: 126, stderr: new TextEncoder().encode(msg) })
+}
+
+/**
+ * Resolve a command against the line's routing decision. With no
+ * decision, the static bindings apply. With one, the command's runtime
+ * is looked up in the decision: its binding, or the decision's
+ * fallback when no entry captures it. A resolved VfsRuntime means the
+ * executor serves the command itself (the vfs runtime has no
+ * interpreter door); null means no runtime accepted it: exit 126,
+ * "no runtime accepted this line", like a shell refusing to exec.
+ */
+function lineRuntimeFor(
+  cmdName: string,
+  runtimeBindings: Record<string, Runtime> | undefined,
+  vfs: Runtime | null,
+  routingDecision: RoutingDecision | undefined,
+): [Runtime | undefined, IOResult | null] {
+  if (routingDecision === undefined) {
+    const restricted = vfs instanceof VfsRuntime && vfs.restricted
+    const runtime = runtimeBindings?.[cmdName]
+    if (runtime !== undefined && runtime === vfs) return [undefined, null]
+    if (runtime === undefined && restricted) return [undefined, admissionDenial(cmdName)]
+    return [runtime, null]
+  }
+  const runtime = Object.hasOwn(routingDecision.bindings, cmdName)
+    ? routingDecision.bindings[cmdName]
+    : routingDecision.fallback
+  if (runtime === null || runtime === undefined) return [undefined, admissionDenial(cmdName)]
+  if (runtime instanceof VfsRuntime) return [undefined, null]
+  return [runtime, null]
 }
 
 interface RunOnMountOpts {
@@ -85,13 +124,13 @@ function scalarFindFlags(flagKwargs: Flags): Flags {
 }
 
 // Run one already-parsed command on the mount that owns its paths. The shared
-// single-mount execution tail: mount resolution, grant checks, executeCmd,
+// single-mount execution tail: mount resolution, session-mode checks, executeCmd,
 // filesystem-error formatting, ls/find post-processing, and read/write key
 // prefixing. handleCommand uses it for the normal path, and passes it (bound)
 // to the cross-mount runners so each operand executes natively on its owning
 // mount. `resolveHint` resolves the mount when `paths` is empty (a stream
 // command running in stdin mode); a pre-resolved `mount` skips resolution and
-// grant checks, which the caller already performed.
+// session-mode checks, which the caller already performed.
 async function runOnMount(
   ctx: RunOnMountCtx,
   cmdName: string,
@@ -100,10 +139,11 @@ async function runOnMount(
   flagKwargs: Flags,
   opts: RunOnMountOpts = {},
 ): Promise<[ByteSource | null, IOResult]> {
-  const { registry, session, dispatch, namespace, ensureOpen, pythonRuntime } = ctx
+  const { registry, session, dispatch, namespace, ensureOpen, runtimeBindings, routingDecision } =
+    ctx
+  const hint = opts.resolveHint ?? null
   let mount = opts.mount ?? null
   if (mount === null) {
-    const hint = opts.resolveHint ?? null
     const resolvePaths = paths.length > 0 ? paths : hint !== null ? [hint] : []
     try {
       mount = await registry.resolveMount(cmdName, resolvePaths, session.cwd)
@@ -143,10 +183,27 @@ async function runOnMount(
   // resolveMount may redirect a warm remote read to the cache mount, which
   // does not carry the origin mount's per-command safeguards. Resolve the
   // safeguard from the real (pre-redirect) mount so the cap survives the hit.
-  const realMount = registry.mountFor(
-    paths.length > 0 ? (paths[0]?.virtual ?? session.cwd) : session.cwd,
-  )
+  // A spec can bucket a path-shaped operand as TEXT (python3's script), so
+  // when the spec-split paths are empty fall back to the classified scope
+  // hint before cwd, mirroring the Python executor.
+  const realMount = registry.mountFor(paths[0]?.virtual ?? hint?.virtual ?? session.cwd)
   const safeguardOverride = realMount?.commandSafeguards.get(cmdName) ?? null
+
+  // ls renders stat rows from the backend's own stat, which never sees
+  // namespace attr overlays (chmod/chown/touch on overlay backends);
+  // inject the merge so ls -l and the ops facade agree.
+  const statOverlay =
+    cmdName === 'ls' && namespace !== undefined
+      ? (virtual: string, stat: FileStat) => mergeOverlayStat(namespace.metaFor(virtual), stat)
+      : null
+
+  const [lineRuntime, denial] = lineRuntimeFor(
+    cmdName,
+    runtimeBindings,
+    registry.vfsRuntime,
+    routingDecision,
+  )
+  if (denial !== null) return [null, denial]
 
   try {
     const [initialStdout, io] = await mount.executeCmd(cmdName, paths, texts, flags, {
@@ -156,13 +213,14 @@ async function runOnMount(
       sessionId: session.sessionId,
       env: session.env,
       execAllowed: registry.isExecAllowed(),
-      ...(pythonRuntime !== undefined ? { pythonRuntime } : {}),
+      ...(lineRuntime !== undefined ? { runtime: lineRuntime } : {}),
+      ...(statOverlay !== null ? { statOverlay } : {}),
       safeguardOverride,
     })
     let stdout = initialStdout
     if (cmdName === 'ls' && io.exitCode === 0) {
       stdout = await injectChildMounts(stdout, registry, paths, flags, session.cwd)
-      if (namespace !== undefined && namespace.symlinks.size > 0) {
+      if (namespace?.hasLinks() === true) {
         stdout = await injectLinks(stdout, namespace, paths, flags, session.cwd)
       }
     }
@@ -198,6 +256,9 @@ async function runOnMount(
         }),
       ]
     }
+    // A safeguard timeout is not a filesystem failure: let it reach the
+    // workspace-level handler that answers with exit 124.
+    if (err instanceof CommandTimeoutError) throw err
     return [null, new IOResult({ exitCode: 1, stderr: formatFsError(cmdName, err, paths) })]
   }
 }
@@ -224,8 +285,9 @@ export async function handleCommand(
   jobTable: JobTable | null = null,
   ensureOpen?: (resource: Resource) => Promise<void>,
   unmount?: (prefix: string) => Promise<void>,
-  pythonRuntime?: PyodideRuntime,
+  runtimeBindings?: Record<string, Runtime>,
   namespace?: Namespace,
+  routingDecision?: RoutingDecision,
 ): Promise<Result> {
   if (parts.length === 0) {
     return [null, new IOResult(), new ExecutionNode({ command: '', exitCode: 0 })]
@@ -339,7 +401,8 @@ export async function handleCommand(
       dispatch,
       ...(namespace !== undefined ? { namespace } : {}),
       ...(ensureOpen !== undefined ? { ensureOpen } : {}),
-      ...(pythonRuntime !== undefined ? { pythonRuntime } : {}),
+      ...(runtimeBindings !== undefined ? { runtimeBindings } : {}),
+      ...(routingDecision !== undefined ? { routingDecision } : {}),
     }
     const runSingle: RunSingle = (name, ps, ts, fk, opts) =>
       runOnMount(runCtx, name, ps, ts, fk, opts ?? {})
@@ -487,11 +550,13 @@ export async function handleCommand(
     dispatch,
     ...(namespace !== undefined ? { namespace } : {}),
     ...(ensureOpen !== undefined ? { ensureOpen } : {}),
-    ...(pythonRuntime !== undefined ? { pythonRuntime } : {}),
+    ...(runtimeBindings !== undefined ? { runtimeBindings } : {}),
+    ...(routingDecision !== undefined ? { routingDecision } : {}),
   }
   const [rawStdout, io] = await runOnMount(runCtx, cmdName, paths, texts, flagKwargs, {
     stdin,
     mount,
+    resolveHint: pathScopes[0] ?? null,
   })
   let stdout = rawStdout
   if (warnBytes !== null) {

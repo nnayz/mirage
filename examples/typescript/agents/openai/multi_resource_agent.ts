@@ -25,12 +25,9 @@ import {
   type S3Config,
   type SlackConfig,
 } from '@struktoai/mirage-node'
-import { Agent, applyPatchTool, run, shellTool } from '@openai/agents'
-import {
-  MirageEditor,
-  MirageShell,
-  buildSystemPrompt,
-} from '@struktoai/mirage-agents/openai'
+import { Agent, run } from '@openai/agents'
+import { buildSystemPrompt } from '@struktoai/mirage-agents/openai'
+import { configureOpenAIExample } from './config.ts'
 
 loadEnv({
   path: resolve(dirname(fileURLToPath(import.meta.url)), '../../../../.env.development'),
@@ -66,27 +63,21 @@ for (const op of slack.ops()) ops.register(op)
 const ws = new Workspace(
   {
     '/': ram,
-    '/s3': s3,
-    '/slack': slack,
+    '/s3': [s3, MountMode.READ] as const,
+    '/slack': [slack, MountMode.READ] as const,
   },
   {
     mode: MountMode.WRITE,
-    modeOverrides: {
-      '/s3': MountMode.READ,
-      '/slack': MountMode.READ,
-    },
     ops,
   },
 )
+const openAI = configureOpenAIExample(ws, 'gpt-5.5')
 
 const agent = new Agent({
   name: 'Mirage Multi-Resource Agent',
-  model: 'gpt-5.5',
+  model: openAI.model,
   instructions: buildSystemPrompt({ workspace: ws }),
-  tools: [
-    shellTool({ shell: new MirageShell(ws) }),
-    applyPatchTool({ editor: new MirageEditor(ws) }),
-  ],
+  tools: openAI.tools,
 })
 
 const task =

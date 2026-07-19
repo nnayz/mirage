@@ -12,9 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { GDRIVE_IO } from '../../commands/builtin/gdrive/io.ts'
+import { ResourceName } from '../../types.ts'
+import { makeGenericOps } from '../generic/factory.ts'
 import type { RegisteredOp } from '../registry.ts'
-import { readOp } from './read.ts'
-import { readdirOp } from './readdir.ts'
-import { statOp } from './stat.ts'
 
-export const GDRIVE_VFS_OPS: readonly RegisteredOp[] = [readdirOp, readOp, statOp] as const
+export const GDRIVE_OPS: readonly RegisteredOp[] = makeGenericOps(ResourceName.GDRIVE, GDRIVE_IO)

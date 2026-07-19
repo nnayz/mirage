@@ -12,18 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-
 from mirage.accessor.gmail import GmailAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.rg import rg as generic_rg
+from mirage.commands.builtin.generic_bind.adapter import bound_op
+from mirage.commands.builtin.gmail.io import resolve_glob
 from mirage.commands.builtin.grep_helper import pattern_arg
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
-from mirage.core.gmail.glob import resolve_glob
 from mirage.core.gmail.read import read as gmail_read
 from mirage.core.gmail.readdir import readdir as _readdir
 from mirage.core.gmail.scope import detect_scope
@@ -39,18 +38,23 @@ async def rg(
     accessor: GmailAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     prefix: str = "",
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
         raise UsageError("rg: usage: rg [flags] pattern [path]")
-    max_count = fl.int("m")
+    max_count = fl.as_int("m")
+    # Output-shaping flags need real per-line matching, which the search-API
+    # push-down cannot emulate; fall through to the generic rg over
+    # rendered files instead.
+    shaping = (fl.as_bool("args_l") or fl.as_bool("c") or fl.as_bool("n")
+               or fl.as_bool("o") or fl.as_bool("v"))
 
-    if paths and "\n" not in pattern_str:
+    if paths and "\n" not in pattern_str and not shaping:
         scope = detect_scope(paths[0])
         if scope.use_native:
             file_prefix = mount_prefix_of(paths[0].virtual,
@@ -72,11 +76,9 @@ async def rg(
         resolved,
         texts,
         flags,
-        readdir=_readdir,
-        stat=_stat,
-        read_bytes=gmail_read,
+        readdir=bound_op(_readdir, accessor, index),
+        stat=bound_op(_stat, accessor, index),
+        read_bytes=bound_op(gmail_read, accessor, index),
         read_stream=None,
-        accessor=accessor,
         stdin=stdin,
-        index=index,
     )

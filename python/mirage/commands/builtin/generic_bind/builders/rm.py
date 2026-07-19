@@ -13,8 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.generic_bind.adapter import Builder, CommandIO
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
+                                                          Operation)
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
@@ -31,7 +32,7 @@ async def rm(
     f: bool = False,
     v: bool = False,
     d: bool = False,
-    index: IndexCacheStore | None = None,
+    index: IndexCacheStore = NULL_INDEX,
     **kwargs,
 ) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor) or not paths:
@@ -39,7 +40,7 @@ async def rm(
     paths = await ops.resolve_glob(accessor, paths, index)
     recursive = r or R
     verbose_parts: list[str] = []
-    removed: dict[str, bytes] = {}
+    removed: dict[str, ByteSource] = {}
     for p in paths:
         try:
             s = await ops.stat(accessor, p)
@@ -62,7 +63,7 @@ async def rm(
                 raise IsADirectoryError(
                     f"rm: cannot remove '{p.virtual}': Is a directory")
         else:
-            await ops.unlink(accessor, p)
+            await ops.require(Operation.UNLINK)(accessor, p)
         removed[p.mount_path] = b""
         if v:
             verbose_parts.append(f"removed '{p.virtual}'")
@@ -70,4 +71,7 @@ async def rm(
     return output, IOResult(writes=removed)
 
 
-BUILDER = Builder('rm', rm, None, True, None)
+BUILDER = Builder('rm',
+                  rm,
+                  write=True,
+                  requirements=frozenset({Operation.UNLINK}))

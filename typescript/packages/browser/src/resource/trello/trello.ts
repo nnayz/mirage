@@ -23,10 +23,10 @@ import {
   type RegisteredOp,
   type Resource,
   ResourceName,
-  resolveTrelloGlob,
+  makeResolveGlob,
   TRELLO_COMMANDS,
   TRELLO_PROMPT,
-  TRELLO_VFS_OPS,
+  TRELLO_OPS,
   TRELLO_WRITE_PROMPT,
   TrelloAccessor,
   type TrelloReaddirFilter,
@@ -35,6 +35,16 @@ import {
   trelloStat,
 } from '@struktoai/mirage-core'
 import { redactTrelloConfig, type TrelloConfig, type TrelloConfigRedacted } from './config.ts'
+
+const resolveTrelloGlob = (
+  accessor: TrelloAccessor,
+  paths: readonly PathSpec[],
+  index: IndexCacheStore | undefined,
+  filter: TrelloReaddirFilter,
+): Promise<PathSpec[]> =>
+  makeResolveGlob((a: TrelloAccessor, p: PathSpec, i?: IndexCacheStore) =>
+    trelloReaddir(a, p, i, filter),
+  )(accessor, paths, index)
 
 export interface TrelloResourceState {
   type: string
@@ -75,7 +85,7 @@ export class TrelloResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return TRELLO_VFS_OPS
+    return TRELLO_OPS
   }
 
   private filter(): TrelloReaddirFilter {
@@ -95,11 +105,6 @@ export class TrelloResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return trelloStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

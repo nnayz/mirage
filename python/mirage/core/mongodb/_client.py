@@ -13,14 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 from pymongo import AsyncMongoClient
 
 from mirage.core.mongodb.types import EntityKind
 from mirage.resource.mongodb.config import MongoDBConfig
 
+if TYPE_CHECKING:
+    from mirage.accessor.mongodb import MongoDBAccessor
 
-async def list_databases(client: AsyncMongoClient,
+
+async def list_databases(client: AsyncMongoClient[Any],
                          config: MongoDBConfig) -> list[str]:
     all_dbs = await client.list_database_names()
     system_dbs = {"admin", "local", "config"}
@@ -31,22 +35,22 @@ async def list_databases(client: AsyncMongoClient,
 
 
 async def list_collections(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     kind: EntityKind | None = None,
 ) -> list[str]:
     db = client[database]
-    filter_arg: dict | None = None
+    filter_arg: dict[str, Any] | None = None
     if kind is not None:
         filter_arg = {"type": kind.value}
     return sorted(await db.list_collection_names(filter=filter_arg))
 
 
 async def database_exists(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     config: MongoDBConfig,
     database: str,
-    accessor: object | None = None,
+    accessor: "MongoDBAccessor | None" = None,
 ) -> bool:
     if accessor is not None:
         dbs = await accessor.cached_list(
@@ -59,12 +63,12 @@ async def database_exists(
 
 
 async def entity_exists(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     config: MongoDBConfig,
     database: str,
     name: str,
     kind: EntityKind | None = None,
-    accessor: object | None = None,
+    accessor: "MongoDBAccessor | None" = None,
 ) -> bool:
     if not await database_exists(client, config, database, accessor):
         return False
@@ -81,14 +85,14 @@ async def entity_exists(
 
 
 async def find_documents(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     collection: str,
-    filter: dict | None = None,
-    projection: dict | None = None,
+    filter: dict[str, Any] | None = None,
+    projection: dict[str, Any] | None = None,
     sort: list[tuple[str, int]] | None = None,
     limit: int = 1000,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     db = client[database]
     col = db[collection]
     cursor = col.find(filter or {}, projection)
@@ -99,14 +103,14 @@ async def find_documents(
 
 
 async def iter_documents(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     collection: str,
-    filter: dict | None = None,
-    projection: dict | None = None,
+    filter: dict[str, Any] | None = None,
+    projection: dict[str, Any] | None = None,
     sort: list[tuple[str, int]] | None = None,
     batch_size: int = 100,
-) -> AsyncIterator[dict]:
+) -> AsyncIterator[dict[str, Any]]:
     db = client[database]
     col = db[collection]
     cursor = col.find(filter or {}, projection)
@@ -118,10 +122,10 @@ async def iter_documents(
 
 
 async def count_documents(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     collection: str,
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
 ) -> int:
     db = client[database]
     col = db[collection]
@@ -129,10 +133,10 @@ async def count_documents(
 
 
 async def iter_inserts(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     collection: str,
-) -> AsyncIterator[dict]:
+) -> AsyncIterator[dict[str, Any]]:
     col = client[database][collection]
     pipeline = [{"$match": {"operationType": "insert"}}]
     async with await col.watch(pipeline) as stream:
@@ -143,7 +147,7 @@ async def iter_inserts(
 
 
 async def is_view(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     collection: str,
 ) -> bool:
@@ -155,24 +159,24 @@ async def is_view(
 
 
 async def get_indexes(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     collection: str,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     if await is_view(client, database, collection):
         return []
     col = client[database][collection]
     indexes = []
     async for idx in await col.list_indexes():
-        indexes.append(idx)
+        indexes.append(dict(idx))
     return indexes
 
 
 async def get_validator(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     collection: str,
-) -> dict | None:
+) -> dict[str, Any] | None:
     db = client[database]
     cursor = await db.list_collections(filter={"name": collection})
     async for spec in cursor:
@@ -182,12 +186,12 @@ async def get_validator(
 
 
 async def get_index_stats(
-    client: AsyncMongoClient,
+    client: AsyncMongoClient[Any],
     database: str,
     collection: str,
-) -> dict[str, dict]:
+) -> dict[str, dict[str, Any]]:
     col = client[database][collection]
-    out: dict[str, dict] = {}
+    out: dict[str, dict[str, Any]] = {}
     async for doc in await col.aggregate([{"$indexStats": {}}]):
         out[doc["name"]] = doc.get("accesses", {})
     return out

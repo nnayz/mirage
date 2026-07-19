@@ -12,15 +12,18 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Any
+
 import aiohttp
+from pydantic import SecretStr
 
 from mirage.core.github._client import github_headers, github_url
 
 
-async def ci_get(token: str,
+async def ci_get(token: SecretStr,
                  path: str,
-                 params: dict | None = None,
-                 **kwargs: str) -> dict:
+                 params: dict[str, Any] | None = None,
+                 **kwargs: str) -> dict[str, Any]:
     url = github_url(path, **kwargs)
     headers = github_headers(token)
     async with aiohttp.ClientSession() as session:
@@ -29,7 +32,7 @@ async def ci_get(token: str,
             return await resp.json()
 
 
-async def ci_get_bytes(token: str, path: str, **kwargs: str) -> bytes:
+async def ci_get_bytes(token: SecretStr, path: str, **kwargs: str) -> bytes:
     url = github_url(path, **kwargs)
     headers = github_headers(token)
     async with aiohttp.ClientSession() as session:
@@ -39,16 +42,16 @@ async def ci_get_bytes(token: str, path: str, **kwargs: str) -> bytes:
             return await resp.read()
 
 
-async def ci_get_paginated(token: str,
+async def ci_get_paginated(token: SecretStr,
                            path: str,
                            list_key: str,
-                           params: dict | None = None,
+                           params: dict[str, Any] | None = None,
                            max_results: int | None = None,
-                           **kwargs: str) -> list[dict]:
+                           **kwargs: str) -> list[dict[str, Any]]:
     params = dict(params or {})
     params.setdefault("per_page", 100)
     page = 1
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     url = github_url(path, **kwargs)
     headers = github_headers(token)
     async with aiohttp.ClientSession() as session:

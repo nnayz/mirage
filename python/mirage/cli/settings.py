@@ -16,6 +16,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from mirage.cli.env import ENV_DAEMON_URL, ENV_TOKEN
 from mirage.server.auth import storage as auth_storage
@@ -27,8 +28,7 @@ from mirage.server.auth.config import (ENV_AUTH_MODE, ENV_JWT_ALG,
 from mirage.server.daemon_config import (ALLOWED_KEYS, NUMERIC_KEYS,
                                          DaemonConfigError, read_daemon_table)
 from mirage.server.env import (ENV_ALLOWED_HOSTS, ENV_DAEMON_PORT,
-                               ENV_IDLE_GRACE_SECONDS, ENV_PID_FILE,
-                               ENV_SNAPSHOT_ROOT, ENV_VERSION_ROOT)
+                               ENV_IDLE_GRACE_SECONDS)
 from mirage.server.host_validation_constants import DEFAULT_ALLOWED_HOSTS
 from mirage.server.paths import mirage_home
 
@@ -47,9 +47,6 @@ _ENV_FOR_KEY = {
     "auth_token": ENV_TOKEN,
     "idle_grace_seconds": ENV_IDLE_GRACE_SECONDS,
     "port": ENV_DAEMON_PORT,
-    "pid_file": ENV_PID_FILE,
-    "version_root": ENV_VERSION_ROOT,
-    "snapshot_root": ENV_SNAPSHOT_ROOT,
 }
 
 
@@ -111,7 +108,7 @@ def load_daemon_settings(path: Path | None = None) -> DaemonSettings:
     return settings
 
 
-def _default_for_key(key: str, home: Path) -> str:
+def _default_for_key(key: str) -> str:
     defaults = {
         "url": DEFAULT_DAEMON_URL,
         "allowed_hosts": ",".join(DEFAULT_ALLOWED_HOSTS),
@@ -126,9 +123,6 @@ def _default_for_key(key: str, home: Path) -> str:
         "auth_token": "",
         "idle_grace_seconds": "30",
         "port": "8765",
-        "pid_file": str(home / "daemon.pid"),
-        "version_root": str(home / "repos"),
-        "snapshot_root": str(home / "snapshots"),
     }
     return defaults[key]
 
@@ -154,7 +148,7 @@ def resolved_config() -> dict[str, tuple[str, str]]:
         elif str(table.get(key, "")):
             out[key] = (str(table[key]), "file")
         else:
-            out[key] = (_default_for_key(key, home), "default")
+            out[key] = (_default_for_key(key), "default")
     return out
 
 
@@ -177,7 +171,7 @@ def _config_lines(path: Path) -> list[str]:
     return path.read_text().splitlines()
 
 
-def list_config(path: Path | None = None) -> dict:
+def list_config(path: Path | None = None) -> dict[str, Any]:
     """Return the ``[daemon]`` table as written in the config file.
 
     Args:

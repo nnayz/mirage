@@ -15,7 +15,8 @@
 import { mountPrefixOf } from '../../../utils/key_prefix.ts'
 import type { GmailAccessor } from '../../../accessor/gmail.ts'
 import type { IndexCacheStore } from '../../../cache/index/index.ts'
-import { resolveGlob } from '../../../core/gmail/glob.ts'
+import { resolveGlobOf } from '../generic_bind/index.ts'
+import { GMAIL_IO } from './io.ts'
 import { read as gmailRead } from '../../../core/gmail/read.ts'
 import { readdir as gmailReaddir } from '../../../core/gmail/readdir.ts'
 import { stat as gmailStat } from '../../../core/gmail/stat.ts'
@@ -27,6 +28,8 @@ import { patternArg } from '../grep_helper.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { rgGeneric } from '../generic/rg.ts'
+
+const resolveGlob = resolveGlobOf(GMAIL_IO)
 
 const ENC = new TextEncoder()
 
@@ -52,8 +55,12 @@ async function rgCommand(
     ]
   }
   const maxCount = typeof opts.flags.m === 'string' ? Number.parseInt(opts.flags.m, 10) : null
+  // Output-shaping flags need real per-line matching, which the search-API
+  // push-down cannot emulate; fall through to the generic rg over rendered
+  // files instead.
+  const shaping = ['args_l', 'l', 'c', 'n', 'o', 'v'].some((flag) => opts.flags[flag] === true)
 
-  if (paths.length > 0 && !pattern.includes('\n')) {
+  if (paths.length > 0 && !pattern.includes('\n') && !shaping) {
     const first = paths[0]
     if (first !== undefined) {
       const scope = detectScope(first)

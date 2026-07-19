@@ -21,7 +21,8 @@ import { create as createCore } from '../../core/ram/create.ts'
 import { du as duCore, duAll as duAllCore } from '../../core/ram/du.ts'
 import { exists as existsCore } from '../../core/ram/exists.ts'
 import { find as findCore, type FindOptions as RAMFindOptions } from '../../core/ram/find.ts'
-import { resolveGlob as globCore } from '../../core/ram/glob.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import { SCOPE_ERROR } from '../../core/ram/constants.ts'
 import { mkdir as mkdirCore } from '../../core/ram/mkdir.ts'
 import { read as readCore } from '../../core/ram/read.ts'
 import { readdir as readdirCore } from '../../core/ram/readdir.ts'
@@ -39,13 +40,16 @@ import type { RegisteredOp } from '../../ops/registry.ts'
 import { PathSpec, ResourceName, type FileStat } from '../../types.ts'
 import { BaseResource, type FindOptions, type Resource } from '../base.ts'
 import { RAM_PROMPT } from './prompt.ts'
-import { RAMStore } from './store.ts'
+import { RAMStore, type RAMAttrs } from './store.ts'
+
+const globCore = makeResolveGlob(readdirCore, SCOPE_ERROR)
 
 export interface RAMResourceState {
   type: string
   files?: Record<string, Uint8Array>
   dirs?: string[]
   modified?: Record<string, string>
+  attrs?: Record<string, RAMAttrs>
 }
 
 export class RAMResource extends BaseResource implements Resource {
@@ -178,11 +182,14 @@ export class RAMResource extends BaseResource implements Resource {
     for (const [k, v] of this.store.files) files[k] = v
     const modified: Record<string, string> = {}
     for (const [k, v] of this.store.modified) modified[k] = v
+    const attrs: Record<string, RAMAttrs> = {}
+    for (const [k, v] of this.store.attrs) attrs[k] = { ...v }
     return {
       type: this.kind,
       files,
       dirs: [...this.store.dirs],
       modified,
+      attrs,
     }
   }
 
@@ -194,5 +201,7 @@ export class RAMResource extends BaseResource implements Resource {
     for (const d of dirs.length > 0 ? dirs : ['/']) this.store.dirs.add(d)
     this.store.modified.clear()
     for (const [k, v] of Object.entries(state.modified ?? {})) this.store.modified.set(k, v)
+    this.store.attrs.clear()
+    for (const [k, v] of Object.entries(state.attrs ?? {})) this.store.attrs.set(k, { ...v })
   }
 }

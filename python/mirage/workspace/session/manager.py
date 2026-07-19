@@ -13,23 +13,50 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import copy
 
+from mirage.types import MountMode
+from mirage.workspace.session.ram import RAMSessionStore
 from mirage.workspace.session.session import Session
+from mirage.workspace.session.store import (CAS_MAX_RETRIES, SessionFields,
+                                            SessionStore, generation_of)
 
 
 class SessionManager:
+    """Owns the live session table over a storage-agnostic SessionStore.
 
-    def __init__(self, default_session_id: str) -> None:
+    Mirrors the Namespace/NamespaceStore split: sessions are worked on
+    in memory (creation stays synchronous), the store hydrates once at
+    the first async entry point, and durable fields flush back at async
+    boundaries (end of execute, snapshot, explicit persist). ``close``
+    deletes from the store — closing a session revokes it everywhere —
+    while process shutdown leaves stored sessions in place.
+    """
+
+    def __init__(self,
+                 default_session_id: str,
+                 store: SessionStore | None = None) -> None:
         self._default_id = default_session_id
+        self._store = store if store is not None else RAMSessionStore()
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        # What the store last saw from us, per session id. Flush
+        # compares against this to skip clean sessions without a
+        # network read, and to avoid clobbering other writers.
+        self._persisted: dict[str, SessionFields] = {}
         self._sessions[default_session_id] = Session(
             session_id=default_session_id)
         self._locks[default_session_id] = asyncio.Lock()
+        self._loaded = False
+        self._load_lock = asyncio.Lock()
 
     @property
     def default_id(self) -> str:
         return self._default_id
+
+    @property
+    def store(self) -> SessionStore:
+        return self._store
 
     @property
     def cwd(self) -> str:
@@ -47,12 +74,115 @@ class SessionManager:
     def env(self, value: dict[str, str]) -> None:
         self._sessions[self._default_id].env = value
 
+    def adopt_default(self, session_id: str) -> None:
+        """Re-key the default session to an externally decided id.
+
+        Two callers: attach (the discovery record already names a
+        default session, so the freshly minted placeholder re-keys
+        before hydration lands the stored durable fields on it) and
+        snapshot restore (the snapshot's default identity wins). The
+        store itself is untouched; the next flush or snapshot replace
+        writes the new key.
+
+        Args:
+            session_id (str): the default session id to adopt.
+        """
+        if session_id == self._default_id:
+            return
+        self._persisted.pop(self._default_id, None)
+        if session_id in self._sessions:
+            del self._sessions[self._default_id]
+            del self._locks[self._default_id]
+        else:
+            session = self._sessions.pop(self._default_id)
+            session.session_id = session_id
+            self._sessions[session_id] = session
+            self._locks[session_id] = self._locks.pop(self._default_id)
+        self._default_id = session_id
+
+    async def ensure_loaded(self) -> None:
+        """Hydrate sessions from the store once.
+
+        Stored sessions fill in ids this process has not created;
+        locally created sessions win a conflict (they overwrite the
+        store on the next flush). The default session adopts the stored
+        durable fields so a restarted daemon keeps its cwd/env.
+        """
+        if self._loaded:
+            return
+        async with self._load_lock:
+            if self._loaded:
+                return
+            entries = await self._store.load()
+            for sid, fields in entries.items():
+                if sid == self._default_id:
+                    stored = Session.from_dict(fields)
+                    default = self._sessions[self._default_id]
+                    default.cwd = stored.cwd
+                    default.env = stored.env
+                    default.created_at = stored.created_at
+                    default.mount_modes = stored.mount_modes
+                    default.generation = stored.generation
+                    # Hydrated sessions start clean: baseline what the
+                    # store holds so the next flush skips them.
+                    self._persisted[sid] = copy.deepcopy(default.to_dict())
+                    continue
+                if sid in self._sessions:
+                    continue
+                session = Session.from_dict(fields)
+                self._sessions[sid] = session
+                self._locks[sid] = asyncio.Lock()
+                self._persisted[sid] = copy.deepcopy(session.to_dict())
+            self._loaded = True
+
+    async def flush(self) -> None:
+        """Write dirty sessions through the store's generation gate."""
+        for session in list(self._sessions.values()):
+            await self._flush_one(session)
+
+    async def _flush_one(self, session: Session) -> None:
+        """Persist one session, retrying when another writer races us."""
+        sid = session.session_id
+        if session.to_dict() == self._persisted.get(sid):
+            return  # clean: the store already has exactly this state
+        for _ in range(CAS_MAX_RETRIES):
+            expected = session.generation
+            session.generation = expected + 1
+            fields = session.to_dict()
+            if await self._store.cas_set(sid, fields, expected):
+                # Deep copy: to_dict() shares the live env dict, and
+                # the baseline must stay frozen at what was written.
+                self._persisted[sid] = copy.deepcopy(fields)
+                return
+            # Lost the race: adopt the winner's generation and retry
+            # our content on top (last-writer-wins until a merge
+            # policy exists).
+            session.generation = expected
+            stored = (await self._store.load()).get(sid)
+            if stored is not None:
+                session.generation = generation_of(stored)
+        raise RuntimeError(
+            f"session {sid!r} flush kept conflicting with another writer")
+
+    async def replace_from_snapshot(self, sessions: list[Session]) -> None:
+        """Adopt a snapshot's session table and replace the store.
+
+        The snapshot wins over prior store contents, mirroring
+        ``Namespace.replace_nodes``.
+        """
+        self._loaded = True
+        entries = {s.session_id: s.to_dict() for s in self._sessions.values()}
+        for session in sessions:
+            entries[session.session_id] = session.to_dict()
+        await self._store.replace_all(entries)
+        self._persisted = copy.deepcopy(entries)
+
     def create(self,
                session_id: str,
-               allowed_mounts: frozenset[str] | None = None) -> Session:
+               mount_modes: dict[str, MountMode] | None = None) -> Session:
         if session_id in self._sessions:
             raise ValueError(f"Session {session_id!r} already exists")
-        session = Session(session_id=session_id, allowed_mounts=allowed_mounts)
+        session = Session(session_id=session_id, mount_modes=mount_modes)
         self._sessions[session_id] = session
         self._locks[session_id] = asyncio.Lock()
         return session
@@ -71,6 +201,8 @@ class SessionManager:
         async with self._locks[session_id]:
             del self._sessions[session_id]
         del self._locks[session_id]
+        self._persisted.pop(session_id, None)
+        await self._store.delete([session_id])
 
     async def close_all(self) -> None:
         session_ids = [
@@ -78,6 +210,9 @@ class SessionManager:
         ]
         for sid in session_ids:
             await self.close(sid)
+
+    async def close_store(self) -> None:
+        await self._store.close()
 
     def lock_for(self, session_id: str) -> asyncio.Lock:
         return self._locks[session_id]

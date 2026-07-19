@@ -13,12 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-from collections.abc import AsyncIterator
 
 from mirage.accessor.discord import DiscordAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.discord._provision import file_read_provision
+from mirage.commands.builtin.discord.io import resolve_glob
 from mirage.commands.builtin.generic.grep import grep as generic_grep
+from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.registry import command
@@ -27,13 +28,12 @@ from mirage.commands.spec.types import FlagView
 from mirage.core.discord.channels import list_channels
 from mirage.core.discord.entry import channel_dirname
 from mirage.core.discord.formatters import format_grep_results
-from mirage.core.discord.glob import resolve_glob
 from mirage.core.discord.read import read as discord_read
 from mirage.core.discord.readdir import readdir as _readdir
 from mirage.core.discord.scope import coalesce_scopes, detect_scope
 from mirage.core.discord.search import search_guild
 from mirage.core.discord.stat import stat as _stat
-from mirage.io.types import ByteSource, IOResult
+from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
@@ -60,14 +60,14 @@ async def grep(
     accessor: DiscordAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     prefix: str = "",
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
-    max_count = fl.int("m")
+    max_count = fl.as_int("m")
 
     pushdown_warnings: list[str] = []
     if paths and pattern is not None and "\n" not in pattern:
@@ -124,15 +124,13 @@ async def grep(
         resolved,
         texts,
         flags,
-        readdir=_readdir,
-        stat=_stat,
-        read_bytes=discord_read,
+        readdir=bound_op(_readdir, accessor, index),
+        stat=bound_op(_stat, accessor, index),
+        read_bytes=bound_op(discord_read, accessor, index),
         read_stream=None,
-        accessor=accessor,
         stdin=stdin,
-        index=index,
     )
     if pushdown_warnings:
         extra = ("\n".join(pushdown_warnings) + "\n").encode()
-        io.stderr = extra + (io.stderr or b"")
+        io.stderr = extra + await materialize(io.stderr)
     return out, io

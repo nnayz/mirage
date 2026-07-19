@@ -88,14 +88,6 @@
             "group": "Setup",
             "pages": [
               {
-                "group": "FUSE",
-                "icon": "hard-drive",
-                "pages": [
-                  "home/setup/macos",
-                  "home/setup/linux"
-                ]
-              },
-              {
                 "group": "Object Storage",
                 "icon": "cloud",
                 "pages": [
@@ -175,6 +167,7 @@
                 "icon": "database",
                 "pages": [
                   "home/setup/mongodb",
+                  "home/setup/gridfs",
                   "home/setup/postgres",
                   "home/setup/chroma",
                   "home/setup/lancedb",
@@ -202,6 +195,16 @@
                   "home/setup/trello"
                 ]
               }
+            ]
+          },
+          {
+            "group": "FUSE",
+            "icon": "hard-drive",
+            "pages": [
+              "home/setup/fuse",
+              "home/setup/macos",
+              "home/setup/linux",
+              "home/setup/windows"
             ]
           }
         ]
@@ -231,7 +234,8 @@
               "python/agents/agno",
               "python/agents/claude-code",
               "python/agents/claude-agent-sdk",
-              "python/agents/codex"
+              "python/agents/codex",
+              "python/agents/grok-build"
             ]
           },
           {
@@ -302,6 +306,8 @@
                 "group": "Cloud Files",
                 "icon": "folder-open",
                 "pages": [
+                  "python/resource/box",
+                  "python/resource/dropbox",
                   "python/resource/nextcloud",
                   "python/resource/databricks_volume"
                 ]
@@ -330,6 +336,7 @@
                 "icon": "database",
                 "pages": [
                   "python/resource/mongodb",
+                  "python/resource/gridfs",
                   "python/resource/postgres",
                   "python/resource/chroma",
                   "python/resource/lancedb",
@@ -358,6 +365,13 @@
                 ]
               },
               "python/resource/new"
+            ]
+          },
+          {
+            "group": "Runtimes",
+            "pages": [
+              "python/runtime/python",
+              "python/runtime/javascript"
             ]
           }
         ]
@@ -391,7 +405,8 @@
               "typescript/agents/opencode",
               "typescript/agents/claude-code",
               "typescript/agents/claude-agent-sdk",
-              "typescript/agents/codex"
+              "typescript/agents/codex",
+              "typescript/agents/grok-build"
             ]
           },
           {
@@ -482,6 +497,7 @@
                 "icon": "database",
                 "pages": [
                   "typescript/setup/mongodb",
+                  "typescript/setup/gridfs",
                   "typescript/setup/postgres",
                   "typescript/setup/chroma",
                   "typescript/setup/lancedb",
@@ -502,6 +518,13 @@
                   "typescript/setup/trello"
                 ]
               }
+            ]
+          },
+          {
+            "group": "Runtimes",
+            "pages": [
+              "typescript/runtime/python",
+              "typescript/runtime/javascript"
             ]
           }
         ]

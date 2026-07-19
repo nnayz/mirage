@@ -15,21 +15,16 @@
 import time
 
 from mirage.accessor.ram import RAMAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.observe.context import record
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.path import norm
 
 
-async def read_bytes(accessor: RAMAccessor, path: PathSpec) -> bytes:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual if isinstance(path, PathSpec) else path
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+async def read_bytes(accessor: RAMAccessor, path_spec: PathSpec) -> bytes:
+    virtual = path_spec.virtual
+    path = path_spec.mount_path
     store = accessor.store
     start_ms = int(time.monotonic() * 1000)
     key = norm(path)
@@ -42,13 +37,8 @@ async def read_bytes(accessor: RAMAccessor, path: PathSpec) -> bytes:
 
 async def read(accessor: RAMAccessor,
                path: PathSpec,
-               index: IndexCacheStore = None) -> bytes:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
+               index: IndexCacheStore = NULL_INDEX) -> bytes:
     try:
-        return await read_bytes(accessor, path.mount_path)
+        return await read_bytes(accessor, path)
     except FileNotFoundError as exc:
-        raise enoent(virtual) from exc
+        raise enoent(path.virtual) from exc

@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import functools
-from typing import Callable
+from typing import Any, Callable
 
 from mirage.commands.builtin.generic.crossmount.types import CrossResult
 from mirage.commands.builtin.generic.crossmount.utils import flat_scopes, relay
@@ -23,8 +23,8 @@ from mirage.commands.spec.types import FlagView
 from mirage.types import PathSpec
 
 
-async def run_diff(scopes: list[PathSpec], flag_kwargs: dict,
-                   dispatch: Callable) -> CrossResult:
+async def run_diff(scopes: list[PathSpec], flag_kwargs: dict[str, object],
+                   dispatch: Callable[..., Any]) -> CrossResult:
     """Diff two files on different mounts via the shared generic diff.
 
     Pure wiring: both sides are read through dispatch-relayed primitives.
@@ -40,11 +40,10 @@ async def run_diff(scopes: list[PathSpec], flag_kwargs: dict,
                               read_bytes=p(relay, dispatch, "read"),
                               readdir_fn=p(relay, dispatch, "readdir"),
                               stat_fn=p(relay, dispatch, "stat"),
-                              accessor=None,
-                              i=fl.bool("i"),
-                              w=fl.bool("w"),
-                              b=fl.bool("b"),
-                              e=fl.bool("e"),
-                              u=fl.bool("u"),
-                              q=fl.bool("q"),
-                              r=fl.bool("r"))
+                              i=fl.as_bool("i"),
+                              w=fl.as_bool("w"),
+                              b=fl.as_bool("b"),
+                              e=fl.as_bool("e"),
+                              u=fl.as_bool("u"),
+                              q=fl.as_bool("q"),
+                              r=fl.as_bool("r"))

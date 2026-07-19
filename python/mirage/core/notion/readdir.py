@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.notion import NotionAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.notion.pages import (list_block_children, query_database,
                                       search_databases, search_pages)
 from mirage.core.notion.pathing import (database_dirname, page_dirname,
@@ -27,15 +27,11 @@ VIRTUAL_ROOTS = ("pages", "databases")
 
 async def readdir(
     accessor: NotionAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = None,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    path = (path.dir if path.pattern else path).mount_path
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     idx_key = "/" + key if key else "/"
 
@@ -43,15 +39,14 @@ async def readdir(
         return [f"{prefix}/{root}" for root in VIRTUAL_ROOTS]
 
     if key == "pages":
-        if index is not None:
-            listing = await index.list_dir(idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
+        listing = await index.list_dir(idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
         pages = await search_pages(accessor.config)
         top_level = [
             p for p in pages if p.get("parent", {}).get("type") == "workspace"
         ]
-        entries = []
+        entries: list[tuple[str, IndexEntry]] = []
         for page in top_level:
             dirname = page_dirname(page)
             entry = IndexEntry(
@@ -62,15 +57,13 @@ async def readdir(
                 vfs_name=dirname,
             )
             entries.append((dirname, entry))
-        if index is not None:
-            await index.set_dir(idx_key, entries)
+        await index.set_dir(idx_key, entries)
         return [f"{prefix}/pages/{name}" for name, _ in entries]
 
     if key == "databases":
-        if index is not None:
-            listing = await index.list_dir(idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
+        listing = await index.list_dir(idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
         databases = await search_databases(accessor.config)
         entries = []
         for database in databases:
@@ -83,8 +76,7 @@ async def readdir(
                 vfs_name=dirname,
             )
             entries.append((dirname, entry))
-        if index is not None:
-            await index.set_dir(idx_key, entries)
+        await index.set_dir(idx_key, entries)
         return [f"{prefix}/databases/{name}" for name, _ in entries]
 
     parts = key.split("/")
@@ -93,14 +85,13 @@ async def readdir(
         _, page_id = split_suffix_id(parts[-1])
         page_idx_key = "/" + "/".join(parts)
 
-        if index is not None:
-            listing = await index.list_dir(page_idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
+        listing = await index.list_dir(page_idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
 
         blocks = await list_block_children(accessor.config, page_id)
         child_pages = [b for b in blocks if b.get("type") == "child_page"]
-        entries: list[tuple[str, IndexEntry]] = []
+        entries = []
 
         page_json_entry = IndexEntry(
             id=f"{page_id}:page",
@@ -124,8 +115,7 @@ async def readdir(
             )
             entries.append((dirname, child_entry))
 
-        if index is not None:
-            await index.set_dir(page_idx_key, entries)
+        await index.set_dir(page_idx_key, entries)
 
         base = f"{prefix}/{key}"
         return [f"{base}/{name}" for name, _ in entries]
@@ -134,13 +124,12 @@ async def readdir(
         _, database_id = split_suffix_id(parts[1])
         database_idx_key = "/" + "/".join(parts)
 
-        if index is not None:
-            listing = await index.list_dir(database_idx_key)
-            if listing.entries is not None:
-                return [f"{prefix}{entry}" for entry in listing.entries]
+        listing = await index.list_dir(database_idx_key)
+        if listing.entries is not None:
+            return [f"{prefix}{entry}" for entry in listing.entries]
 
         rows = await query_database(accessor.config, database_id)
-        entries: list[tuple[str, IndexEntry]] = []
+        entries = []
         database_json_entry = IndexEntry(
             id=f"{database_id}:database",
             name="database.json",
@@ -161,8 +150,7 @@ async def readdir(
             )
             entries.append((dirname, row_entry))
 
-        if index is not None:
-            await index.set_dir(database_idx_key, entries)
+        await index.set_dir(database_idx_key, entries)
 
         base = f"{prefix}/{key}"
         return [f"{base}/{name}" for name, _ in entries]

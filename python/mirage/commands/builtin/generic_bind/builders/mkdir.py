@@ -13,8 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.generic_bind.adapter import Builder, CommandIO
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
+                                                          Operation)
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -27,19 +28,23 @@ async def mkdir(
     stdin: bytes | None = None,
     p: bool = False,
     v: bool = False,
-    index: IndexCacheStore | None = None,
+    index: IndexCacheStore = NULL_INDEX,
     **kwargs,
 ) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor) or not paths:
         raise ValueError("mkdir: missing operand")
+    mkdir_fn = ops.require(Operation.MKDIR)
     paths = await ops.resolve_glob(accessor, paths, index)
     lines: list[str] = []
     for path in paths:
-        await ops.mkdir(accessor, path, parents=p)
+        await mkdir_fn(accessor, path, parents=p)
         if v:
             lines.append(f"mkdir: created directory '{path.virtual}'")
     output = ("\n".join(lines) + "\n").encode() if lines else None
     return output, IOResult()
 
 
-BUILDER = Builder('mkdir', mkdir, None, True, None)
+BUILDER = Builder('mkdir',
+                  mkdir,
+                  write=True,
+                  requirements=frozenset({Operation.MKDIR}))

@@ -16,7 +16,10 @@ import asyncio
 
 import pytest
 
-from mirage.workspace.session import SessionManager
+from mirage.resource.ram import RAMResource
+from mirage.types import MountMode
+from mirage.workspace import Workspace
+from mirage.workspace.session import RAMSessionStore, SessionManager
 
 
 def _run(coro):
@@ -124,13 +127,191 @@ def test_manager_lock_for():
     assert lock2 is not lock
 
 
-def test_manager_create_with_allowed_mounts():
+def test_manager_create_with_mount_modes():
     mgr = SessionManager("default")
-    s = mgr.create("agent", allowed_mounts=frozenset({"/s3", "/slack"}))
-    assert s.allowed_mounts == frozenset({"/s3", "/slack"})
+    grants = {"/s3": MountMode.READ, "/slack": MountMode.WRITE}
+    s = mgr.create("agent", mount_modes=grants)
+    assert s.mount_modes == grants
 
 
 def test_manager_create_default_unrestricted():
     mgr = SessionManager("default")
     s = mgr.create("worker")
-    assert s.allowed_mounts is None
+    assert s.mount_modes is None
+
+
+@pytest.mark.asyncio
+async def test_manager_hydrates_from_store():
+    store = RAMSessionStore()
+    await store.set(
+        "restored", {
+            "session_id": "restored",
+            "cwd": "/w",
+            "env": {
+                "K": "v"
+            },
+            "created_at": 1.0,
+            "mount_modes": {
+                "/data": "read"
+            }
+        })
+    mgr = SessionManager("default", store=store)
+    await mgr.ensure_loaded()
+    s = mgr.get("restored")
+    assert s.cwd == "/w"
+    assert s.env == {"K": "v"}
+    assert s.mount_modes == {"/data": MountMode.READ}
+
+
+@pytest.mark.asyncio
+async def test_manager_hydration_local_wins():
+    store = RAMSessionStore()
+    await store.set("s1", {"session_id": "s1", "cwd": "/stale"})
+    mgr = SessionManager("default", store=store)
+    local = mgr.create("s1")
+    local.cwd = "/fresh"
+    await mgr.ensure_loaded()
+    assert mgr.get("s1").cwd == "/fresh"
+
+
+@pytest.mark.asyncio
+async def test_manager_default_adopts_stored_fields():
+    store = RAMSessionStore()
+    await store.set("default", {
+        "session_id": "default",
+        "cwd": "/w",
+        "env": {
+            "A": "1"
+        }
+    })
+    mgr = SessionManager("default", store=store)
+    await mgr.ensure_loaded()
+    assert mgr.cwd == "/w"
+    assert mgr.env == {"A": "1"}
+
+
+@pytest.mark.asyncio
+async def test_manager_flush_writes_through():
+    store = RAMSessionStore()
+    mgr = SessionManager("default", store=store)
+    mgr.create("agent", mount_modes={"/s3": MountMode.READ})
+    mgr.cwd = "/moved"
+    await mgr.flush()
+    entries = await store.load()
+    assert entries["default"]["cwd"] == "/moved"
+    assert entries["agent"]["mount_modes"] == {"/s3": "read"}
+
+
+@pytest.mark.asyncio
+async def test_manager_close_deletes_from_store():
+    store = RAMSessionStore()
+    mgr = SessionManager("default", store=store)
+    mgr.create("gone")
+    await mgr.flush()
+    await mgr.close("gone")
+    assert "gone" not in await store.load()
+
+
+@pytest.mark.asyncio
+async def test_sessions_persist_across_workspaces_on_shared_store():
+    store = RAMSessionStore()
+    ram = RAMResource()
+    ws_a = Workspace({"/data": ram}, mode=MountMode.EXEC, session_store=store)
+    ws_a.create_session("narrow", mounts={"/data": "read"})
+    await ws_a.flush_sessions()
+
+    ws_b = Workspace({"/data": ram}, mode=MountMode.EXEC, session_store=store)
+    result = await ws_b.execute("echo blocked > /data/x.txt",
+                                session_id="narrow")
+    assert result.exit_code != 0
+
+
+class CountingStore(RAMSessionStore):
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cas_calls = 0
+
+    async def cas_set(self, session_id, fields, expected_generation):
+        self.cas_calls += 1
+        return await super().cas_set(session_id, fields, expected_generation)
+
+
+def test_flush_skips_clean_sessions():
+    store = CountingStore()
+    mgr = SessionManager("default", store=store)
+    _run(mgr.flush())
+    assert store.cas_calls == 1
+    _run(mgr.flush())
+    assert store.cas_calls == 1
+    mgr.get("default").env["K"] = "v"
+    _run(mgr.flush())
+    assert store.cas_calls == 2
+
+
+def test_flush_bumps_generation():
+    store = RAMSessionStore()
+    mgr = SessionManager("default", store=store)
+    _run(mgr.flush())
+    assert mgr.get("default").generation == 1
+    mgr.get("default").cwd = "/data"
+    _run(mgr.flush())
+    assert mgr.get("default").generation == 2
+    entries = _run(store.load())
+    assert entries["default"]["generation"] == 2
+
+
+def test_flush_conflict_adopts_stored_generation_and_retries():
+    store = RAMSessionStore()
+    mgr = SessionManager("default", store=store)
+    # Another writer already advanced the record to generation 5.
+    _run(
+        store.set(
+            "default", {
+                "session_id": "default",
+                "cwd": "/theirs",
+                "env": {},
+                "generation": 5,
+            }))
+    mgr.get("default").cwd = "/ours"
+    _run(mgr.flush())
+    entries = _run(store.load())
+    assert entries["default"]["cwd"] == "/ours"
+    assert entries["default"]["generation"] == 6
+    assert mgr.get("default").generation == 6
+
+
+def test_flush_exhausted_retries_raise():
+
+    class AlwaysConflict(RAMSessionStore):
+
+        async def cas_set(self, session_id, fields, expected_generation):
+            return False
+
+    mgr = SessionManager("default", store=AlwaysConflict())
+    mgr.get("default").cwd = "/data"
+    with pytest.raises(RuntimeError, match="conflict"):
+        _run(mgr.flush())
+
+
+def test_hydrated_sessions_start_clean():
+    store = CountingStore()
+    seeded = {
+        "session_id": "s2",
+        "cwd": "/data",
+        "env": {},
+        "generation": 3,
+    }
+    _run(store.set("s2", seeded))
+    mgr = SessionManager("default", store=store)
+    _run(mgr.ensure_loaded())
+    assert mgr.get("s2").generation == 3
+    before = store.cas_calls
+    _run(mgr.flush())
+    # Only the locally created default session is dirty; the hydrated
+    # one is clean until mutated.
+    assert store.cas_calls == before + 1
+    mgr.get("s2").env["K"] = "v"
+    _run(mgr.flush())
+    entries = _run(store.load())
+    assert entries["s2"]["generation"] == 4

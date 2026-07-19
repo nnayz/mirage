@@ -13,21 +13,23 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
+import logging
 import posixpath
 
 from mirage.accessor.gslides import GSlidesAccessor
-from mirage.cache.index import IndexCacheStore
-from mirage.core.gslides._client import (SLIDES_API_BASE, TokenManager,
-                                         google_get)
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.gslides._client import TokenManager, google_get, slides_base
 from mirage.core.gslides.readdir import readdir
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 
+logger = logging.getLogger(__name__)
+
 
 async def read_presentation(token_manager: TokenManager,
                             presentation_id: str) -> bytes:
-    url = f"{SLIDES_API_BASE}/presentations/{presentation_id}"
+    url = f"{slides_base(token_manager)}/presentations/{presentation_id}"
     data = await google_get(token_manager, url)
     return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
@@ -35,17 +37,11 @@ async def read_presentation(token_manager: TokenManager,
 async def read(
     accessor: GSlidesAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> bytes:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     virtual = path.virtual
     prefix = mount_prefix_of(path.virtual, path.resource_path)
     key = path.resource_path
-    if index is None:
-        raise enoent(virtual)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None:
@@ -56,8 +52,9 @@ async def read(
             try:
                 await readdir(accessor, parent_path, index)
                 result = await index.get(virtual_key)
-            except Exception:
-                pass
+            except FileNotFoundError as exc:
+                logger.debug("read populate failed for %s: %s", virtual_key,
+                             exc)
         if result.entry is None:
             raise enoent(virtual)
     if result.entry.resource_type in ("gslides/directory", ):

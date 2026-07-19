@@ -178,14 +178,6 @@ describe('S3Resource (mocked integration)', () => {
     it('exists returns false for missing keys', async () => {
       expect(await resource.exists(mkPath('/does/not/exist.txt'))).toBe(false)
     })
-
-    it('fingerprint matches ETag from stat', async () => {
-      const p = mkPath('/fp.txt')
-      await resource.writeFile(p, ENC.encode('fingerprint me'))
-      const fp = await resource.fingerprint(p)
-      const s = await resource.stat(p)
-      expect(fp).toBe(s.fingerprint)
-    })
   })
 
   describe('recursive', () => {
@@ -212,11 +204,11 @@ describe('S3Resource (mocked integration)', () => {
       expect(txts.sort()).toEqual(['/find/a.txt', '/find/c.txt'])
     })
 
-    it('find with minSize skips small files, letting directories pass', async () => {
+    it('find with minSize skips small files and directories (size 0)', async () => {
       await resource.writeFile(mkPath('/sz/small'), ENC.encode('x'))
       await resource.writeFile(mkPath('/sz/big'), ENC.encode('x'.repeat(100)))
       const results = await resource.find(mkPath('/sz/'), { minSize: 10 })
-      expect(results).toEqual(['/sz', '/sz/big'])
+      expect(results).toEqual(['/sz/big'])
     })
   })
 })

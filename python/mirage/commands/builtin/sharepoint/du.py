@@ -17,16 +17,20 @@ from functools import partial
 from mirage.accessor.sharepoint import SharePointAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.du import du_multi
+from mirage.commands.builtin.generic_bind.provision import metadata_provision
+from mirage.commands.builtin.sharepoint.io import resolve_glob
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.sharepoint.du import du as du_impl
 from mirage.core.sharepoint.du import du_all as du_all_impl
-from mirage.core.sharepoint.glob import resolve_glob
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("du", resource="sharepoint", spec=SPECS["du"])
+@command("du",
+         resource="sharepoint",
+         spec=SPECS["du"],
+         provision=metadata_provision)
 async def du(
     accessor: SharePointAccessor,
     paths: list[PathSpec],
@@ -37,7 +41,7 @@ async def du(
     a: bool = False,
     max_depth: str | None = None,
     c: bool = False,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
     paths = await resolve_glob(accessor, paths, index)

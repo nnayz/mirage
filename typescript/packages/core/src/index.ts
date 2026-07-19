@@ -17,17 +17,30 @@ export {
   CommandSafeguard,
   type CommandSafeguardInit,
   ConsistencyPolicy,
-  DEFAULT_AGENT_ID,
-  DEFAULT_SESSION_ID,
+  type CopyFn,
+  type CopyStrategy,
   DriftPolicy,
   FileStat,
   type FileStatInit,
   FileType,
+  type FindFn,
   MountMode,
+  type MoveFn,
+  type MoveStrategy,
+  type NativeCopy,
+  type NativeMove,
   OnExceed,
   PathSpec,
   type PathSpecInit,
+  type PolymorphicReadFn,
+  type PolymorphicReadResult,
+  type PrimitiveCopy,
+  type PrimitiveMove,
+  type ReadBytesFn,
+  type ReaddirFn,
+  type ReadStreamFn,
   ResourceName,
+  type StatFn,
 } from './types.ts'
 export {
   captureFingerprints,
@@ -65,6 +78,7 @@ export { DevStore, DevFiles } from './resource/dev/store.ts'
 export {
   type ExecuteOptions,
   ExecuteResult,
+  type MountSpec,
   Workspace,
   type WorkspaceOptions,
 } from './workspace/workspace.ts'
@@ -85,6 +99,7 @@ export {
   registerOp,
 } from './ops/registry.ts'
 export { RAM_OPS } from './ops/ram/index.ts'
+export { makeGenericOps } from './ops/generic/factory.ts'
 export { extractWriteData } from './ops/write_args.ts'
 export { RAM_COMMANDS } from './commands/builtin/ram/index.ts'
 export {
@@ -99,7 +114,6 @@ export { GENERAL_BC } from './commands/builtin/general/bc.ts'
 export { GENERAL_CURL } from './commands/builtin/general/curl.ts'
 export { GENERAL_DATE } from './commands/builtin/general/date.ts'
 export { GENERAL_EXPR } from './commands/builtin/general/expr.ts'
-export { RAM_SED } from './commands/builtin/ram/sed.ts'
 export { GENERAL_SEQ } from './commands/builtin/general/seq.ts'
 export { GENERAL_WGET } from './commands/builtin/general/wget.ts'
 export { S3_COMMANDS } from './commands/builtin/s3/index.ts'
@@ -135,6 +149,8 @@ export { OpRecord, type OpRecordInit } from './observe/record.ts'
 export { LogEntry, type LogEntryInit } from './observe/log_entry.ts'
 export { type EventDict, Observer } from './observe/observer.ts'
 export { type ObserverStore, RAMObserverStore } from './observe/store.ts'
+export { NamespaceStore, type NodeFields } from './workspace/mount/namespace/store.ts'
+export { RAMNamespaceStore } from './workspace/mount/namespace/ram.ts'
 export { HISTORY_PREFIX, HistoryViewResource } from './resource/history/history.ts'
 export {
   record,
@@ -145,6 +161,7 @@ export {
   setVirtualPrefix,
 } from './observe/context.ts'
 export { guessType } from './utils/filetype.ts'
+export { newSessionId, newWorkspaceId, uuid7 } from './utils/ids.ts'
 export { Accessor, NOOPAccessor, RAMAccessor } from './accessor/index.ts'
 export { cat as featherCat, describe as featherDescribe } from './core/filetype/feather.ts'
 export { cat as hdf5Cat, describe as hdf5Describe } from './core/filetype/hdf5.ts'
@@ -178,7 +195,7 @@ export {
   FILETYPE_ENTRIES,
   type FiletypeEntry,
   type FiletypeModule,
-  type ReadBytesFn,
+  type FiletypeReadBytesFn,
   type StatEntryFn,
 } from './commands/builtin/filetype_factory/extensions.ts'
 export { numberLines } from './commands/builtin/generic/cat.ts'
@@ -211,7 +228,6 @@ export { gzipGeneric } from './commands/builtin/generic/gzip.ts'
 export { gunzipGeneric } from './commands/builtin/generic/gunzip.ts'
 export { iconvGeneric } from './commands/builtin/generic/iconv.ts'
 export { sedGeneric } from './commands/builtin/generic/sed.ts'
-export { makeSed, type SedBackend } from './commands/builtin/generic/sed_command.ts'
 export { teeGeneric } from './commands/builtin/generic/tee.ts'
 export { splitGeneric } from './commands/builtin/generic/split.ts'
 export { csplitGeneric } from './commands/builtin/generic/csplit.ts'
@@ -222,6 +238,7 @@ export { zipGeneric } from './commands/builtin/generic/zip_cmd.ts'
 export { tarGeneric } from './commands/builtin/generic/tar.ts'
 export { realpathGeneric } from './commands/builtin/generic/realpath.ts'
 export { findGeneric, findSizeMtimeError, invalidFindArg } from './commands/builtin/generic/find.ts'
+export { walkFind } from './core/generic/find.ts'
 export { statGeneric } from './commands/builtin/generic/stat.ts'
 export { diffGeneric } from './commands/builtin/generic/diff.ts'
 export { duGeneric } from './commands/builtin/generic/du.ts'
@@ -247,6 +264,7 @@ export { dirnameFn } from './commands/builtin/generic/dirname.ts'
 export { gnuBasename, gnuDirname, norm, parent, posixNormpath, resolvePath } from './utils/path.ts'
 export { shlexSplit } from './utils/shlex.ts'
 export {
+  DEFAULT_MAX_GLOB_MATCHES,
   expandPattern,
   hasGlob,
   isWordShaped,
@@ -272,9 +290,6 @@ export {
 } from './commands/builtin/grep_helper.ts'
 export { grepContextLines } from './commands/builtin/grep_context.ts'
 export {
-  type AsyncReaddirFn,
-  type AsyncReadBytesFn,
-  type AsyncStatFn,
   rgFolderFiletype,
   type RgFolderFiletypeOptions,
   rgFull,
@@ -282,6 +297,11 @@ export {
   rgMatchesFilter,
   TYPE_EXTENSIONS,
 } from './commands/builtin/rg_helper.ts'
+export type {
+  AsyncReadBytesFn,
+  AsyncReaddirFn,
+  AsyncStatFn,
+} from './commands/builtin/utils/types.ts'
 export {
   compareKeys,
   parseKeyOptions,
@@ -347,8 +367,6 @@ export {
   cut as featherCut,
   grep as featherGrep,
   head as featherHead,
-  ls as featherLs,
-  lsFallback as featherLsFallback,
   stat as featherStat,
   tail as featherTail,
   wc as featherWc,
@@ -357,8 +375,6 @@ export {
   cut as hdf5Cut,
   grep as hdf5Grep,
   head as hdf5Head,
-  ls as hdf5Ls,
-  lsFallback as hdf5LsFallback,
   stat as hdf5Stat,
   tail as hdf5Tail,
   wc as hdf5Wc,
@@ -367,15 +383,13 @@ export {
   cut as parquetCut,
   grep as parquetGrep,
   head as parquetHead,
-  ls as parquetLs,
-  lsFallback as parquetLsFallback,
   stat as parquetStat,
   tail as parquetTail,
   wc as parquetWc,
 } from './core/filetype/parquet.ts'
 export { Precision, ProvisionResult, type ProvisionResultInit } from './provision/types.ts'
 export { IndexEntry, type IndexEntryInit, ResourceType } from './cache/index/config.ts'
-export { type FileCache } from './cache/file/mixin.ts'
+export { drainBudget, type FileCache, validateMaxDrainBytes } from './cache/file/mixin.ts'
 export { CacheEntry, type CacheEntryInit } from './cache/file/entry.ts'
 export { defaultFingerprint, parseLimit } from './cache/file/utils.ts'
 export { RAMFileCacheStore } from './cache/file/ram.ts'
@@ -410,6 +424,17 @@ export {
 } from './workspace/types.ts'
 export { Session, type SessionInit } from './workspace/session/session.ts'
 export { SessionManager } from './workspace/session/manager.ts'
+export { SessionStore, generationOf, type SessionFields } from './workspace/session/store.ts'
+export { RAMSessionStore } from './workspace/session/ram.ts'
+export { S3RecordClient, S3SessionStore, isConditionLostError } from './workspace/session/s3.ts'
+export {
+  WorkspaceStateStore,
+  type WorkspaceFields,
+  type WorkspaceStateStoreOverrides,
+} from './workspace/store/base.ts'
+export { RAMWorkspaceStateStore } from './workspace/store/ram.ts'
+export { S3WorkspaceStateStore } from './workspace/store/s3.ts'
+export { runWithSession } from './context/session_context.ts'
 export { CallFrame, type CallFrameInit, CallStack } from './shell/call_stack.ts'
 export { Job, JobStatus, JobTable, type JobTaskResult } from './shell/job_table.ts'
 export {
@@ -426,6 +451,29 @@ export {
   isCrossMount,
 } from './workspace/executor/cross_mount.ts'
 export { handleCommand, ReturnSignal } from './workspace/executor/command.ts'
+export {
+  bindCommands,
+  runtimeBindingsFor,
+  DEFAULT_ENTRIES,
+  VfsRuntime,
+  type RunArgs,
+  type RunResult,
+  type Runtime,
+  type RuntimeEntry,
+} from './workspace/executor/runtime.ts'
+export {
+  commandFacts,
+  decideLine,
+  ScriptSource,
+  RoutingDecisionError,
+  type CommandFacts,
+  type RoutingDecision,
+  type RouteContext,
+  type RouteFn,
+  type RouteScript,
+} from './workspace/executor/route/index.ts'
+export { buildRuntime, candidates, RUNTIMES } from './workspace/executor/runtime_table.ts'
+export type { JsRuntime } from './workspace/executor/js/interface.ts'
 export { applyBarrier, BarrierPolicy } from './shell/barrier.ts'
 export { handleConnection, handlePipe, handleSubshell } from './workspace/executor/pipes.ts'
 export { handleRedirect } from './workspace/executor/redirect.ts'
@@ -551,7 +599,6 @@ export { create } from './core/s3/create.ts'
 export { du, duAll } from './core/s3/du.ts'
 export { exists } from './core/s3/exists.ts'
 export { find } from './core/s3/find.ts'
-export { resolveGlob as resolveS3Glob } from './core/s3/glob.ts'
 export { mkdir } from './core/s3/mkdir.ts'
 export { fpRevFromS3Response, read } from './core/s3/read.ts'
 export { readdir } from './core/s3/readdir.ts'
@@ -590,18 +637,16 @@ export {
 } from './core/discord/_client_browser.ts'
 export { DiscordAccessor, type DiscordResourceLike } from './accessor/discord.ts'
 export { SLACK_COMMANDS } from './commands/builtin/slack/index.ts'
-export { SLACK_VFS_OPS } from './ops/slack/index.ts'
+export { SLACK_OPS } from './ops/slack/index.ts'
 export { read as slackRead } from './core/slack/read.ts'
 export { readdir as slackReaddir } from './core/slack/readdir.ts'
 export { stat as slackStat } from './core/slack/stat.ts'
-export { resolveSlackGlob } from './core/slack/glob.ts'
 export { SLACK_PROMPT, SLACK_WRITE_PROMPT } from './resource/slack/prompt.ts'
 export { DISCORD_COMMANDS } from './commands/builtin/discord/index.ts'
-export { DISCORD_VFS_OPS } from './ops/discord/index.ts'
+export { DISCORD_OPS } from './ops/discord/index.ts'
 export { read as discordRead } from './core/discord/read.ts'
 export { readdir as discordReaddir } from './core/discord/readdir.ts'
 export { stat as discordStat } from './core/discord/stat.ts'
-export { resolveDiscordGlob } from './core/discord/glob.ts'
 export { DISCORD_PROMPT, DISCORD_WRITE_PROMPT } from './resource/discord/prompt.ts'
 export {
   HttpTrelloTransport,
@@ -611,7 +656,7 @@ export {
 } from './core/trello/_client.ts'
 export { TrelloAccessor, type TrelloResourceLike } from './accessor/trello.ts'
 export { TRELLO_COMMANDS } from './commands/builtin/trello/index.ts'
-export { TRELLO_VFS_OPS } from './ops/trello/index.ts'
+export { TRELLO_OPS } from './ops/trello/index.ts'
 export {
   HttpLinearTransport,
   type HttpLinearTransportOptions,
@@ -620,11 +665,10 @@ export {
 } from './core/linear/_client.ts'
 export { LinearAccessor, type LinearResourceLike } from './accessor/linear.ts'
 export { LINEAR_COMMANDS } from './commands/builtin/linear/index.ts'
-export { LINEAR_VFS_OPS } from './ops/linear/index.ts'
+export { LINEAR_OPS } from './ops/linear/index.ts'
 export { read as linearRead } from './core/linear/read.ts'
 export { readdir as linearReaddir, type LinearReaddirFilter } from './core/linear/readdir.ts'
 export { stat as linearStat } from './core/linear/stat.ts'
-export { resolveLinearGlob } from './core/linear/glob.ts'
 export { LINEAR_PROMPT, LINEAR_WRITE_PROMPT } from './resource/linear/prompt.ts'
 export { NotionAccessor, type NotionResourceLike } from './accessor/notion.ts'
 export {
@@ -643,10 +687,9 @@ export {
 export { read as notionRead } from './core/notion/read.ts'
 export { readdir as notionReaddir } from './core/notion/readdir.ts'
 export { stat as notionStat } from './core/notion/stat.ts'
-export { resolveNotionGlob } from './core/notion/glob.ts'
 export { NOTION_PROMPT, NOTION_WRITE_PROMPT } from './resource/notion/prompt.ts'
 export { NOTION_COMMANDS } from './commands/builtin/notion/index.ts'
-export { NOTION_VFS_OPS } from './ops/notion/index.ts'
+export { NOTION_OPS } from './ops/notion/index.ts'
 export {
   HttpLangfuseTransport,
   type HttpLangfuseTransportOptions,
@@ -655,17 +698,15 @@ export {
 } from './core/langfuse/_client.ts'
 export { LangfuseAccessor, type LangfuseResourceLike } from './accessor/langfuse.ts'
 export { LANGFUSE_COMMANDS } from './commands/builtin/langfuse/index.ts'
-export { LANGFUSE_VFS_OPS } from './ops/langfuse/index.ts'
+export { LANGFUSE_OPS } from './ops/langfuse/index.ts'
 export { read as langfuseRead } from './core/langfuse/read.ts'
 export { readdir as langfuseReaddir } from './core/langfuse/readdir.ts'
 export { stat as langfuseStat } from './core/langfuse/stat.ts'
-export { resolveLangfuseGlob } from './core/langfuse/glob.ts'
 export { LANGFUSE_PROMPT } from './resource/langfuse/prompt.ts'
 export { detectScope as langfuseDetectScope, type LangfuseScope } from './core/langfuse/scope.ts'
 export { read as trelloRead } from './core/trello/read.ts'
 export { readdir as trelloReaddir, type TrelloReaddirFilter } from './core/trello/readdir.ts'
 export { stat as trelloStat } from './core/trello/stat.ts'
-export { resolveTrelloGlob } from './core/trello/glob.ts'
 export { TRELLO_PROMPT, TRELLO_WRITE_PROMPT } from './resource/trello/prompt.ts'
 export {
   GitHubApiError,
@@ -683,7 +724,7 @@ export {
 } from './core/github/_client.ts'
 export { GitHubAccessor, type GitHubResourceLike } from './accessor/github.ts'
 export { GITHUB_COMMANDS } from './commands/builtin/github/index.ts'
-export { GITHUB_VFS_OPS } from './ops/github/index.ts'
+export { GITHUB_OPS } from './ops/github/index.ts'
 export { read as githubRead, stream as githubStream } from './core/github/read.ts'
 export { readdir as githubReaddir } from './core/github/readdir.ts'
 export {
@@ -691,7 +732,6 @@ export {
   populateIndex as githubPopulateIndex,
 } from './core/github/tree.ts'
 export { stat as githubStat } from './core/github/stat.ts'
-export { resolveGlob as githubResolveGlob } from './core/github/glob.ts'
 export {
   type TreeEntry as GitHubTreeEntry,
   makeTreeEntry as githubMakeTreeEntry,
@@ -705,11 +745,10 @@ export { GITHUB_PROMPT } from './resource/github/prompt.ts'
 export { type CITransport, HttpCITransport } from './core/github_ci/_client.ts'
 export { GitHubCIAccessor, type GitHubCIResourceLike } from './accessor/github_ci.ts'
 export { GITHUB_CI_COMMANDS } from './commands/builtin/github_ci/index.ts'
-export { GITHUB_CI_VFS_OPS } from './ops/github_ci/index.ts'
+export { GITHUB_CI_OPS } from './ops/github_ci/index.ts'
 export { read as githubCiRead, stream as githubCiStream } from './core/github_ci/read.ts'
 export { readdir as githubCiReaddir } from './core/github_ci/readdir.ts'
 export { stat as githubCiStat } from './core/github_ci/stat.ts'
-export { resolveGlob as githubCiResolveGlob } from './core/github_ci/glob.ts'
 export {
   type CIWorkflow,
   listWorkflows as githubCiListWorkflows,
@@ -734,6 +773,7 @@ export { GITHUB_CI_PROMPT } from './resource/github_ci/prompt.ts'
 export {
   DOCS_API_BASE,
   DRIVE_API_BASE,
+  DRIVE_UPLOAD_BASE,
   GMAIL_API_BASE,
   GoogleApiError,
   SHEETS_API_BASE,
@@ -741,6 +781,13 @@ export {
   TOKEN_BUFFER_SECONDS,
   TOKEN_URL,
   TokenManager,
+  docsBase,
+  driveBase,
+  driveUploadBase,
+  gmailBase,
+  sheetsBase,
+  slidesBase,
+  tokenUrl,
   googleGet,
   googleGetBytes,
   googleGetStream,
@@ -768,7 +815,7 @@ export {
 } from './core/google/drive.ts'
 export { GDocsAccessor } from './accessor/gdocs.ts'
 export { GDOCS_COMMANDS } from './commands/builtin/gdocs/index.ts'
-export { GDOCS_VFS_OPS } from './ops/gdocs/index.ts'
+export { GDOCS_OPS } from './ops/gdocs/index.ts'
 export {
   read as gdocsRead,
   stream as gdocsStream,
@@ -776,10 +823,7 @@ export {
 } from './core/gdocs/read.ts'
 export { readdir as gdocsReaddir } from './core/gdocs/readdir.ts'
 export { stat as gdocsStat } from './core/gdocs/stat.ts'
-export { resolveGlob as gdocsResolveGlob } from './core/gdocs/glob.ts'
 export { appendText as gdocsAppendText } from './core/gdocs/write.ts'
-export { batchUpdate as gdocsBatchUpdate } from './core/gdocs/update.ts'
-export { createDoc as gdocsCreateDoc } from './core/gdocs/create.ts'
 export { GDOCS_PROMPT, GDOCS_WRITE_PROMPT } from './resource/gdocs/prompt.ts'
 export {
   type DocEntry,
@@ -788,7 +832,7 @@ export {
 } from './resource/gdocs/doc_entry.ts'
 export { GSheetsAccessor } from './accessor/gsheets.ts'
 export { GSHEETS_COMMANDS } from './commands/builtin/gsheets/index.ts'
-export { GSHEETS_VFS_OPS } from './ops/gsheets/index.ts'
+export { GSHEETS_OPS } from './ops/gsheets/index.ts'
 export {
   read as gsheetsRead,
   stream as gsheetsStream,
@@ -797,10 +841,7 @@ export {
 } from './core/gsheets/read.ts'
 export { readdir as gsheetsReaddir } from './core/gsheets/readdir.ts'
 export { stat as gsheetsStat } from './core/gsheets/stat.ts'
-export { resolveGlob as gsheetsResolveGlob } from './core/gsheets/glob.ts'
 export { appendValues as gsheetsAppendValues, SheetsApiError } from './core/gsheets/write.ts'
-export { batchUpdate as gsheetsBatchUpdate } from './core/gsheets/update.ts'
-export { createSpreadsheet as gsheetsCreateSpreadsheet } from './core/gsheets/create.ts'
 export { GSHEETS_PROMPT, GSHEETS_WRITE_PROMPT } from './resource/gsheets/prompt.ts'
 export {
   type SheetEntry,
@@ -809,7 +850,7 @@ export {
 } from './resource/gsheets/sheet_entry.ts'
 export { GSlidesAccessor } from './accessor/gslides.ts'
 export { GSLIDES_COMMANDS } from './commands/builtin/gslides/index.ts'
-export { GSLIDES_VFS_OPS } from './ops/gslides/index.ts'
+export { GSLIDES_OPS } from './ops/gslides/index.ts'
 export {
   read as gslidesRead,
   stream as gslidesStream,
@@ -817,9 +858,6 @@ export {
 } from './core/gslides/read.ts'
 export { readdir as gslidesReaddir } from './core/gslides/readdir.ts'
 export { stat as gslidesStat } from './core/gslides/stat.ts'
-export { resolveGlob as gslidesResolveGlob } from './core/gslides/glob.ts'
-export { batchUpdate as gslidesBatchUpdate } from './core/gslides/update.ts'
-export { createPresentation as gslidesCreatePresentation } from './core/gslides/create.ts'
 export { GSLIDES_PROMPT, GSLIDES_WRITE_PROMPT } from './resource/gslides/prompt.ts'
 export {
   type SlideEntry,
@@ -829,7 +867,7 @@ export {
 export { GoogleApiAccessor } from './accessor/google_api.ts'
 export { GDriveAccessor } from './accessor/gdrive.ts'
 export { GDRIVE_COMMANDS } from './commands/builtin/gdrive/index.ts'
-export { GDRIVE_VFS_OPS } from './ops/gdrive/index.ts'
+export { GDRIVE_OPS } from './ops/gdrive/index.ts'
 export {
   read as gdriveRead,
   stream as gdriveStream,
@@ -837,7 +875,6 @@ export {
 } from './core/gdrive/read.ts'
 export { readdir as gdriveReaddir } from './core/gdrive/readdir.ts'
 export { stat as gdriveStat } from './core/gdrive/stat.ts'
-export { resolveGlob as gdriveResolveGlob } from './core/gdrive/glob.ts'
 export { GDRIVE_PROMPT } from './resource/gdrive/prompt.ts'
 export {
   DROPBOX_API_BASE,
@@ -861,11 +898,11 @@ export {
 } from './core/dropbox/api.ts'
 export { DropboxAccessor } from './accessor/dropbox.ts'
 export { DROPBOX_COMMANDS } from './commands/builtin/dropbox/index.ts'
-export { DROPBOX_VFS_OPS } from './ops/dropbox/index.ts'
+export { DROPBOX_OPS } from './ops/dropbox/index.ts'
 export { read as dropboxRead, stream as dropboxStream } from './core/dropbox/read.ts'
 export { readdir as dropboxReaddir } from './core/dropbox/readdir.ts'
 export { stat as dropboxStat } from './core/dropbox/stat.ts'
-export { resolveGlob as dropboxResolveGlob } from './core/dropbox/glob.ts'
+export { narrowPaths as dropboxNarrowPaths } from './core/dropbox/search.ts'
 export { DROPBOX_PROMPT } from './resource/dropbox/prompt.ts'
 export {
   BOX_API_BASE,
@@ -890,11 +927,10 @@ export {
 } from './core/box/api.ts'
 export { BoxAccessor } from './accessor/box.ts'
 export { BOX_COMMANDS } from './commands/builtin/box/index.ts'
-export { BOX_VFS_OPS } from './ops/box/index.ts'
+export { BOX_OPS } from './ops/box/index.ts'
 export { read as boxRead, stream as boxStream } from './core/box/read.ts'
 export { readdir as boxReaddir } from './core/box/readdir.ts'
 export { stat as boxStat } from './core/box/stat.ts'
-export { resolveGlob as boxResolveGlob } from './core/box/glob.ts'
 export { BOX_PROMPT } from './resource/box/prompt.ts'
 export {
   type BoxnoteParagraph,
@@ -908,11 +944,10 @@ export {
 } from './core/filetype/boxcanvas.ts'
 export { GmailAccessor } from './accessor/gmail.ts'
 export { GMAIL_COMMANDS } from './commands/builtin/gmail/index.ts'
-export { GMAIL_VFS_OPS } from './ops/gmail/index.ts'
+export { GMAIL_OPS } from './ops/gmail/index.ts'
 export { read as gmailRead } from './core/gmail/read.ts'
 export { readdir as gmailReaddir } from './core/gmail/readdir.ts'
 export { stat as gmailStat } from './core/gmail/stat.ts'
-export { resolveGlob as gmailResolveGlob } from './core/gmail/glob.ts'
 export { type GmailScope, detectScope as gmailDetectScope } from './core/gmail/scope.ts'
 export { listLabels as gmailListLabels, type GmailLabel } from './core/gmail/labels.ts'
 export {
@@ -966,7 +1001,6 @@ export { POSTGRES_COMMANDS } from './commands/builtin/postgres/index.ts'
 export { read as postgresRead } from './core/postgres/read.ts'
 export { readdir as postgresReaddir } from './core/postgres/readdir.ts'
 export { stat as postgresStat } from './core/postgres/stat.ts'
-export { resolveGlob as resolvePostgresGlob } from './core/postgres/glob.ts'
 export { detectScope as detectPostgresScope } from './core/postgres/scope.ts'
 export {
   formatGrepResults as postgresFormatGrepResults,
@@ -1008,7 +1042,6 @@ export { MONGODB_COMMANDS } from './commands/builtin/mongodb/index.ts'
 export { read as mongoRead } from './core/mongodb/read.ts'
 export { readdir as mongoReaddir } from './core/mongodb/readdir.ts'
 export { stat as mongoStat } from './core/mongodb/stat.ts'
-export { resolveGlob as resolveMongoGlob } from './core/mongodb/glob.ts'
 export { detectScope as detectMongoScope, type MongoDBScope } from './core/mongodb/scope.ts'
 export type { LanceDriver, LanceRow } from './core/lancedb/_driver.ts'
 export { LanceDBAccessor } from './accessor/lancedb.ts'
@@ -1023,7 +1056,6 @@ export { LANCEDB_COMMANDS } from './commands/builtin/lancedb/index.ts'
 export { read as lanceRead } from './core/lancedb/read.ts'
 export { readdir as lanceReaddir } from './core/lancedb/readdir.ts'
 export { stat as lanceStat } from './core/lancedb/stat.ts'
-export { resolveGlob as resolveLanceGlob } from './core/lancedb/glob.ts'
 export { searchRowsOutput as lanceSearch } from './core/lancedb/search.ts'
 export {
   detectScope as detectLanceScope,
@@ -1043,7 +1075,6 @@ export { ChromaResource, type ChromaResourceOptions } from './resource/chroma/ch
 export { readBytes as chromaRead, readStream as chromaReadStream } from './core/chroma/read.ts'
 export { readdir as chromaReaddir } from './core/chroma/readdir.ts'
 export { stat as chromaStat } from './core/chroma/stat.ts'
-export { resolveGlob as resolveChromaGlob } from './core/chroma/glob.ts'
 export { searchSegments as chromaSearch } from './core/chroma/search.ts'
 export type { QdrantPoint, QdrantRow } from './core/qdrant/_client.ts'
 export { QdrantAccessor } from './accessor/qdrant.ts'
@@ -1059,7 +1090,6 @@ export { QdrantResource, type QdrantResourceOptions } from './resource/qdrant/qd
 export { read as qdrantRead } from './core/qdrant/read.ts'
 export { readdir as qdrantReaddir } from './core/qdrant/readdir.ts'
 export { stat as qdrantStat } from './core/qdrant/stat.ts'
-export { resolveGlob as resolveQdrantGlob } from './core/qdrant/glob.ts'
 export { searchRowsOutput as qdrantSearch } from './core/qdrant/search.ts'
 export { scoreFromDistance } from './utils/score.ts'
 export {
@@ -1084,6 +1114,7 @@ export { setHttpProxyBase } from './commands/builtin/utils/http.ts'
 
 export { lstripSlash, rstripSlash, stripSlash } from './utils/slash.ts'
 export { mountKey, mountPrefixOf, rekey, stripMount } from './utils/key_prefix.ts'
+export * as keyPrefix from './utils/key_prefix.ts'
 export { fnmatch } from './utils/fnmatch.ts'
 export {
   buildTree,
@@ -1131,8 +1162,6 @@ export {
 export { readdir as databricksVolumeReaddir } from './core/databricks_volume/readdir.ts'
 export { stat as databricksVolumeStat } from './core/databricks_volume/stat.ts'
 export { exists as databricksVolumeExists } from './core/databricks_volume/exists.ts'
-export { find as databricksVolumeFind } from './core/databricks_volume/find.ts'
-export { resolveGlob as resolveDatabricksVolumeGlob } from './core/databricks_volume/glob.ts'
 export { writeBytes as databricksVolumeWrite } from './core/databricks_volume/write.ts'
 export { create as databricksVolumeCreate } from './core/databricks_volume/create.ts'
 export { mkdir as databricksVolumeMkdir } from './core/databricks_volume/mkdir.ts'

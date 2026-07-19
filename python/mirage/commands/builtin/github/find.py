@@ -18,10 +18,11 @@ from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.find import find as generic_find
 from mirage.commands.builtin.github._provision import metadata_provision
+from mirage.commands.builtin.github.io import resolve_glob
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.github.find import find as find_core
-from mirage.core.github.glob import resolve_glob
+from mirage.core.github.stat import stat as stat_core
 from mirage.io.types import ByteSource, IOResult
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
@@ -31,7 +32,7 @@ async def find_provision(
     accessor: GitHubAccessor,
     paths: list[PathSpec],
     *texts: str,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> ProvisionResult:
     path_strs = [
@@ -57,17 +58,16 @@ async def find(
     iname: str | None = None,
     path: str | None = None,
     mindepth: str | None = None,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    if index is None:
-        raise ValueError("find: no tree loaded")
     paths = await resolve_glob(accessor, paths, index)
     return await generic_find(paths,
                               texts,
                               find_core=partial(find_core,
                                                 accessor,
                                                 index=index),
+                              stat=partial(stat_core, accessor, index=index),
                               name=name,
                               type=type,
                               size=size,

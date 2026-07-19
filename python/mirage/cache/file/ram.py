@@ -16,9 +16,10 @@ import asyncio
 import time
 from collections import OrderedDict
 from collections.abc import Iterable
+from typing import Any
 
 from mirage.cache.file.entry import CacheEntry
-from mirage.cache.file.mixin import FileCacheMixin
+from mirage.cache.file.mixin import FileCacheMixin, validate_max_drain_bytes
 from mirage.cache.file.utils import default_fingerprint, parse_limit
 from mirage.cache.lock import KeyLockMixin
 from mirage.resource.ram import RAMResource
@@ -37,11 +38,13 @@ class RAMFileCacheStore(RAMResource, FileCacheMixin, KeyLockMixin):
         cache_limit: str | int = "512MB",
         max_drain_bytes: int | None = None,
     ) -> None:
+        parsed_limit = parse_limit(cache_limit)
+        validate_max_drain_bytes(parsed_limit, max_drain_bytes)
         super().__init__()
-        self._cache_limit: int = parse_limit(cache_limit)
+        self._cache_limit: int = parsed_limit
         self._cache_size: int = 0
         self._entries: OrderedDict[str, CacheEntry] = OrderedDict()
-        self._drain_tasks: dict[str, asyncio.Task] = {}
+        self._drain_tasks: dict[str, asyncio.Task[Any]] = {}
         self._clear_lock: asyncio.Lock = asyncio.Lock()
         self.max_drain_bytes: int | None = max_drain_bytes
 

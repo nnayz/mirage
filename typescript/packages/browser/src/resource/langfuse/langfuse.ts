@@ -19,7 +19,7 @@ import {
   type IndexCacheStore,
   LANGFUSE_COMMANDS,
   LANGFUSE_PROMPT,
-  LANGFUSE_VFS_OPS,
+  LANGFUSE_OPS,
   LangfuseAccessor,
   langfuseRead,
   langfuseReaddir,
@@ -30,9 +30,11 @@ import {
   type RegisteredOp,
   type Resource,
   ResourceName,
-  resolveLangfuseGlob,
+  makeResolveGlob,
 } from '@struktoai/mirage-core'
 import { redactLangfuseConfig, type LangfuseConfig, type LangfuseConfigRedacted } from './config.ts'
+
+const resolveLangfuseGlob = makeResolveGlob(langfuseReaddir)
 
 export interface LangfuseResourceState {
   type: string
@@ -86,7 +88,7 @@ export class LangfuseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return LANGFUSE_VFS_OPS
+    return LANGFUSE_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -99,10 +101,6 @@ export class LangfuseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return langfuseStat(this.accessor, p, this.index)
-  }
-
-  fingerprint(_p: PathSpec): Promise<string | null> {
-    return Promise.resolve(null)
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

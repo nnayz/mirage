@@ -15,7 +15,7 @@
 import {
   BOX_COMMANDS,
   BOX_PROMPT,
-  BOX_VFS_OPS,
+  BOX_OPS,
   BaseResource,
   BoxAccessor,
   BoxTokenManager,
@@ -23,7 +23,7 @@ import {
   ResourceName,
   boxRead,
   boxReaddir,
-  boxResolveGlob,
+  makeResolveGlob,
   boxStat,
   mountKey,
   mountPrefixOf,
@@ -33,6 +33,8 @@ import {
   type Resource,
 } from '@struktoai/mirage-core'
 import { redactBoxConfig, type BoxConfig, type BoxConfigRedacted } from './config.ts'
+
+const boxResolveGlob = makeResolveGlob(boxReaddir)
 
 export interface BoxResourceState {
   type: string
@@ -51,6 +53,7 @@ export class BoxResource extends BaseResource implements Resource {
     super()
     this.config = config
     const tm = new BoxTokenManager({
+      ...(config.endpoint !== undefined ? { endpoint: config.endpoint } : {}),
       ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
       ...(config.clientSecret !== undefined ? { clientSecret: config.clientSecret } : {}),
       ...(config.refreshToken !== undefined ? { refreshToken: config.refreshToken } : {}),
@@ -61,7 +64,10 @@ export class BoxResource extends BaseResource implements Resource {
         ? { onRefreshTokenRotated: config.onRefreshTokenRotated }
         : {}),
     })
-    this.accessor = new BoxAccessor({ tokenManager: tm })
+    this.accessor = new BoxAccessor({
+      tokenManager: tm,
+      ...(config.rootFolderId !== undefined ? { rootFolderId: config.rootFolderId } : {}),
+    })
   }
 
   open(): Promise<void> {
@@ -77,7 +83,7 @@ export class BoxResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return BOX_VFS_OPS
+    return BOX_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -90,11 +96,6 @@ export class BoxResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return boxStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

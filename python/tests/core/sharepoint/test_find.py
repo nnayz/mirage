@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import mirage.core.msgraph.drive_ops as drive_ops
 from mirage.core.sharepoint import find as find_mod
 from mirage.core.sharepoint._resolver import ResolvedPath
 from mirage.types import PathSpec
@@ -10,15 +11,18 @@ from mirage.utils.key_prefix import mount_key
 _TREE = [
     ("reports/a.txt", {
         "name": "a.txt",
-        "size": 10
+        "size": 10,
+        "lastModifiedDateTime": "2026-07-15T12:00:00Z"
     }, False),
     ("reports/sub", {
         "name": "sub",
+        "lastModifiedDateTime": "2026-07-14T12:00:00Z",
         "folder": {}
     }, True),
     ("reports/sub/b.txt", {
         "name": "b.txt",
-        "size": 20
+        "size": 20,
+        "lastModifiedDateTime": "2026-07-13T12:00:00Z"
     }, False),
 ]
 
@@ -32,7 +36,7 @@ class _FakeSession:
         return False
 
 
-async def _fake_iter_tree(config, drive_id, base, session=None):
+async def _fake_iter_tree(config, loc, session=None):
     for rel, item, is_dir in _TREE:
         yield rel, item, is_dir
 
@@ -44,8 +48,9 @@ async def _fake_resolve(accessor, path):
 @pytest.fixture
 def _patched(monkeypatch):
     monkeypatch.setattr(find_mod, "resolve", _fake_resolve)
-    monkeypatch.setattr(find_mod, "iter_tree", _fake_iter_tree)
-    monkeypatch.setattr(find_mod, "new_session", lambda config: _FakeSession())
+    monkeypatch.setattr(drive_ops, "iter_tree", _fake_iter_tree)
+    monkeypatch.setattr(drive_ops, "new_session",
+                        lambda config: _FakeSession())
 
 
 def _spec() -> PathSpec:

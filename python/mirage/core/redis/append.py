@@ -24,15 +24,10 @@ from mirage.utils.path import norm
 
 async def append_bytes(
     accessor: RedisAccessor,
-    path: PathSpec,
+    path_spec: PathSpec,
     data: bytes,
 ) -> None:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+    path = path_spec.mount_path
     store = accessor.store
     start_ms = int(time.monotonic() * 1000)
     p = norm(path)
@@ -43,4 +38,4 @@ async def append_bytes(
         await store.set_file(p, data)
     await store.set_modified(p, now_iso())
     record("append", path, "redis", len(data), start_ms)
-    await invalidate_after_write(path)
+    await invalidate_after_write(path_spec)

@@ -17,7 +17,7 @@ import {
   HttpNotionTransport,
   NOTION_COMMANDS,
   NOTION_PROMPT,
-  NOTION_VFS_OPS,
+  NOTION_OPS,
   NOTION_WRITE_PROMPT,
   NotionAccessor,
   PathSpec,
@@ -27,13 +27,15 @@ import {
   notionRead,
   notionReaddir,
   notionStat,
-  resolveNotionGlob,
+  makeResolveGlob,
   type FileStat,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
 } from '@struktoai/mirage-core'
 import { redactNotionConfig, type NotionConfig, type NotionConfigRedacted } from './config.ts'
+
+const resolveNotionGlob = makeResolveGlob<NotionAccessor>(notionReaddir)
 
 export interface NotionResourceState {
   type: string
@@ -70,7 +72,7 @@ export class NotionResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return NOTION_VFS_OPS
+    return NOTION_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -83,11 +85,6 @@ export class NotionResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return notionStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

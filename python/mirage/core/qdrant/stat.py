@@ -13,10 +13,11 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.qdrant import QdrantAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.qdrant.query import table_exists
 from mirage.core.qdrant.read import read
-from mirage.core.qdrant.scope import ScopeLevel, detect_scope
+from mirage.core.qdrant.scope import (QdrantGroupScope, QdrantRowScope,
+                                      ScopeLevel, detect_scope)
 from mirage.types import FileStat, FileType, PathSpec
 
 _IMAGE_TYPES = {
@@ -35,24 +36,23 @@ def _name_of(path: PathSpec) -> str:
 async def stat(
     accessor: QdrantAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> FileStat:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     config = accessor.config
     scope = detect_scope(path, config)
 
     if scope.level == ScopeLevel.UNKNOWN:
         raise FileNotFoundError(path.virtual)
 
-    if scope.table and not await table_exists(accessor, scope.table):
+    if (isinstance(scope, (QdrantGroupScope, QdrantRowScope))
+            and not await table_exists(accessor, scope.table)):
         raise FileNotFoundError(path.virtual)
 
     if scope.level in (ScopeLevel.ROOT, ScopeLevel.GROUP_DIR):
         return FileStat(name=_name_of(path), type=FileType.DIRECTORY)
 
+    if not isinstance(scope, QdrantRowScope):
+        raise FileNotFoundError(path.virtual)
     data = await read(accessor, path, index)
     if scope.kind == "blob":
         file_type = _IMAGE_TYPES.get(config.blob_ext, FileType.BINARY)

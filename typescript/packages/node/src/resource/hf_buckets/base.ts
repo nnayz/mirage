@@ -15,6 +15,7 @@
 import {
   BaseResource,
   PathSpec,
+  makeResolveGlob,
   mountKey,
   mountPrefixOf,
   type FileStat,
@@ -25,11 +26,11 @@ import {
 } from '@struktoai/mirage-core'
 import type { HfAccessor } from '../../accessor/hf.ts'
 import { HF_COMMANDS } from '../../commands/builtin/hf/index.ts'
+import { SCOPE_ERROR } from '../../core/hf/constants.ts'
 import { create as createCore } from '../../core/hf/create.ts'
 import { du as duCore, duAll as duAllCore } from '../../core/hf/du.ts'
 import { exists as existsCore } from '../../core/hf/exists.ts'
 import { find as findCore } from '../../core/hf/find.ts'
-import { resolveGlob as globCore } from '../../core/hf/glob.ts'
 import { mkdir as mkdirCore } from '../../core/hf/mkdir.ts'
 import { read as readCore } from '../../core/hf/read.ts'
 import { readdir as readdirCore } from '../../core/hf/readdir.ts'
@@ -38,6 +39,8 @@ import { rangeRead as rangeReadCore, stream as streamCore } from '../../core/hf/
 import { unlink as unlinkCore } from '../../core/hf/unlink.ts'
 import { write as writeCore } from '../../core/hf/write.ts'
 import { HF_OPS } from '../../ops/hf/index.ts'
+
+const globCore = makeResolveGlob(readdirCore, SCOPE_ERROR)
 
 export abstract class HfResource extends BaseResource implements Resource {
   abstract readonly kind: string
@@ -132,16 +135,6 @@ export abstract class HfResource extends BaseResource implements Resource {
         )
       : paths
     return globCore(this.accessor, effective, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    try {
-      const s = await statCore(this.accessor, p)
-      return s.fingerprint
-    } catch (err) {
-      if ((err as { code?: string } | null)?.code === 'ENOENT') return null
-      throw err
-    }
   }
 
   loadState(_state: unknown): Promise<void> {

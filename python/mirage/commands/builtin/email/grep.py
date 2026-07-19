@@ -12,12 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-
 from mirage.accessor.email import EmailAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.email._provision import file_read_provision
+from mirage.commands.builtin.email.io import resolve_glob
 from mirage.commands.builtin.generic.grep import grep as generic_grep
+from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import (compile_pattern,
                                                  grep_count_has_matches,
                                                  grep_lines, pattern_arg)
@@ -25,7 +25,6 @@ from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
-from mirage.core.email.glob import resolve_glob
 from mirage.core.email.read import read as email_read
 from mirage.core.email.readdir import readdir as _readdir
 from mirage.core.email.scope import EmailScope, detect_scope
@@ -41,7 +40,7 @@ async def grep_provision(
     accessor: EmailAccessor,
     paths: list[PathSpec],
     *texts: str,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> ProvisionResult:
     return await file_read_provision(
@@ -59,44 +58,42 @@ async def grep(
     accessor: EmailAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     prefix: str = "",
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
 
     if paths and pattern is not None and "\n" not in pattern and (
-            fl.bool("r") or fl.bool("R")):
+            fl.as_bool("r") or fl.as_bool("R")):
         scope = detect_scope(paths[0])
         if scope.use_native and scope.folder:
             return await _grep_server_side(accessor,
                                            scope.folder,
                                            pattern,
                                            paths,
-                                           i=fl.bool("i"),
-                                           v=fl.bool("v"),
-                                           n=fl.bool("n"),
-                                           c=fl.bool("c"),
-                                           args_l=fl.bool("args_l"),
-                                           w=fl.bool("w"),
-                                           F=fl.bool("F"),
-                                           o=fl.bool("o"),
-                                           max_count=fl.int("m"))
+                                           i=fl.as_bool("i"),
+                                           v=fl.as_bool("v"),
+                                           n=fl.as_bool("n"),
+                                           c=fl.as_bool("c"),
+                                           args_l=fl.as_bool("args_l"),
+                                           w=fl.as_bool("w"),
+                                           F=fl.as_bool("F"),
+                                           o=fl.as_bool("o"),
+                                           max_count=fl.as_int("m"))
 
     resolved = await resolve_glob(accessor, paths, index) if paths else []
     return await generic_grep(
         resolved,
         texts,
         flags,
-        readdir=_readdir,
-        stat=_stat,
-        read_bytes=email_read,
+        readdir=bound_op(_readdir, accessor, index),
+        stat=bound_op(_stat, accessor, index),
+        read_bytes=bound_op(email_read, accessor, index),
         read_stream=None,
-        accessor=accessor,
         stdin=stdin,
-        index=index,
     )
 
 

@@ -14,8 +14,11 @@
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from mirage.io.async_line_iterator import AsyncLineIterator
+from mirage.shell.types import FunctionBody
+from mirage.types import MountMode
 
 
 @dataclass
@@ -24,54 +27,86 @@ class Session:
     cwd: str = "/"
     env: dict[str, str] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
-    functions: dict[str, object] = field(default_factory=dict)
+    functions: dict[str, FunctionBody] = field(default_factory=dict)
     last_exit_code: int = 0
     shell_options: dict[str, bool] = field(default_factory=dict)
     readonly_vars: set[str] = field(default_factory=set)
     arrays: dict[str, list[str]] = field(default_factory=dict)
-    allowed_mounts: frozenset[str] | None = None
+    mount_modes: dict[str, MountMode] | None = None
+    generation: int = 0
     pipeline_timeout_seconds: float | None = None
+    last_bg_job_id: int | None = None
+    positional_args: list[str] = field(default_factory=list)
     _stdin_buffer: AsyncLineIterator | None = field(default=None, repr=False)
+    _local_vars: dict[str, str | None] | None = field(default=None, repr=False)
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self) -> dict[str, Any]:
+        data = {
             "session_id": self.session_id,
             "cwd": self.cwd,
             "env": self.env,
             "created_at": self.created_at,
+            "generation": self.generation,
         }
+        if self.mount_modes is not None:
+            data["mount_modes"] = {
+                prefix: mode.value
+                for prefix, mode in self.mount_modes.items()
+            }
+        return data
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Session":
+    def from_dict(cls, data: dict[str, Any]) -> "Session":
+        modes = data.get("mount_modes")
+        if modes is not None:
+            data = dict(data)
+            data["mount_modes"] = {
+                prefix: MountMode(mode)
+                for prefix, mode in modes.items()
+            }
         return cls(**data)
 
-    def fork(self, **overrides) -> "Session":
+    def fork(self, **overrides: Any) -> "Session":
         """Return a copy of this session with overrides applied.
 
         Mutable containers (env, functions, readonly_vars, arrays,
         shell_options) are shallow-copied so mutations on the fork do
         not leak back into the source. Every field, including
-        capability fields like ``allowed_mounts``, is propagated, so
+        capability fields like ``mount_modes``, is propagated, so
         callers cannot accidentally forget one when adding new fields.
 
         Args:
             **overrides: Field-name kwargs to override on the copy.
         """
-        defaults = {
-            "session_id": self.session_id,
-            "cwd": self.cwd,
-            "env": dict(self.env),
-            "created_at": self.created_at,
-            "functions": dict(self.functions),
-            "last_exit_code": self.last_exit_code,
-            "shell_options": dict(self.shell_options),
-            "readonly_vars": set(self.readonly_vars),
+        defaults: dict[str, Any] = {
+            "session_id":
+            self.session_id,
+            "cwd":
+            self.cwd,
+            "env":
+            dict(self.env),
+            "created_at":
+            self.created_at,
+            "functions":
+            dict(self.functions),
+            "last_exit_code":
+            self.last_exit_code,
+            "shell_options":
+            dict(self.shell_options),
+            "readonly_vars":
+            set(self.readonly_vars),
             "arrays": {
                 k: list(v)
                 for k, v in self.arrays.items()
             },
-            "allowed_mounts": self.allowed_mounts,
-            "pipeline_timeout_seconds": self.pipeline_timeout_seconds,
+            "mount_modes":
+            (dict(self.mount_modes) if self.mount_modes is not None else None),
+            "generation":
+            self.generation,
+            "pipeline_timeout_seconds":
+            self.pipeline_timeout_seconds,
+            "last_bg_job_id":
+            self.last_bg_job_id,
         }
         defaults.update(overrides)
         return Session(**defaults)

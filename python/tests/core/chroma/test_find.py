@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from datetime import datetime, timezone
+
 import pytest
 
 from mirage.core.chroma.find import find
@@ -77,6 +79,40 @@ async def test_find_iname_case_insensitive(chroma_accessor, chroma_index,
 
 
 @pytest.mark.asyncio
-async def test_find_missing_index_raises(chroma_accessor, knowledge_root):
-    with pytest.raises(ValueError, match="missing index"):
-        await find(chroma_accessor, knowledge_root, index=None)
+async def test_find_size_counts_sizeless_files_as_zero(chroma_accessor,
+                                                       chroma_index,
+                                                       knowledge_root):
+    # quickstart carries metadata size 12; reference has no size and counts
+    # as 0 (never dropped), matching dirs and the FUSE view.
+    large = await find(chroma_accessor,
+                       knowledge_root,
+                       type=FindType.FILE,
+                       min_size=1,
+                       index=chroma_index)
+    assert large == ["/guides/quickstart"]
+
+    empty = await find(chroma_accessor,
+                       knowledge_root,
+                       type=FindType.FILE,
+                       max_size=0,
+                       index=chroma_index)
+    assert empty == ["/api/reference"]
+
+
+@pytest.mark.asyncio
+async def test_find_honors_mtime_and_empty(chroma_accessor, chroma_index,
+                                           knowledge_root):
+    recent = await find(
+        chroma_accessor,
+        knowledge_root,
+        mtime_min=datetime(2026, 1, 15, tzinfo=timezone.utc).timestamp(),
+        mtime_max=datetime(2026, 2, 15, tzinfo=timezone.utc).timestamp(),
+        index=chroma_index,
+    )
+    empty = await find(chroma_accessor,
+                       knowledge_root,
+                       empty=True,
+                       index=chroma_index)
+
+    assert recent == ["/guides/quickstart"]
+    assert empty == ["/api/reference"]

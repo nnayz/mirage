@@ -12,15 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Awaitable, Callable
-
-from mirage.cache.index import IndexCacheStore
-from mirage.types import FileType, PathSpec
+from mirage.types import FileType, PathSpec, StatFn
 from mirage.utils.key_prefix import rekey
 
 _SWALLOW = (FileNotFoundError, ValueError)
-
-StatFn = Callable[..., Awaitable[object]]
 
 
 def child_path(parent: PathSpec, name: str) -> PathSpec:
@@ -51,7 +46,7 @@ def copy_targets(sources: list[PathSpec], dst: PathSpec,
         list[tuple[PathSpec, PathSpec]]: Source-to-target pairs.
     """
     if len(sources) > 1 and not dst_is_dir:
-        raise NotADirectoryError(f"target '{dst.virtual}' is not a directory")
+        raise NotADirectoryError(f"target '{dst.virtual}'")
     if not dst_is_dir:
         return [(sources[0], dst)]
     pairs: list[tuple[PathSpec, PathSpec]] = []
@@ -61,7 +56,7 @@ def copy_targets(sources: list[PathSpec], dst: PathSpec,
     return pairs
 
 
-async def path_exists(stat: StatFn, path: PathSpec | str) -> bool:
+async def path_exists(stat: StatFn, path: PathSpec) -> bool:
     # No index: a no-clobber probe must see targets written earlier in the
     # same command (duplicate basenames), which the cache does not reflect.
     try:
@@ -71,11 +66,9 @@ async def path_exists(stat: StatFn, path: PathSpec | str) -> bool:
     return True
 
 
-async def is_directory(stat: StatFn,
-                       path: PathSpec | str,
-                       index: IndexCacheStore | None = None) -> bool:
+async def is_directory(stat: StatFn, path: PathSpec) -> bool:
     try:
-        info = await stat(path, index)
+        info = await stat(path)
     except _SWALLOW:
         return False
     return info.type == FileType.DIRECTORY

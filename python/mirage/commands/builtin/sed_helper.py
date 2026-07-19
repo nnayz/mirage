@@ -13,9 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import re
-from functools import partial
-
-from mirage.commands.builtin.utils.types import _ReadBytes, _WriteBytes
+from typing import Any
 
 _SIMPLE_CMDS = frozenset("dDpPhHgGxNq")
 
@@ -84,7 +82,7 @@ def _consume_address(rest: str) -> tuple[tuple[str, str] | None, str]:
     return None, rest
 
 
-def _parse_one_command(rest: str) -> tuple[dict, str]:
+def _parse_one_command(rest: str) -> tuple[dict[str, Any], str]:
     addr_start = None
     addr_end = None
 
@@ -253,8 +251,8 @@ def _parse_one_command(rest: str) -> tuple[dict, str]:
     raise ValueError(f"sed: unsupported command: {ch!r}")
 
 
-def _parse_program(expr: str) -> list[dict]:
-    commands: list[dict] = []
+def _parse_program(expr: str) -> list[dict[str, Any]]:
+    commands: list[dict[str, Any]] = []
     rest = expr.strip()
     while rest:
         if rest[0] in (";", "\n"):
@@ -378,7 +376,7 @@ def _split_content_lines(text: str) -> tuple[list[str], bool]:
 
 
 def _execute_program(text: str,
-                     commands: list[dict],
+                     commands: list[dict[str, Any]],
                      suppress: bool = False,
                      extended: bool = False) -> str:
     lines, final_newline = _split_content_lines(text)
@@ -480,7 +478,7 @@ def _execute_program(text: str,
                           _repl_s: str = repl,
                           _nth: int = nth,
                           _global: bool = global_,
-                          _counter: list = counter) -> str:
+                          _counter: list[Any] = counter) -> str:
                     _counter[0] += 1
                     hit = (_counter[0] >= _nth
                            if _global else _counter[0] == _nth)
@@ -579,21 +577,3 @@ def _execute_program(text: str,
             output.extend(deferred)
 
     return "".join(output)
-
-
-def sed(
-    read_bytes: _ReadBytes,
-    write_bytes: _WriteBytes,
-    path: str,
-    pattern: str,
-    replacement: str,
-    flags: int = 0,
-    count: int = 0,
-) -> None:
-    data = read_bytes(path).decode(errors="replace")
-    new_data = re.sub(pattern,
-                      partial(_apply_repl, repl=replacement),
-                      data,
-                      flags=flags,
-                      count=count)
-    write_bytes(path, new_data.encode())

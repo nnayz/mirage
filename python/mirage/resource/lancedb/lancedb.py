@@ -12,18 +12,24 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Any
+
 from mirage.accessor.lancedb import LanceDBAccessor
-from mirage.core.lancedb.glob import resolve_glob as _resolve_glob
+from mirage.core.lancedb.readdir import readdir
 from mirage.resource.base import BaseResource
 from mirage.resource.lancedb.config import LanceDBConfig
 from mirage.resource.lancedb.prompt import PROMPT
 from mirage.types import ResourceName
+from mirage.utils.glob_walk import make_resolve_glob
+
+_resolve_glob = make_resolve_glob(readdir)
 
 _REMOTE_SCHEMES = ("s3://", "gs://", "az://", "hf://", "db://")
 
 
 class LanceDBResource(BaseResource):
 
+    accessor: LanceDBAccessor
     name: str = ResourceName.LANCEDB
     PROMPT: str = PROMPT
 
@@ -43,11 +49,8 @@ class LanceDBResource(BaseResource):
     async def resolve_glob(self, paths, prefix: str = ""):
         return await _resolve_glob(self.accessor, paths, index=self._index)
 
-    async def fingerprint(self, path: str) -> str | None:
-        return None
-
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
 
-    def load_state(self, state: dict) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         pass

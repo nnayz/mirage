@@ -12,11 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.generic_bind.adapter import Builder, CommandIO
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
+                                                          Operation)
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -26,26 +25,31 @@ async def ln(
     accessor: Accessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     s: bool = False,
     f: bool = False,
     n: bool = False,
     v: bool = False,
-    index: IndexCacheStore | None = None,
+    index: IndexCacheStore = NULL_INDEX,
     **kwargs,
 ) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor) or len(paths) < 2:
         raise ValueError("ln: usage: ln [-s] [-f] source dest")
+    exists = ops.require(Operation.EXISTS)
+    write = ops.require(Operation.WRITE)
     paths = await ops.resolve_glob(accessor, paths, index)
     source_path = paths[0]
     dest_path = paths[1]
-    if n and await ops.exists(accessor, dest_path):
+    if n and await exists(accessor, dest_path):
         return None, IOResult()
     data = await ops.read_bytes(accessor, source_path)
-    await ops.write(accessor, dest_path, data)
+    await write(accessor, dest_path, data)
     output = f"'{source_path.virtual}' -> '{dest_path.virtual}'\n".encode(
     ) if v else None
     return output, IOResult(writes={dest_path.mount_path: data})
 
 
-BUILDER = Builder('ln', ln, None, True, None)
+BUILDER = Builder('ln',
+                  ln,
+                  write=True,
+                  requirements=frozenset({Operation.EXISTS, Operation.WRITE}))

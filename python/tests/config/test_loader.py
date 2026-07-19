@@ -18,11 +18,20 @@ import pytest
 
 from mirage import MountMode, Workspace
 from mirage.cache.file.config import CacheConfig, RedisCacheConfig
-from mirage.config import (RamCacheBlock, RedisCacheBlock, WorkspaceConfig,
+from mirage.config import (DiskStoreBlock, RamCacheBlock, RedisCacheBlock,
+                           RedisStoreBlock, S3StoreBlock, WorkspaceConfig,
                            load_config)
 from mirage.resource.ram import RAMResource
 from mirage.resource.s3 import S3Resource
+from mirage.runtime.base import ScriptSource
 from mirage.types import ConsistencyPolicy
+from mirage.workspace.mount.namespace import RAMNamespaceStore
+from mirage.workspace.mount.namespace.disk import DiskNamespaceStore
+from mirage.workspace.mount.namespace.redis import RedisNamespaceStore
+from mirage.workspace.session.disk import DiskSessionStore
+from mirage.workspace.store import (DiskWorkspaceStateStore,
+                                    RAMWorkspaceStateStore,
+                                    RedisWorkspaceStateStore)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -70,9 +79,9 @@ def test_to_workspace_kwargs_yields_constructible_workspace():
     cfg = load_config(FIXTURES / "minimal.yaml")
     kwargs = cfg.to_workspace_kwargs()
     assert "/" in kwargs["resources"]
-    prov, mode = kwargs["resources"]["/"]
-    assert isinstance(prov, RAMResource)
-    assert mode == MountMode.WRITE
+    mount = kwargs["resources"]["/"]
+    assert isinstance(mount.resource, RAMResource)
+    assert mount.mode == MountMode.WRITE
     ws = Workspace(**kwargs)
     assert ws is not None
 
@@ -100,6 +109,158 @@ def test_to_workspace_kwargs_emits_ram_cache_config():
     assert isinstance(kwargs["cache"], CacheConfig)
     assert not isinstance(kwargs["cache"], RedisCacheConfig)
     assert kwargs["cache"].limit == "128MB"
+
+
+def test_store_redis_block_builds_redis_provider():
+    cfg = load_config({
+        "store": {
+            "type": "redis",
+            "url": "redis://localhost:6379/4",
+            "key_prefix": "test_store:",
+        },
+        "mounts": {
+            "/": {
+                "resource": "ram"
+            }
+        },
+    })
+    assert cfg.store is not None
+    assert cfg.store.key_prefix == "test_store:"
+    kwargs = cfg.to_workspace_kwargs()
+    assert isinstance(kwargs["store"], RedisWorkspaceStateStore)
+    assert isinstance(kwargs["store"].namespace("ws1"), RedisNamespaceStore)
+
+
+def test_store_ram_block_builds_ram_provider():
+    cfg = load_config({
+        "store": {
+            "type": "ram"
+        },
+        "mounts": {
+            "/": {
+                "resource": "ram"
+            }
+        },
+    })
+    kwargs = cfg.to_workspace_kwargs()
+    assert isinstance(kwargs["store"], RAMWorkspaceStateStore)
+    assert kwargs["owns_store"] is True
+    assert isinstance(kwargs["store"].namespace("ws1"), RAMNamespaceStore)
+
+
+def test_store_disk_block_builds_disk_provider(tmp_path):
+    cfg = load_config({
+        "store": {
+            "type": "disk",
+            "root": str(tmp_path),
+        },
+        "mounts": {
+            "/": {
+                "resource": "ram"
+            }
+        },
+    })
+    assert cfg.store is not None
+    assert cfg.store.root == str(tmp_path)
+    kwargs = cfg.to_workspace_kwargs()
+    assert isinstance(kwargs["store"], DiskWorkspaceStateStore)
+    assert kwargs["owns_store"] is True
+    assert isinstance(kwargs["store"].namespace("ws1"), DiskNamespaceStore)
+
+
+def test_store_disk_group_override(tmp_path):
+    cfg = load_config({
+        "store": {
+            "type": "ram",
+            "workspace": {
+                "type": "disk",
+                "root": str(tmp_path),
+            },
+        },
+        "mounts": {
+            "/": {
+                "resource": "ram"
+            }
+        },
+    })
+    assert isinstance(cfg.store.workspace, DiskStoreBlock)
+    store = cfg.to_workspace_kwargs()["store"]
+    assert isinstance(store, RAMWorkspaceStateStore)
+    assert isinstance(store.sessions("ws1"), DiskSessionStore)
+
+
+def test_store_group_override_redirects_one_plane():
+    cfg = load_config({
+        "store": {
+            "type": "ram",
+            "observer": {
+                "type": "redis",
+                "url": "redis://localhost:6379/4",
+                "key_prefix": "obs:",
+            },
+        },
+        "mounts": {
+            "/": {
+                "resource": "ram"
+            }
+        },
+    })
+    assert isinstance(cfg.store.observer, RedisStoreBlock)
+    store = cfg.to_workspace_kwargs()["store"]
+    assert isinstance(store, RAMWorkspaceStateStore)
+    assert isinstance(store.namespace("ws1"), RAMNamespaceStore)
+    assert type(store.observer("ws1")).__name__ == "RedisObserverStore"
+
+
+def test_store_s3_workspace_group_builds_s3_provider():
+    cfg = load_config({
+        "store": {
+            "type": "ram",
+            "workspace": {
+                "type": "s3",
+                "bucket": "state-bucket",
+                "region": "us-east-1",
+                "key_prefix": "mirage/",
+            },
+        },
+        "mounts": {
+            "/": {
+                "resource": "ram"
+            }
+        },
+    })
+    assert isinstance(cfg.store.workspace, S3StoreBlock)
+    store = cfg.to_workspace_kwargs()["store"]
+    assert isinstance(store, RAMWorkspaceStateStore)
+    assert isinstance(store.namespace("ws1"), RAMNamespaceStore)
+    assert type(store.sessions("ws1")).__name__ == "S3SessionStore"
+
+
+def test_workspace_id_passes_through():
+    cfg = load_config({
+        "workspace_id": "agent-ws-7",
+        "mounts": {
+            "/": {
+                "resource": "ram"
+            }
+        },
+    })
+    assert cfg.to_workspace_kwargs()["workspace_id"] == "agent-ws-7"
+
+
+def test_store_block_rejects_unknown_field():
+    with pytest.raises(Exception):
+        load_config({
+            "store": {
+                "type": "ram",
+                "ttl": 600
+            },
+            "mounts": {
+                "/": {
+                    "resource": "ram"
+                }
+            },
+        })
 
 
 def test_dict_source_works_too():
@@ -160,6 +321,27 @@ def test_resource_built_via_registry_has_correct_type():
         },
     })
     kwargs = cfg.to_workspace_kwargs()
-    prov, mode = kwargs["resources"]["/s3"]
-    assert isinstance(prov, S3Resource)
-    assert mode == MountMode.READ
+    mount = kwargs["resources"]["/s3"]
+    assert isinstance(mount.resource, S3Resource)
+    assert mount.mode == MountMode.READ
+
+
+def test_script_paths_resolve_against_config_dir(tmp_path):
+    (tmp_path / "route.py").write_text("'local'")
+    (tmp_path / "entry.py").write_text("ctx['command'] == 'python3'")
+    cfg_file = tmp_path / "ws.yaml"
+    cfg_file.write_text("""\
+mounts:
+  /data:
+    resource: ram
+route: route.py
+runtimes:
+  - name: local
+    script: entry.py
+  - vfs
+""")
+    cfg = load_config(cfg_file)
+    kwargs = cfg.to_workspace_kwargs()
+    assert kwargs["route"] == ScriptSource("'local'")
+    entry = kwargs["runtimes"][0]
+    assert entry.script == ScriptSource("ctx['command'] == 'python3'")

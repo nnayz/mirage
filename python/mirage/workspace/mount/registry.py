@@ -12,25 +12,46 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Protocol
+
 from mirage.cache.file.mixin import FileCacheMixin
 from mirage.cache.manager import CacheManager
 from mirage.commands.builtin.general import COMMANDS as GENERAL_COMMANDS
 from mirage.ops.config import OpsMount
 from mirage.resource.base import BaseResource
 from mirage.resource.dev import DevResource
+from mirage.runtime.base import Runtime
 from mirage.types import ConsistencyPolicy, MountMode, PathSpec
 from mirage.workspace.mount.mount import MountEntry
 
 DEV_PREFIX = "/dev/"
 
 
-class MountCommandUnsupported(Exception):
-    """Raised when a path-bound command is unsupported by its backend."""
+class ReadReconciler(Protocol):
+    """The one thing the registry needs from a reconciler.
 
-    def __init__(self, cmd_name: str, backend: str) -> None:
+    Depending on this local interface (not the concrete ``Reconciler``)
+    keeps the dependency pointing down: ``reconcile`` imports the mount
+    layer, not the other way round. The Reconciler satisfies it structurally.
+    """
+
+    async def reconcile_read(self, mount: MountEntry, path: str) -> None:
+        ...
+
+
+class MountCommandUnsupported(Exception):
+    """Raised when a path-bound command is unsupported by its backend.
+
+    Rendered in the GNU shape ``<cmd>: <operand>: <reason>`` with the
+    EOPNOTSUPP strerror, naming the offending path like coreutils does;
+    the backend name stays on the exception for programmatic use (#394).
+    """
+
+    def __init__(self, cmd_name: str, backend: str, operand: str) -> None:
         self.cmd_name = cmd_name
         self.backend = backend
-        super().__init__(f"{cmd_name}: not supported on the {backend} backend")
+        self.operand = operand
+        super().__init__(f"{cmd_name}: {operand}: Operation not supported")
 
 
 class MountRegistry:
@@ -44,12 +65,26 @@ class MountRegistry:
     def __init__(self) -> None:
         self._mounts: list[MountEntry] = []
         self._root: MountEntry | None = None
+        # Workspace-level command -> runtime bindings (first listed
+        # capturer wins), set by Workspace after construction (same
+        # vehicle as is_exec_allowed()). The dispatcher injects the
+        # bound runtime only for commands that have one, so it cannot
+        # tell python3 from grep.
+        self.runtime_bindings: dict[str, Runtime] = {}
+        # The world's vfs runtime, set by Workspace after construction.
+        # Catch-all when its captures are empty; explicit captures make
+        # unclaimed commands an admission failure (126).
+        self.vfs_runtime: Runtime | None = None
         self._consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY
         self._file_cache: FileCacheMixin | None = None
+        self._reconciler: ReadReconciler | None = None
         self.mount(DEV_PREFIX, DevResource(), MountMode.WRITE)
 
     def set_consistency(self, consistency: ConsistencyPolicy) -> None:
         self._consistency = consistency
+
+    def set_reconciler(self, reconciler: ReadReconciler) -> None:
+        self._reconciler = reconciler
 
     def attach_file_cache(self, cache: FileCacheMixin | None) -> None:
         """Attach the workspace file cache and build per-mount
@@ -214,7 +249,7 @@ class MountRegistry:
         for m in self._mounts:
             if m.prefix == DEV_PREFIX:
                 continue
-            if m.mode == MountMode.EXEC:
+            if m.effective_mode() == MountMode.EXEC:
                 return True
         return False
 
@@ -230,6 +265,28 @@ class MountRegistry:
             if m.resolve_command(cmd_name) is not None:
                 return m
         return None
+
+    def match_command_prefix(self, words: list[str]) -> int:
+        """How many leading words form a registered command name.
+
+        Command names may span several words (``gws docs documents
+        get``), git-style. A nested name resolves from anywhere its
+        owning mount is reachable, so this scans every mount (mirroring
+        ``mount_for_command``) and returns the longest prefix any mount
+        recognises, or 1 (bare first token) when none does.
+
+        Args:
+            words (list[str]): expanded leading words of a command line.
+        """
+        if not words:
+            return 0
+        best = 1
+        candidates = list(self._mounts)
+        if self._root is not None:
+            candidates.append(self._root)
+        for mount in candidates:
+            best = max(best, mount.longest_command_match(words))
+        return best
 
     async def resolve_mount(
         self,
@@ -264,7 +321,9 @@ class MountRegistry:
 
         if mount is not None and mount.resolve_command(cmd_name) is None:
             if path_scopes:
-                raise MountCommandUnsupported(cmd_name, mount.resource.name)
+                raise MountCommandUnsupported(
+                    cmd_name, mount.resource.name, path_scopes[0].raw_path
+                    or path_scopes[0].virtual)
             mount = self.mount_for_command(cmd_name)
         elif mount is None:
             mount = self.mount_for_command(cmd_name)
@@ -274,44 +333,18 @@ class MountRegistry:
 
         resolved = mount.resolve_command(cmd_name)
         # Warm reads are served in place by with_read_cache, so a read-only
-        # command stays on its real mount. The cache is a hidden store (not a
-        # mount); under ALWAYS we evict stale entries from it here so the
-        # read-through serves fresh bytes.
-        if (self._file_cache is not None and path_scopes
+        # command stays on its real mount. Single-mount reads do not go
+        # through the dispatcher, so this is where they reconcile against
+        # backend truth: the shared Reconciler evicts a stale cache entry and
+        # GCs an orphaned overlay when the backend reports the path gone.
+        if (self._reconciler is not None and path_scopes
                 and resolved is not None and not resolved.write
                 and mount.resource.caches_reads
                 and self._consistency == ConsistencyPolicy.ALWAYS):
-            await self._evict_stale(mount, self._file_cache, path_scopes)
+            for scope in path_scopes:
+                await self._reconciler.reconcile_read(mount, scope.virtual)
 
         return mount
-
-    async def _evict_stale(
-        self,
-        real_mount: MountEntry,
-        cache: FileCacheMixin,
-        path_scopes: list[PathSpec],
-    ) -> None:
-        """Evict cached entries whose remote fingerprint has changed.
-
-        Only used when ConsistencyPolicy.ALWAYS is active. Backends that
-        return stat.fingerprint=None silently fall back to LAZY behavior
-        (no eviction, cache serves whatever it has).
-        """
-        for scope in path_scopes:
-            key = scope.virtual
-            if not await cache.exists(key):
-                continue
-            try:
-                remote_stat = await real_mount.execute_op("stat", key)
-            except FileNotFoundError:
-                await cache.remove(key)
-                continue
-            except Exception:
-                continue
-            if remote_stat is None or remote_stat.fingerprint is None:
-                continue
-            if not await cache.is_fresh(key, remote_stat.fingerprint):
-                await cache.remove(key)
 
     @property
     def root_mount(self) -> MountEntry | None:

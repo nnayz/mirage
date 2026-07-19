@@ -2,8 +2,7 @@ import re
 from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
                              Sequence)
 
-from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.awk_types import (  # yapf: disable
     CMP_OP_PATTERN, FIELD_PREFIX, PRINT_STMT, USAGE, AwkBlock, AwkBoolOp,
     AwkBuiltin, AwkCmpOp, AwkFlags)
@@ -31,8 +30,8 @@ def parse_flags(fl: FlagView) -> AwkFlags:
     else:
         program_files = ()
     return AwkFlags(
-        field_separator=fl.str("F"),
-        assignments=tuple(fl.list("v")),
+        field_separator=fl.as_str("F"),
+        assignments=tuple(fl.as_list("v")),
         program_files=program_files,
     )
 
@@ -144,7 +143,7 @@ def _split_fields(line: str, fs: str | None) -> list[str]:
 def _build_field_map(line: str, fs: str | None, nr: int,
                      variables: Mapping[str, str]) -> dict[str, str]:
     fields = _split_fields(line, fs)
-    field_map = {
+    field_map: dict[str, str] = {
         AwkBuiltin.REC: line,
         AwkBuiltin.NR: str(nr),
         AwkBuiltin.NF: str(len(fields)),
@@ -240,9 +239,8 @@ async def awk(
     *,
     read_bytes: Callable[..., Awaitable[bytes]],
     read_stream: Callable[..., AsyncIterator[bytes]],
-    accessor: Accessor | None = None,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
-    index: IndexCacheStore | None = None,
+    stdin: ByteSource | None = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> tuple[ByteSource | None, IOResult]:
     """Run the mini-awk program over backend paths or stdin.
 
@@ -260,12 +258,6 @@ async def awk(
             for the -f program file.
         read_stream (Callable[..., AsyncIterator[bytes]]): Streaming reader
             for data files.
-        accessor (Accessor | None): Backend accessor passed through wrapper
-            helpers.
-        stdin (AsyncIterator[bytes] | bytes | None): Input used when paths is
-            empty.
-        index (IndexCacheStore | None): Optional cache index for wrapped
-            backend calls.
 
     Returns:
         tuple[ByteSource | None, IOResult]: Output stream and exit metadata.
@@ -277,10 +269,10 @@ async def awk(
         pieces: list[str] = []
         for prog in f.program_files:
             try:
-                raw = await read_bytes(accessor, prog)
+                raw = await read_bytes(prog)
             except FileNotFoundError as exc:
                 # GNU awk exits 2 when a -f program file cannot be opened.
-                raise UsageError(f"awk: {prog.mount_path}: "
+                raise UsageError(f"awk: {prog.raw_path}: "
                                  "No such file or directory") from exc
             pieces.append(raw.decode(errors="replace").strip())
         program = "\n".join(pieces)
@@ -296,7 +288,7 @@ async def awk(
             variables[key] = val
 
     if paths:
-        sources = [read_stream(accessor, p) for p in paths]
+        sources = [read_stream(p) for p in paths]
         cache = [p.mount_path for p in paths]
     else:
         sources = [_resolve_source(stdin)]

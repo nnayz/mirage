@@ -29,20 +29,11 @@ def _resolve(root: Path, path: str) -> Path:
     return resolved
 
 
-async def rename(accessor: DiskAccessor, src: PathSpec, dst: PathSpec) -> None:
-    if isinstance(src, str):
-        src = PathSpec(virtual=src,
-                       directory=src,
-                       resource_path=src.strip("/"))
-    if isinstance(src, PathSpec):
-        src = src.mount_path
-    if isinstance(dst, str):
-        dst = PathSpec(virtual=dst,
-                       directory=dst,
-                       resource_path=dst.strip("/"))
-    if isinstance(dst, PathSpec):
-        dst = dst.mount_path
+async def rename(accessor: DiskAccessor, src_spec: PathSpec,
+                 dst_spec: PathSpec) -> None:
+    src = src_spec.mount_path
+    dst = dst_spec.mount_path
     root = accessor.root
-    await invalidate_after_unlink(src)
-    await invalidate_after_write(dst)
+    await invalidate_after_unlink(src_spec)
+    await invalidate_after_write(dst_spec)
     await aiofiles.os.rename(_resolve(root, src), _resolve(root, dst))

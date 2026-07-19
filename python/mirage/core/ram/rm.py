@@ -18,13 +18,8 @@ from mirage.types import PathSpec
 from mirage.utils.path import norm
 
 
-async def rm_r(accessor: RAMAccessor, path: PathSpec) -> None:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+async def rm_r(accessor: RAMAccessor, path_spec: PathSpec) -> None:
+    path = path_spec.mount_path
     store = accessor.store
     p = norm(path)
     prefix = p.rstrip("/") + "/"
@@ -32,8 +27,10 @@ async def rm_r(accessor: RAMAccessor, path: PathSpec) -> None:
         if key == p or key.startswith(prefix):
             del store.files[key]
             store.modified.pop(key, None)
+            store.attrs.pop(key, None)
     for key in list(store.dirs):
         if key == p or key.startswith(prefix):
             store.dirs.discard(key)
             store.modified.pop(key, None)
-    await invalidate_after_unlink(path)
+            store.attrs.pop(key, None)
+    await invalidate_after_unlink(path_spec)

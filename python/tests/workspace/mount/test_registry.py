@@ -65,6 +65,45 @@ def test_nested_prefix_outer(nested_registry):
     assert mount.prefix == "/data/"
 
 
+# ── nested command name resolution ─────────────
+
+
+def _register_cmd(mount, name):
+
+    @command(name, resource="ram", spec=CommandSpec())
+    async def _fn(accessor, paths, *texts, **flags):
+        return None, IOResult()
+
+    for rc in _fn._registered_commands:
+        mount.register(rc)
+
+
+def test_match_command_prefix_single_token(registry):
+    _register_cmd(registry.mount_for("/data"), "cat")
+    assert registry.match_command_prefix(["cat", "a.txt"]) == 1
+
+
+def test_match_command_prefix_longest_nested(registry):
+    mount = registry.mount_for("/data")
+    _register_cmd(mount, "gws docs documents get")
+    _register_cmd(mount, "gws docs +write")
+    assert registry.match_command_prefix(
+        ["gws", "docs", "documents", "get", "--params", "{}"]) == 4
+    assert registry.match_command_prefix(
+        ["gws", "docs", "+write", "--text", "hi"]) == 3
+
+
+def test_match_command_prefix_partial_name_is_not_a_command(registry):
+    _register_cmd(registry.mount_for("/data"), "gws docs documents get")
+    # "gws docs" alone is not registered; only the bare first token counts.
+    assert registry.match_command_prefix(["gws", "docs"]) == 1
+
+
+def test_match_command_prefix_unknown_and_empty(registry):
+    assert registry.match_command_prefix(["nope", "x"]) == 1
+    assert registry.match_command_prefix([]) == 0
+
+
 # ── descendant_mounts ──────────────────────────
 
 
@@ -377,7 +416,7 @@ async def test_resolve_mount_rejects_path_bound_unsupported_command():
                      resolved=True)
     with pytest.raises(
             MountCommandUnsupported,
-            match="fallback-only: not supported on the limited backend"):
+            match="fallback-only: /limited/file.txt: Operation not supported"):
         await reg.resolve_mount("fallback-only", [scope], "/limited")
 
 

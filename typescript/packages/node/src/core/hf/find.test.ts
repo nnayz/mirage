@@ -12,14 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { PathSpec } from '@struktoai/mirage-core'
+import { PathSpec, resolveGlobOf } from '@struktoai/mirage-core'
 import { describe, expect, it } from 'vitest'
 import { HfModelsAccessor } from '../../accessor/hf.ts'
+import { HF_IO } from '../../commands/builtin/hf/io.ts'
 import { du, duAll } from './du.ts'
 import { exists } from './exists.ts'
 import { find } from './find.ts'
-import { resolveGlob } from './glob.ts'
 import { fakeHfOperator, installFakeOperator } from './mock.ts'
+
+const resolveGlob = resolveGlobOf(HF_IO)
 
 function accessorWith(files: Record<string, string | Buffer>): HfModelsAccessor {
   const accessor = new HfModelsAccessor({ repoId: 'ns/model' })

@@ -23,7 +23,9 @@ export {
   prepareMv,
   stripLinkOperands,
 } from './links.ts'
+export { handleChmod, handleChown, handleTouch } from './metadata.ts'
 export {
+  handleExit,
   handleExport,
   handleLocal,
   handlePrintenv,

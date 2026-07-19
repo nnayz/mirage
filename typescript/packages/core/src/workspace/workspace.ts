@@ -12,28 +12,24 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { NOOPAccessor } from '../accessor/base.ts'
 import type { FileCache } from '../cache/file/mixin.ts'
 import type { IndexConfig } from '../cache/index/config.ts'
 import { RAMFileCacheStore } from '../cache/file/ram.ts'
 import { RAMResource } from '../resource/ram/ram.ts'
 import type { ByteSource } from '../io/types.ts'
 import { IOResult, materialize } from '../io/types.ts'
-import { runWithRecording, runWithRevisions } from '../observe/context.ts'
+import { runWithRecording } from '../observe/context.ts'
 import { type EventDict, Observer } from '../observe/observer.ts'
 import type { OpRecord } from '../observe/record.ts'
 import type { ObserverStore } from '../observe/store.ts'
+import type { NamespaceStore } from './mount/namespace/store.ts'
 import { type OpKwargs, OpsRegistry } from '../ops/registry.ts'
-import { assertMountAllowed, runWithSession } from '../runtime/session_context.ts'
+import { assertMountAllowed, runWithSession } from '../context/session_context.ts'
 import type { Resource } from '../resource/base.ts'
 import { HISTORY_PREFIX, HistoryViewResource } from '../resource/history/history.ts'
 import { resourceStateRequiresOverride } from '../resource/secrets.ts'
 import { GENERAL_COMMANDS } from '../commands/builtin/general/index.ts'
-import {
-  applyOpSafeguard,
-  CommandTimeoutError,
-  runWithTimeout,
-} from '../commands/builtin/utils/safeguard.ts'
+import { CommandTimeoutError, runWithTimeout } from '../commands/builtin/utils/safeguard.ts'
 import { resolveSafeguard } from '../commands/safeguard.ts'
 import { JobTable } from '../shell/job_table.ts'
 import { findSyntaxError, type ShellParser } from '../shell/parse.ts'
@@ -45,14 +41,15 @@ import { readFileBytes } from './snapshot/fs.ts'
 import { applyStateDict, buildMountArgs, toStateDict } from './snapshot/state.ts'
 import { readSnapshotTar } from './snapshot/tar_io.ts'
 import type { WorkspaceStateDict } from './snapshot/types.ts'
+import type { FileStat } from '../types.ts'
 import {
   type CommandSafeguard,
   ConsistencyPolicy,
-  DEFAULT_AGENT_ID,
   DriftPolicy,
   FileType,
   MountMode,
-  type PathSpec,
+  parseMountMode,
+  PathSpec,
 } from '../types.ts'
 import type { TSNodeLike } from './expand/variable.ts'
 import type { ExecuteFn } from './expand/node.ts'
@@ -63,25 +60,60 @@ import type { MountEntry } from './mount/mount.ts'
 import { MountRegistry } from './mount/registry.ts'
 import { handlePythonRepl } from './executor/python/handle.ts'
 import type { BridgeDispatchFn, MirageEntry } from './executor/python/mirage_bridge.ts'
-import { PyodideRuntime } from './executor/python/runtime.ts'
+import type { PythonRuntime } from './executor/python/runtimes/interface.ts'
+import {
+  commandFacts,
+  decideLine,
+  RoutingDecisionError,
+  type RoutingDecision,
+  type RouteContext,
+  type RouteFn,
+} from './executor/route/index.ts'
+import {
+  bindCommands,
+  catchAll,
+  runtimeBindingsFor,
+  scriptStringError,
+  wholeLineRuntime,
+  DEFAULT_ENTRIES,
+  VfsRuntime,
+  type Runtime,
+  type RuntimeEntry,
+  type RunResult,
+} from './executor/runtime.ts'
+import { buildRuntime } from './executor/runtime_table.ts'
 import type { PythonReplRunResult } from './executor/python/types.ts'
 import { makeAbortError } from './abort.ts'
 import { Dispatcher } from './dispatcher.ts'
-import { Namespace } from './mount/namespace.ts'
+import { Namespace } from './mount/namespace/namespace.ts'
+import { mergeOverlayStat } from './mount/namespace/overlay.ts'
 import { provisionNode } from './node/provision_node.ts'
 import { runCommandTree } from './node/run_tree.ts'
+import type { ExecuteNodeDeps } from './node/execute_node.ts'
 import { buildFilePrompt } from './file_prompt.ts'
 import { SessionManager } from './session/manager.ts'
+import type { SessionStore } from './session/store.ts'
+import { RAMWorkspaceStateStore } from './store/ram.ts'
+import type { WorkspaceFields, WorkspaceStateStore } from './store/base.ts'
 import type { Session } from './session/session.ts'
 import type { ExecutionNode } from './types.ts'
 import { errorVirtualPath, gnuStrerror } from '../utils/errors.ts'
+import { newSessionId, newWorkspaceId } from '../utils/ids.ts'
 import { stripSlash } from '../utils/slash.ts'
 
-const NOOP_ACCESSOR_INSTANCE = new NOOPAccessor()
+/**
+ * One mount entry: a bare resource takes the workspace default mode, a
+ * `[resource, mode]` pair pins the mount's own mode, and an optional
+ * third element attaches per-command safeguards (mirrors the Python
+ * `(resource, mode, safeguards)` tuple form).
+ */
+export type MountSpec =
+  | Resource
+  | readonly [Resource, MountMode]
+  | readonly [Resource, MountMode, Record<string, CommandSafeguard>]
 
 export interface WorkspaceOptions {
   mode?: MountMode
-  modeOverrides?: Record<string, MountMode>
   consistency?: ConsistencyPolicy
   commandSafeguards?: Record<string, Record<string, CommandSafeguard>>
   /**
@@ -105,11 +137,29 @@ export interface WorkspaceOptions {
   cache?: FileCache & Resource
   index?: IndexConfig
   observe?: ObserverStore
+  namespaceStore?: NamespaceStore
+  sessionStore?: SessionStore
+  workspaceId?: string
+  store?: WorkspaceStateStore
   python?: {
     autoLoadFromImports?: boolean
     bootstrapCode?: string
     denyPackages?: readonly string[]
   }
+  /**
+   * The workspace's ordered runtime world: instances and name
+   * shorthands including 'vfs'; the first capturer binds each
+   * command. Unset = the default world (pyodide, quickjs, vfs).
+   */
+  runtimes?: RuntimeEntry[]
+  /**
+   * Global route script for the routing ladder: a function taking the
+   * RouteContext (or a config-borne ScriptSource) naming the runtime
+   * for a line, or null to fall to the entries' own scripts. Ladder:
+   * the runtime argument > route > scripts by list order > admission
+   * failure (exit 126).
+   */
+  route?: RouteFn
 }
 
 export class ExecuteResult {
@@ -171,11 +221,30 @@ export interface ExecuteOptions {
    * this option.
    */
   env?: Record<string, string>
+  /**
+   * Explicit runtime for this line, naming a workspace runtime entry.
+   * Stages the named runtime captures rebind to it for this line only
+   * (nested evals inherit it); everything else keeps its normal
+   * binding, so the argument overrides policy, never capability.
+   * Throws for a name that is not a workspace entry.
+   */
+  runtime?: string
+  /**
+   * @internal The typed line's routing decision, forwarded to nested
+   * evals so inner lines never re-route.
+   */
+  routingDecision?: RoutingDecision
 }
 
 export class Workspace {
   readonly registry: MountRegistry
   readonly sessionManager: SessionManager
+  private readonly wsId: string
+  private readonly stateStoreInternal: WorkspaceStateStore
+  private readonly ownsStateStore: boolean
+  private readonly sharedResources = new Set<Resource>()
+  private metaWritten = false
+  private readonly sessionIdExplicit: boolean
   private readonly opsRegistry: OpsRegistry
   private shellParser: ShellParser | null
   private readonly shellParserFactory: (() => Promise<ShellParser>) | null
@@ -183,7 +252,7 @@ export class Workspace {
   private readonly opened = new Set<Resource>()
   private readonly openOrder: Resource[] = []
   readonly jobTable = new JobTable()
-  readonly agentId: string
+  readonly agentId: string | null
   readonly cache: FileCache & Resource
   readonly namespace: Namespace
   private readonly dispatcher: Dispatcher
@@ -191,9 +260,10 @@ export class Workspace {
   readonly records: OpRecord[] = []
   readonly fs: WorkspaceFS
   private closed = false
-  private readonly workspaceId: string = `ws-${String(Date.now())}-${Math.random().toString(36).slice(2, 10)}`
   private readonly closers: (() => Promise<void>)[] = []
-  private readonly pythonRuntime: PyodideRuntime
+  private readonly runtimeEntries: Runtime[]
+  private runtimeBindings: Record<string, Runtime>
+  private readonly route: RouteFn | null
   // True when the workspace auto-added an empty `/` anchor (no user `/` mount).
   // The anchor is internal and is not forwarded into the Pyodide filesystem.
   private syntheticRootAnchor = false
@@ -207,34 +277,104 @@ export class Workspace {
   // FUSE lives entirely in the node Workspace (FUSE needs the OS; the browser
   // can't mount), so the core Workspace carries no FUSE state.
 
-  constructor(resources: Record<string, Resource>, options: WorkspaceOptions = {}) {
-    this.registry = new MountRegistry(resources, options.mode ?? MountMode.READ, {
-      ...(options.modeOverrides ?? {}),
-    })
+  constructor(resources: Record<string, MountSpec>, options: WorkspaceOptions = {}) {
+    const bareResources: Record<string, Resource> = {}
+    const mountModes: Record<string, MountMode> = {}
+    const mountSafeguards: Record<string, Record<string, CommandSafeguard>> = {}
+    for (const [prefix, spec] of Object.entries(resources)) {
+      if (Array.isArray(spec)) {
+        const [resource, mode, safeguards] = spec as readonly [
+          Resource,
+          MountMode,
+          Record<string, CommandSafeguard>?,
+        ]
+        bareResources[prefix] = resource
+        mountModes[prefix] = mode
+        if (safeguards !== undefined) mountSafeguards[prefix] = safeguards
+      } else {
+        bareResources[prefix] = spec as Resource
+      }
+    }
+    this.registry = new MountRegistry(bareResources, options.mode ?? MountMode.READ, mountModes)
     const consistency = options.consistency ?? ConsistencyPolicy.LAZY
     this.registry.setConsistency(consistency)
     if (options.index !== undefined) {
-      for (const resource of Object.values(resources)) {
+      for (const resource of Object.values(bareResources)) {
         resource.setIndex?.(options.index)
       }
     }
-    this.sessionManager = new SessionManager(options.sessionId ?? 'default')
+    // One provider scopes every control-plane store by workspace id; the
+    // per-plane options (observe / namespaceStore / sessionStore) remain
+    // as direct overrides that win over the provider. A caller-passed
+    // provider may be shared with sibling workspaces, so only a
+    // workspace that built its own provider closes it.
+    this.wsId = options.workspaceId ?? newWorkspaceId()
+    // A minted default session id is provisional: attaching to a
+    // workspace whose discovery record already names one adopts the
+    // stored pointer instead (see ensureMeta).
+    this.sessionIdExplicit = options.sessionId !== undefined
+    this.ownsStateStore = options.store === undefined
+    this.stateStoreInternal = options.store ?? new RAMWorkspaceStateStore()
+    const observeStore = options.observe ?? this.stateStoreInternal.observer(this.wsId)
+    const namespaceStore = options.namespaceStore ?? this.stateStoreInternal.namespace(this.wsId)
+    const sessionStore = options.sessionStore ?? this.stateStoreInternal.sessions(this.wsId)
+    this.sessionManager = new SessionManager(options.sessionId ?? newSessionId(), sessionStore)
     this.opsRegistry = options.ops ?? new OpsRegistry()
     this.shellParser = options.shellParser ?? null
     this.shellParserFactory = options.shellParserFactory ?? null
-    this.agentId = options.agentId ?? DEFAULT_AGENT_ID
+    this.agentId = options.agentId ?? null
+    // The ordered runtime world; the first capturer binds each
+    // command. The TypeScript engines construct lazily (missing wasm
+    // surfaces at run time), so defaults and explicit entries build
+    // the same way. options.python keeps configuring the default
+    // pyodide build.
     const userPython = options.python ?? {}
-    this.pythonRuntime = new PyodideRuntime({
-      ...userPython,
-      workspaceBridge: this.buildWorkspaceBridge(),
-    })
-    this.closers.push(() => this.pythonRuntime.close())
-    this.observer = new Observer(options.observe)
+    this.runtimeEntries = []
+    if (options.runtimes === undefined) {
+      for (const name of DEFAULT_ENTRIES) {
+        this.runtimeEntries.push(buildRuntime(name, name === 'pyodide' ? { ...userPython } : {}))
+      }
+    } else {
+      for (const entry of options.runtimes) {
+        this.runtimeEntries.push(typeof entry === 'string' ? buildRuntime(entry) : entry)
+      }
+    }
+    // The vfs runtime is required: every world names an executor for
+    // unclaimed commands, so an omitted entry appends the default
+    // unconditional one.
+    if (!this.runtimeEntries.some((entry) => entry.name === 'vfs')) {
+      this.runtimeEntries.push(new VfsRuntime())
+    }
+    this.registry.vfsRuntime =
+      this.runtimeEntries.find((entry) => entry instanceof VfsRuntime) ?? null
+    if (this.registry.vfsRuntime instanceof VfsRuntime) {
+      this.registry.vfsRuntime.bindLineExecutor((line, lineStdin, env, cwd) =>
+        this.executeLineForVfs(line, lineStdin, env, cwd),
+      )
+    }
+    for (const entry of this.runtimeEntries) {
+      if (typeof entry.script === 'string')
+        throw scriptStringError(`runtime '${entry.name}' script`)
+      entry.attach(this.buildWorkspaceBridge(), () => this.sandboxVisibleMounts())
+      this.closers.push(() => entry.close())
+    }
+    this.runtimeBindings = bindCommands(this.runtimeEntries)
+    if (typeof options.route === 'string') throw scriptStringError('route')
+    this.route = options.route ?? null
+    this.observer = new Observer(observeStore)
     this.registry.mount(HISTORY_PREFIX, new HistoryViewResource(this.observer), MountMode.READ)
     this.cache = options.cache ?? new RAMFileCacheStore({ limit: options.cacheLimit ?? '512MB' })
     this.registry.attachFileCache(this.cache)
-    this.namespace = new Namespace(this.registry, (p) => this.resolve(p))
+    // Only an explicit agentId claims the workspace user; a bare launch
+    // adopts whatever identity the namespace store holds.
+    this.namespace = new Namespace(
+      this.registry,
+      (p) => this.resolve(p),
+      namespaceStore,
+      options.agentId ?? null,
+    )
     this.dispatcher = new Dispatcher(this.namespace, this.cache, this.opsRegistry, consistency)
+    this.registry.setReconciler(this.dispatcher.reconciler)
     // The file cache is a hidden store (attached above), never a mount. Arg-less
     // commands and root listing resolve against a neutral root anchor: reuse the
     // user's `/` mount if they gave one, else add a plain empty RAM mount at `/`.
@@ -264,7 +404,10 @@ export class Workspace {
         mount.registerGeneral(cmd)
       }
     }
-    for (const [prefix, safeguards] of Object.entries(options.commandSafeguards ?? {})) {
+    for (const [prefix, safeguards] of Object.entries({
+      ...mountSafeguards,
+      ...(options.commandSafeguards ?? {}),
+    })) {
       const mount = this.registry.mountForPrefix(prefix)
       if (mount === null) {
         throw new Error(`commandSafeguards references unknown mount prefix: ${prefix}`)
@@ -278,14 +421,139 @@ export class Workspace {
       this.opsRegistry,
       async (rec) => {
         this.records.push(rec)
-        await this.observer.logOp(rec, this.agentId, this.sessionManager.defaultId)
+        await this.observer.logOp(rec, this.agentId ?? '', this.sessionManager.defaultId)
       },
+      this.namespace,
+      (path, stat) => mergeOverlayStat(this.namespace.metaFor(path), stat),
     )
+  }
+
+  /**
+   * Mount prefixes the sandboxed runtimes (python3 and node/js) may see.
+   * Excludes the history view and a synthetic `/` anchor: Pyodide's own
+   * `/` filesystem holds the Python stdlib and must not be hijacked by an
+   * internal anchor.
+   */
+  private sandboxVisibleMounts(): string[] {
+    const prefixes: string[] = []
     for (const m of this.registry.allMounts()) {
       if (m.prefix === HISTORY_PREFIX || m.prefix === HISTORY_PREFIX + '/') continue
       if (this.syntheticRootAnchor && m.prefix === '/') continue
-      void this.forwardAddMountToPython(m.prefix)
+      prefixes.push(m.prefix)
     }
+    return prefixes
+  }
+
+  /**
+   * Append a runtime entry to the workspace's ordered world.
+   *
+   * The entry lands last, so it never steals a command an earlier
+   * entry already captures (first capturer still wins). A name builds
+   * like a config entry and fails loud; a duplicate name is rejected
+   * before any state changes.
+   */
+  addRuntime(runtime: RuntimeEntry): Runtime {
+    const entry: Runtime = typeof runtime === 'string' ? buildRuntime(runtime) : runtime
+    if (typeof entry.script === 'string') throw scriptStringError(`runtime '${entry.name}' script`)
+    const candidate = [...this.runtimeEntries, entry]
+    const bindings = bindCommands(candidate)
+    entry.attach(this.buildWorkspaceBridge(), () => this.sandboxVisibleMounts())
+    this.closers.push(() => entry.close())
+    this.runtimeEntries.push(entry)
+    this.runtimeBindings = bindings
+    return entry
+  }
+
+  /**
+   * The routing ladder for one typed line: runtime, route, scripts.
+   * Returns null when nothing decides (no runtime argument, no policy
+   * configured)
+   * so dispatch falls to the static bindings; a nested eval inherits
+   * the typed line's decision and never re-routes.
+   */
+  /**
+   * The runtime taking this whole line, null for the executor.
+   *
+   * A runtime with runsLines takes the raw line when the line's
+   * resolved bindings place one of its commands (or "*") on it;
+   * everything else walks the executor's tree as today. The common
+   * world has no such runtime, so this is a cheap scan.
+   */
+  private wholeLineRuntimeFor(
+    rootNode: TSNodeLike,
+    decision: RoutingDecision | null,
+  ): Runtime | null {
+    const candidates = this.runtimeEntries.some(
+      (entry) => entry.runsLines === true && !(entry instanceof VfsRuntime),
+    )
+    if (!candidates) return null
+    const bindings: Record<string, Runtime | null> =
+      decision !== null ? decision.bindings : this.runtimeBindings
+    const facts = commandFacts(rootNode)
+    return wholeLineRuntime(
+      bindings,
+      facts.map((fact) => fact.command),
+    )
+  }
+
+  /** The workspace executor as the vfs runtime's runLine. */
+  private async executeLineForVfs(
+    line: string,
+    stdin: Uint8Array | null,
+    env: Record<string, string>,
+    cwd: string,
+  ): Promise<RunResult> {
+    const result = await this.execute(line, { stdin, cwd, env })
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr.length > 0 ? result.stderr : null,
+      exitCode: result.exitCode,
+    }
+  }
+
+  private async resolveRoutingDecision(
+    root: TSNodeLike,
+    command: string,
+    options: ExecuteOptions,
+  ): Promise<RoutingDecision | null> {
+    if (options.routingDecision !== undefined) return options.routingDecision
+    if (options.runtime !== undefined) {
+      let overlay: Record<string, Runtime>
+      try {
+        overlay = runtimeBindingsFor(this.runtimeEntries, options.runtime)
+      } catch (caught) {
+        throw new RoutingDecisionError(caught instanceof Error ? caught.message : String(caught), {
+          cause: caught,
+        })
+      }
+      return {
+        bindings: { ...this.runtimeBindings, ...overlay },
+        fallback: catchAll(this.runtimeEntries),
+      }
+    }
+    const hasScripts = this.runtimeEntries.some((entry) => entry.script !== undefined)
+    if (this.route === null && !hasScripts) return null
+    const facts = commandFacts(root)
+    const sessionId = options.sessionId ?? this.sessionManager.defaultId
+    const session = this.sessionManager.get(sessionId)
+    const ctx: RouteContext = {
+      line: command,
+      commands: facts,
+      command: facts[0]?.command ?? '',
+      builtin: facts[0]?.builtin ?? false,
+      cwd: options.cwd ?? session.cwd,
+      env: { ...session.env, ...(options.env ?? {}) },
+      sessionId,
+      agentId: options.agentId ?? this.agentId ?? '',
+      mounts: this.sandboxVisibleMounts(),
+    }
+    return decideLine(
+      this.runtimeEntries,
+      this.route,
+      ctx,
+      this.runtimeBindings,
+      this.buildWorkspaceBridge(),
+    )
   }
 
   /**
@@ -296,28 +564,37 @@ export class Workspace {
     return this.observer.commandEvents()
   }
 
+  // The sandboxed runtimes' sole data path (quickjs, pyodide, monty).
+  // Routes through `dispatch`, not the raw WorkspaceFS, so sandbox I/O
+  // takes the same path as shell commands — cache read-through on
+  // reads, post-write invalidation, and mount-mode enforcement narrowed
+  // by the current session all come from the Dispatcher. Reads are raw
+  // bytes (no filetype rendering), matching the Python GuestFs.
   private buildWorkspaceBridge(): BridgeDispatchFn {
     return async (op, path, bytes) => {
       switch (op) {
         case 'READ':
-          return await this.fs.readFile(path)
+          return (await this.dispatch('read', path)) as Uint8Array
         case 'WRITE': {
           if (bytes === undefined) throw new Error('WRITE op requires bytes')
           const buf =
             bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayLike<number>)
-          await this.fs.writeFile(path, buf)
+          await this.dispatch('write', path, [buf])
           return undefined
         }
         case 'LIST': {
-          const entries = await this.fs.readdir(path)
-          const result: MirageEntry[] = []
-          for (const entry of entries) {
-            const stat = await this.fs.stat(entry)
-            const isDir = stat.type === FileType.DIRECTORY
-            const size = isDir ? 0 : (stat.size ?? 0)
-            result.push({ path: entry, size, isDir })
-          }
-          return result
+          const entries = ((await this.dispatch('readdir', path)) as string[] | null) ?? []
+          return await Promise.all(
+            entries.map(async (entry): Promise<MirageEntry> => {
+              // Backends that mark directories with a trailing slash
+              // skip the stat; unmarked entries (e.g. RAM) need one to
+              // learn dir-ness.
+              if (entry.endsWith('/')) return { path: entry, size: 0, isDir: true }
+              const stat = (await this.dispatch('stat', entry)) as FileStat
+              const isDir = stat.type === FileType.DIRECTORY
+              return { path: entry, size: isDir ? 0 : (stat.size ?? 0), isDir }
+            }),
+          )
         }
       }
     }
@@ -357,32 +634,58 @@ export class Workspace {
     this.sessionManager.env = value
   }
 
+  /**
+   * Create a session, optionally restricted to per-mount modes.
+   *
+   * `mounts` as a map assigns each prefix a mode ceiling ('read',
+   * 'write', 'exec', or the filesystem aliases 'r', 'rw', 'rwx'); an
+   * array of prefixes keeps each mount at its own configured mode (the
+   * previous allowlist behavior). Omitting it leaves the session
+   * unrestricted.
+   */
   createSession(
     sessionId: string,
-    options: { allowedMounts?: ReadonlySet<string> | null } = {},
+    options: {
+      mounts?: ReadonlyMap<string, string> | Record<string, string> | readonly string[] | null
+    } = {},
   ): Session {
-    let allowed = options.allowedMounts ?? null
-    if (allowed !== null) {
-      const normalized = new Set<string>()
-      for (const m of allowed) normalized.add('/' + stripSlash(m))
-      for (const p of this.infrastructureMountPrefixes()) normalized.add(p)
-      allowed = normalized
+    const mounts = options.mounts ?? null
+    let modes: Map<string, MountMode> | null = null
+    if (mounts !== null) {
+      modes = new Map<string, MountMode>()
+      if (Array.isArray(mounts)) {
+        for (const p of mounts as readonly string[]) {
+          modes.set('/' + stripSlash(p), MountMode.EXEC)
+        }
+      } else {
+        const entries: [string, string][] =
+          mounts instanceof Map
+            ? [...(mounts as ReadonlyMap<string, string>).entries()]
+            : Object.entries(mounts as Record<string, string>)
+        for (const [p, mode] of entries) {
+          modes.set('/' + stripSlash(p), parseMountMode(mode))
+        }
+      }
+      for (const p of this.infrastructureMountPrefixes()) {
+        if (!modes.has(p)) modes.set(p, MountMode.EXEC)
+      }
     }
-    return this.sessionManager.create(sessionId, { allowedMounts: allowed })
+    return this.sessionManager.create(sessionId, { mountModes: modes })
   }
 
   /**
    * Mount prefixes a session is always allowed to touch.
    *
-   * The root mount (where text-processing commands like `wc` without a
-   * path argument resolve), the device mount, and the history view are
-   * infrastructure: they hold no user credentials, and rejecting them
-   * would break common shell idioms or the history builtin.
+   * The synthetic scratch root (where text-processing commands like `wc`
+   * without a path argument resolve), the device mount, and the history
+   * view are infrastructure: they hold no user credentials, and
+   * rejecting them would break common shell idioms or the history
+   * builtin. A user-defined root mount is NOT infrastructure; sessions
+   * must be granted `/` explicitly to touch it.
    */
   private infrastructureMountPrefixes(): Set<string> {
     const prefixes = new Set<string>(['/dev', HISTORY_PREFIX])
-    const root = this.registry.rootMount
-    if (root !== null) prefixes.add('/' + stripSlash(root.prefix))
+    if (this.syntheticRootAnchor) prefixes.add('/')
     return prefixes
   }
 
@@ -400,6 +703,88 @@ export class Workspace {
 
   closeAllSessions(): Promise<void> {
     return this.sessionManager.closeAll()
+  }
+
+  /**
+   * Hydrate sessions from the session store (idempotent). The discovery
+   * record resolves first so a minted default session id can adopt the
+   * stored pointer before hydration keys off it.
+   */
+  async ensureSessionsLoaded(): Promise<void> {
+    await this.ensureMeta()
+    await this.sessionManager.ensureLoaded()
+  }
+
+  get workspaceId(): string {
+    return this.wsId
+  }
+
+  get defaultSessionId(): string {
+    return this.sessionManager.defaultId
+  }
+
+  get stateStore(): WorkspaceStateStore {
+    return this.stateStoreInternal
+  }
+
+  /**
+   * Snapshot restore: adopt the snapshot's default session identity and
+   * point the discovery record at it.
+   */
+  async adoptDefaultSession(sessionId: string): Promise<void> {
+    this.sessionManager.adoptDefault(sessionId)
+    await this.stateStoreInternal.replaceMeta(this.wsId, {
+      workspace_id: this.wsId,
+      default_session_id: sessionId,
+    })
+    this.metaWritten = true
+  }
+
+  /** This workspace's metadata record (discovery surface). */
+  async workspaceMeta(): Promise<WorkspaceFields> {
+    await this.ensureMeta()
+    const meta = await this.stateStoreInternal.loadMeta(this.wsId)
+    return meta ?? {}
+  }
+
+  /**
+   * Write the discovery record once per process. An existing record
+   * wins (another process or an earlier run already registered it); a
+   * fresh workspace registers itself so siblings pointed at the same
+   * store can find its sessions and default session.
+   */
+  private async ensureMeta(): Promise<void> {
+    if (this.metaWritten) return
+    let existing = await this.stateStoreInternal.loadMeta(this.wsId)
+    if (existing === null) {
+      const created = await this.stateStoreInternal.casSetMeta(
+        this.wsId,
+        {
+          workspace_id: this.wsId,
+          default_session_id: this.sessionManager.defaultId,
+          created_at: Date.now() / 1000,
+          generation: 1,
+        },
+        0,
+      )
+      if (!created) {
+        // Lost the create race: a sibling registered first and its
+        // record wins, like any other existing record.
+        existing = await this.stateStoreInternal.loadMeta(this.wsId)
+      }
+    }
+    if (existing !== null) {
+      const stored = existing.default_session_id
+      if (!this.sessionIdExplicit && typeof stored === 'string') {
+        this.sessionManager.adoptDefault(stored)
+      }
+    }
+    this.metaWritten = true
+  }
+
+  /** Write every session's durable fields through to the session store. */
+  flushSessions(): Promise<void> {
+    return this.sessionManager.flush()
   }
 
   mounts(): readonly MountEntry[] {
@@ -422,19 +807,7 @@ export class Workspace {
     if (resourceOps !== undefined) {
       for (const op of resourceOps) this.opsRegistry.register(op)
     }
-    void this.forwardAddMountToPython(prefix)
     return m
-  }
-
-  private async forwardAddMountToPython(prefix: string): Promise<void> {
-    try {
-      await this.pythonRuntime.addMount(prefix)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.warn(
-        `workspace: Python mount preload failed for ${prefix} — subsequent python3 reads under this prefix may return empty/missing files: ${msg}`,
-      )
-    }
   }
 
   /**
@@ -457,12 +830,6 @@ export class Workspace {
       throw new Error(`cannot unmount history view: ${HISTORY_PREFIX}`)
     }
     const removed = this.registry.unmount(prefix)
-    try {
-      await this.pythonRuntime.removeMount(prefix)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.warn(`workspace: failed to remove Python mount for ${prefix}: ${msg}`)
-    }
     const resource = removed.resource
     const stillMounted = this.registry.allMounts().some((m) => m.resource === resource)
     if (!stillMounted) {
@@ -622,39 +989,23 @@ export class Workspace {
     args: readonly unknown[] = [],
     kwargs: OpKwargs = {},
   ): Promise<unknown> {
+    await this.namespace.ensureLoaded()
     if (this.driftCheckPending) {
       await this.runPendingDriftCheck()
     }
-    const [resource, spec, mode] = await this.resolve(path)
-    if (mode === MountMode.READ && this.opsRegistry.find(opName, resource.kind)?.write === true) {
-      throw new Error(`mount at '${path}' is read-only`)
-    }
-    const fullKwargs: OpKwargs =
-      kwargs.index === undefined && resource.index !== undefined
-        ? { ...kwargs, index: resource.index }
-        : kwargs
-    const mount = this.registry.mountFor(path)
-    const opOverride = mount?.commandSafeguards.get(opName) ?? null
-    const opTimeout = opOverride !== null ? opOverride.timeoutSeconds : null
-    const result = await runWithRevisions(
-      mount !== null && mount.revisions.size > 0 ? mount.revisions : null,
-      async () =>
-        runWithTimeout(
-          Promise.resolve(
-            this.opsRegistry.call(
-              opName,
-              resource.kind,
-              resource.accessor ?? NOOP_ACCESSOR_INSTANCE,
-              spec,
-              args,
-              fullKwargs,
-            ),
-          ),
-          opTimeout,
-          opName,
-        ),
+    // The Dispatcher owns the rest — symlink follow, resolution (its
+    // resolveFn is Workspace.resolve, so lazy open and mount grants
+    // happen there), cache read-through, mode enforcement, per-op
+    // safeguards on the executing mount, revisions, overlay stat, and
+    // post-write invalidation — the same single path Python's
+    // Workspace.dispatch delegates to.
+    const [result] = await this.dispatcher.dispatch(
+      opName,
+      PathSpec.fromStrPath(path),
+      args,
+      kwargs,
     )
-    return applyOpSafeguard(result, opOverride)
+    return result
   }
 
   async resolve(path: string): Promise<[Resource, PathSpec, MountMode]> {
@@ -727,6 +1078,9 @@ export class Workspace {
     if (options.signal?.aborted === true) {
       throw makeAbortError()
     }
+    await this.namespace.ensureLoaded()
+    await this.ensureMeta()
+    await this.sessionManager.ensureLoaded()
     if (this.driftCheckPending) {
       await this.runPendingDriftCheck()
     }
@@ -745,6 +1099,7 @@ export class Workspace {
       return new ExecuteResult(new Uint8Array(), err, 2)
     }
     const rootNode = root as unknown as TSNodeLike
+    const routingDecision = await this.resolveRoutingDecision(rootNode, command, options)
 
     const dispatch: DispatchFn = this.dispatcher.dispatch
 
@@ -755,6 +1110,9 @@ export class Workspace {
       // recorder (GNU: history is appended by the line reader).
       const innerOpts: ExecuteOptions & { provision?: false } = { record: false }
       if (options.signal !== undefined) innerOpts.signal = options.signal
+      // Nested lines never re-route: the evaluator's inner lines keep
+      // the typed line's decision (runtime argument, route, or scripts).
+      if (routingDecision !== null) innerOpts.routingDecision = routingDecision
       const res = await this.execute(cmd, innerOpts)
       return new IOResult({
         exitCode: res.exitCode,
@@ -770,7 +1128,7 @@ export class Workspace {
       this.openOrder.push(resource)
     }
 
-    const callAgentId = options.agentId ?? this.agentId
+    const callAgentId = options.agentId ?? this.agentId ?? ''
     const deps = {
       dispatch,
       registry: this.registry,
@@ -778,17 +1136,36 @@ export class Workspace {
       jobTable: this.jobTable,
       executeFn,
       agentId: callAgentId,
-      workspaceId: this.workspaceId,
+      workspaceId: this.wsId,
       registerCloser: (fn: () => Promise<void>) => {
         this.closers.push(fn)
       },
       ensureOpen,
       unmount: (prefix: string) => this.unmount(prefix),
-      pythonRuntime: this.pythonRuntime,
+      runtimeBindings: this.runtimeBindings,
+      ...(routingDecision !== null ? { routingDecision } : {}),
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     }
     const targetSessionId = options.sessionId ?? this.sessionManager.defaultId
     const targetSession = this.sessionManager.get(targetSessionId)
+    try {
+      return await this.executeParsed(command, options, rootNode, deps, targetSession, stdin)
+    } finally {
+      // Durable session fields (cwd, env, grants) flush at the end of
+      // every execute, success or failure, mirroring Python's finally.
+      await this.sessionManager.flush()
+    }
+  }
+
+  private async executeParsed(
+    command: string,
+    options: ExecuteOptions,
+    rootNode: TSNodeLike,
+    deps: ExecuteNodeDeps,
+    targetSession: Session,
+    stdin: ByteSource | null,
+  ): Promise<ExecuteResult> {
+    const callAgentId = options.agentId ?? this.agentId ?? ''
     const useOverride = options.cwd !== undefined || options.env !== undefined
     const effectiveSession = useOverride
       ? targetSession.fork({
@@ -801,6 +1178,33 @@ export class Workspace {
     // with record:false: no new recording scope, so their ops land in the
     // caller's recorder, and no command entry is logged for them.
     const isLine = options.record !== false
+    const lineRuntime = this.wholeLineRuntimeFor(rootNode, deps.routingDecision ?? null)
+    if (lineRuntime?.runLine !== undefined) {
+      const data = stdin !== null ? await materialize(stdin) : null
+      const result = await lineRuntime.runLine(
+        command,
+        data,
+        { ...effectiveSession.env },
+        effectiveSession.cwd,
+      )
+      targetSession.lastExitCode = result.exitCode
+      if (isLine) {
+        const lineIo = new IOResult({
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          ...(result.stderr !== null ? { stderr: result.stderr } : {}),
+        })
+        await this.observer.logExecution(
+          command,
+          lineIo,
+          [],
+          callAgentId,
+          targetSession.sessionId,
+          effectiveSession.cwd,
+        )
+      }
+      return new ExecuteResult(result.stdout, result.stderr ?? new Uint8Array(), result.exitCode)
+    }
     const runBody = (): Promise<[ByteSource | null, IOResult, ExecutionNode]> =>
       runWithSession(effectiveSession, () =>
         runCommandTree(deps, rootNode, effectiveSession, stdin),
@@ -881,7 +1285,11 @@ export class Workspace {
   ): Promise<PythonReplRunResult> {
     if (this.closed) throw new Error('Workspace is closed')
     const sessionId = options.sessionId ?? this.sessionManager.defaultId
-    return handlePythonRepl(code, sessionId, { runtime: this.pythonRuntime })
+    const bound = this.runtimeBindings.python3
+    if (bound === undefined || !('runRepl' in bound)) {
+      throw new Error('no python runtime bound for the repl')
+    }
+    return handlePythonRepl(code, sessionId, { runtime: bound as PythonRuntime })
   }
 
   async snapshot(target: string): Promise<number> {
@@ -917,19 +1325,19 @@ export class Workspace {
     overrides: Record<string, Resource> = {},
   ): Promise<InstanceType<T>> {
     const args = buildMountArgs(state, overrides)
-    const resources: Record<string, Resource> = {}
-    const snapshotModes: Record<string, MountMode> = {}
+    const resources: Record<string, MountSpec> = {}
     for (const [prefix, [resource, mode]] of Object.entries(args.mountArgs)) {
-      resources[prefix] = resource
-      snapshotModes[prefix] = mode
+      resources[prefix] = [resource, mode]
     }
     const mergedOptions: WorkspaceOptions = {
-      sessionId: args.defaultSessionId,
-      agentId: args.defaultAgentId,
+      ...(args.defaultSessionId !== undefined ? { sessionId: args.defaultSessionId } : {}),
+      ...(args.defaultAgentId !== null ? { agentId: args.defaultAgentId } : {}),
       ...options,
-      modeOverrides: { ...(options.modeOverrides ?? {}), ...snapshotModes },
     }
     const ws = new this(resources, mergedOptions) as InstanceType<T>
+    for (const resource of Object.values(overrides)) {
+      ws.sharedResources.add(resource)
+    }
     await applyStateDict(ws, state)
     return ws
   }
@@ -942,8 +1350,9 @@ export class Workspace {
     const state = await toStateDict(this)
     const opts: WorkspaceOptions = {
       mode: options.mode ?? MountMode.WRITE,
-      agentId: options.agentId ?? this.agentId,
     }
+    const copyAgentId = options.agentId ?? this.agentId
+    if (copyAgentId !== null) opts.agentId = copyAgentId
     opts.ops = options.ops ?? this.opsRegistry
     const parser = options.shellParser ?? this.shellParser
     if (parser !== null) opts.shellParser = parser
@@ -966,6 +1375,12 @@ export class Workspace {
     for (const task of drainTasks) {
       await task
     }
+    // Per-plane stores from the provider close through it below; a
+    // caller-passed provider (or direct store override) may be shared
+    // with sibling workspaces, so only its owner closes it.
+    if (this.ownsStateStore) {
+      await this.stateStoreInternal.close()
+    }
     await this.cache.clear()
     for (const fn of this.closers.splice(0)) {
       try {
@@ -982,6 +1397,9 @@ export class Workspace {
       toClose.add(mount.resource)
     }
     for (const r of toClose) {
+      // Resources reused from another live workspace (copy() / load
+      // resource overrides) stay open here; their origin closes them.
+      if (this.sharedResources.has(r)) continue
       await r.close()
     }
     this.opened.clear()

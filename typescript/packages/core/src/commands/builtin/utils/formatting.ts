@@ -44,9 +44,16 @@ export function parseSize(text: string): number {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
+function permTriplet(bits: number): string {
+  return (bits & 4 ? 'r' : '-') + (bits & 2 ? 'w' : '-') + (bits & 1 ? 'x' : '-')
+}
+
 function lsModeString(s: FileStat): string {
   const isDir = s.type === FileType.DIRECTORY
   const typeChar = isDir ? 'd' : '-'
+  if (s.mode !== null) {
+    return typeChar + permTriplet(s.mode >> 6) + permTriplet(s.mode >> 3) + permTriplet(s.mode)
+  }
   const perms = isDir ? 'rwxr-xr-x' : 'rw-r--r--'
   return `${typeChar}${perms}`
 }
@@ -84,9 +91,17 @@ export function formatLsLong(stats: readonly FileStat[], opts: LsLongOptions = {
   const width = opts.sizeWidth ?? sizes.reduce((m, s) => Math.max(m, s.length), 1)
   return stats.map((s, i) => {
     const mode = lsModeString(s)
+    // Metadata-less entries (synthetic API-backend directories) render the
+    // compact placeholder form instead of inventing size 0 + epoch mtime,
+    // mirroring the python formatter.
+    if (s.size == null && s.modified == null) {
+      return `${mode}\t-\t-\t${s.name}`
+    }
     const size = padLeft(sizes[i] ?? '0', width)
     const time = lsTimeString(s.modified)
-    return `${mode} 1 ${owner} ${group} ${size} ${time} ${s.name}`
+    const who = s.uid !== null ? String(s.uid) : owner
+    const grp = s.gid !== null ? String(s.gid) : group
+    return `${mode} 1 ${who} ${grp} ${size} ${time} ${s.name}`
   })
 }
 

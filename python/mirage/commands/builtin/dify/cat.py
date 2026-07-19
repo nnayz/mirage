@@ -1,10 +1,11 @@
+from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.dify.io import resolve_glob
 from mirage.commands.builtin.generic.cat import cat as generic_cat
 from mirage.commands.builtin.generic_bind import CommandIO
 from mirage.commands.builtin.generic_bind.provision import \
     make_file_read_provision
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.core.dify.glob import resolve_glob
 from mirage.core.dify.stat import stat as dify_stat
 from mirage.io.cachable_iterator import CachableAsyncIterator
 from mirage.io.stream import async_chain
@@ -29,9 +30,9 @@ def make_cat(ops: CommandIO):
         paths: list[PathSpec],
         *texts: str,
         n: bool = False,
+        index: IndexCacheStore,
         **_extra: object,
     ) -> tuple[ByteSource | None, IOResult]:
-        index = _extra.get("index")
         paths = await resolve_glob(accessor, paths, index)
         # dify is a remote (cacheable) backend. Single file: stream via a
         # cachable returned AS stdout so the tee fills the cache as the

@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Callable
+from typing import Any, Callable
 
 from mirage.commands.builtin.generic.cp import cp as generic_cp
 from mirage.commands.builtin.generic.crossmount.types import CrossResult
@@ -20,11 +20,11 @@ from mirage.commands.builtin.generic.crossmount.utils import (
     flat_scopes, transfer_primitives)
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
-from mirage.types import PathSpec
+from mirage.types import PathSpec, PrimitiveCopy
 
 
-async def run_cp(scopes: list[PathSpec], flag_kwargs: dict,
-                 dispatch: Callable) -> CrossResult:
+async def run_cp(scopes: list[PathSpec], flag_kwargs: dict[str, object],
+                 dispatch: Callable[..., Any]) -> CrossResult:
     """Copy operands that span mounts via the shared generic cp.
 
     Pure wiring: the generic runs in its primitive mode (no native copy),
@@ -37,9 +37,14 @@ async def run_cp(scopes: list[PathSpec], flag_kwargs: dict,
         dispatch (Callable): Workspace operation dispatcher.
     """
     fl = FlagView(flag_kwargs, spec=SPECS["cp"])
-    return await generic_cp(flat_scopes(scopes),
-                            recursive=fl.bool("r") or fl.bool("R")
-                            or fl.bool("a"),
-                            n=fl.bool("n"),
-                            v=fl.bool("v"),
-                            **transfer_primitives(dispatch))
+    primitives = transfer_primitives(dispatch)
+    return await generic_cp(
+        flat_scopes(scopes),
+        stat=primitives["stat"],
+        strategy=PrimitiveCopy(read_bytes=primitives["read_bytes"],
+                               write=primitives["write"],
+                               mkdir=primitives["mkdir"],
+                               readdir=primitives["readdir"]),
+        recursive=fl.as_bool("r") or fl.as_bool("R") or fl.as_bool("a"),
+        n=fl.as_bool("n"),
+        v=fl.as_bool("v"))

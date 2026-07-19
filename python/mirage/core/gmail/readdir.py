@@ -15,9 +15,10 @@
 import logging
 import re
 from datetime import datetime, timezone
+from typing import Any
 
 from mirage.accessor.gmail import GmailAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.gmail.date_query import date_dir_to_gmail_query
 from mirage.core.gmail.labels import list_labels
 from mirage.core.gmail.messages import (_extract_attachments, _extract_header,
@@ -69,12 +70,12 @@ def _date_from_internal(internal_date: str) -> str:
 
 async def _build_date_groups(
     accessor: GmailAccessor,
-    msg_ids: list[dict],
-    index: IndexCacheStore | None,
+    msg_ids: list[dict[str, Any]],
+    index: IndexCacheStore,
     virtual_key: str,
     write_dates: bool,
 ) -> list[tuple[str, IndexEntry]]:
-    date_groups: dict[str, list[dict]] = {}
+    date_groups: dict[str, list[dict[str, Any]]] = {}
     for m in msg_ids:
         mid = m["id"]
         raw = await get_message_raw(accessor.token_manager, mid)
@@ -96,12 +97,18 @@ async def _build_date_groups(
             headers = raw.get("payload", {}).get("headers", [])
             subject = _extract_header(headers, "Subject") or "No Subject"
             filename = _msg_filename(subject, mid)
+            size_estimate = raw.get("sizeEstimate")
+            # size stays None: sizeEstimate is the source message size, not
+            # the rendered .gmail.json length (FileStat.size must be
+            # render-derived or None, see the CLAUDE.md FUSE rules). The
+            # estimate lives in extra.
             msg_entry = IndexEntry(
                 id=mid,
                 name=subject,
                 resource_type="gmail/message",
                 vfs_name=filename,
-                size=raw.get("sizeEstimate"),
+                extra={"size_estimate": size_estimate}
+                if size_estimate is not None else {},
             )
             date_children.append((filename, msg_entry))
             attachments = _extract_attachments(raw.get("payload", {}))
@@ -127,35 +134,30 @@ async def _build_date_groups(
                     )
                     att_entries.append((att_name, att_entry))
                 att_vkey = virtual_key + "/" + date_str + "/" + att_dir
-                if index is not None and write_dates:
+                if write_dates:
                     await index.set_dir(att_vkey, att_entries)
-        if index is not None and write_dates:
+        if write_dates:
             await index.set_dir(virtual_key + "/" + date_str, date_children)
     return date_entries
 
 
 async def readdir(
     accessor: GmailAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = None,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    path = (path.dir if path.pattern else path).mount_path
+    virtual = path_spec.virtual
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     virtual_key = prefix + "/" + key if key else prefix or "/"
     parts = key.split("/") if key else []
     depth = len(parts)
 
     if depth == 0:
-        if index is not None:
-            cached = await index.list_dir(virtual_key)
-            if cached.entries is not None:
-                return cached.entries
+        cached = await index.list_dir(virtual_key)
+        if cached.entries is not None:
+            return cached.entries
         labels = await list_labels(accessor.token_manager)
         entries = []
         for lb in labels:
@@ -170,18 +172,14 @@ async def readdir(
                 vfs_name=name,
             )
             entries.append((name, entry))
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
+        await index.set_dir(virtual_key, entries)
         return [f"{prefix}/{name}" for name, _ in entries]
 
     if depth == 1:
         label_name = parts[0]
-        if index is not None:
-            cached = await index.list_dir(virtual_key)
-            if cached.entries is not None:
-                return cached.entries
-        if index is None:
-            raise enoent(virtual)
+        cached = await index.list_dir(virtual_key)
+        if cached.entries is not None:
+            return cached.entries
         label_key = prefix + "/" + label_name if prefix else "/" + label_name
         result = await index.get(label_key)
         if result.entry is None:
@@ -215,13 +213,10 @@ async def readdir(
             virtual_key,
             write_dates=True,
         )
-        if index is not None:
-            await index.set_dir(virtual_key, date_entries)
+        await index.set_dir(virtual_key, date_entries)
         return [f"{prefix}/{key}/{name}" for name, _ in date_entries]
 
     if depth == 2:
-        if index is None:
-            raise enoent(virtual)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
@@ -280,8 +275,6 @@ async def readdir(
         raise enoent(virtual)
 
     if depth == 3:
-        if index is None:
-            raise enoent(virtual)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries

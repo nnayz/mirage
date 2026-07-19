@@ -15,7 +15,7 @@
 from functools import partial
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.du import du as generic_du
 from mirage.commands.builtin.generic.du import du_multi
 from mirage.commands.builtin.generic_bind.adapter import Builder, CommandIO
@@ -24,8 +24,8 @@ from mirage.types import FileType, PathSpec
 from mirage.utils.key_prefix import rekey
 
 
-async def _du_walk(ops: CommandIO, accessor: Accessor,
-                   index: IndexCacheStore | None, path: PathSpec) -> int:
+async def _du_walk(ops: CommandIO, accessor: Accessor, index: IndexCacheStore,
+                   path: PathSpec) -> int:
     try:
         s = await ops.stat(accessor, path, index)
     except (FileNotFoundError, ValueError):
@@ -58,7 +58,7 @@ async def du(
     a: bool = False,
     max_depth: str | None = None,
     c: bool = False,
-    index: IndexCacheStore | None = None,
+    index: IndexCacheStore = NULL_INDEX,
     **kwargs,
 ) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
@@ -67,7 +67,7 @@ async def du(
     if not paths:
         raise ValueError("du: missing operand")
     depth = int(max_depth) if max_depth is not None else None
-    if ops.du_total is None:
+    if ops.du_total is None or ops.du_all is None:
         out = await du_multi(paths,
                              compute_total=partial(_du_walk, ops, accessor,
                                                    index),
@@ -77,7 +77,7 @@ async def du(
                              max_depth=depth,
                              c=c)
         return out, IOResult()
-    out = await generic_du(
+    text = await generic_du(
         paths,
         compute_total=partial(ops.du_total, accessor),
         compute_all=partial(ops.du_all, accessor),
@@ -87,7 +87,7 @@ async def du(
         max_depth=depth,
         c=c,
     )
-    return out.encode(), IOResult()
+    return text.encode(), IOResult()
 
 
 BUILDER = Builder('du', du, None, False, None)

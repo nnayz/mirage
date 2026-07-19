@@ -12,9 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { CHROMA_IO } from '../../commands/builtin/chroma/io.ts'
+import { ResourceName } from '../../types.ts'
+import { makeGenericOps } from '../generic/factory.ts'
 import type { RegisteredOp } from '../registry.ts'
-import { readOp } from './read.ts'
-import { readdirOp } from './readdir.ts'
-import { statOp } from './stat.ts'
 
-export const CHROMA_OPS: readonly RegisteredOp[] = [readOp, readdirOp, statOp]
+export const CHROMA_OPS: readonly RegisteredOp[] = makeGenericOps(ResourceName.CHROMA, CHROMA_IO)

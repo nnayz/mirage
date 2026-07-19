@@ -12,20 +12,94 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import asyncio
+import base64
 import shlex
+from pathlib import PurePosixPath
 
 from deepagents.backends.protocol import (EditResult, ExecuteResponse,
-                                          FileDownloadResponse, FileInfo,
-                                          FileUploadResponse, GrepMatch,
-                                          SandboxBackendProtocol, WriteResult)
+                                          FileData, FileDownloadResponse,
+                                          FileInfo, FileUploadResponse,
+                                          GlobResult, GrepResult, LsResult,
+                                          ReadResult, SandboxBackendProtocol,
+                                          WriteResult)
 
 from mirage.agents.langchain._convert import (io_to_execute_response,
                                               io_to_file_infos,
                                               io_to_grep_matches)
+from mirage.bridge.sync import run_async_from_sync
 from mirage.io.types import IOResult
-from mirage.types import DEFAULT_SESSION_ID
 from mirage.workspace.workspace import Workspace
+
+BINARY_EXTENSIONS = frozenset({
+    ".3gpp",
+    ".aac",
+    ".aiff",
+    ".avi",
+    ".flac",
+    ".flv",
+    ".gif",
+    ".heic",
+    ".heif",
+    ".jpeg",
+    ".jpg",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".mpeg",
+    ".mpg",
+    ".ogg",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".wmv",
+})
+COMMAND_SUCCESS_EXIT_CODES = frozenset({0})
+GREP_SUCCESS_EXIT_CODES = frozenset({0, 1})
+
+
+def _is_binary(file_path: str, data: bytes) -> bool:
+    suffix = PurePosixPath(file_path).suffix.lower()
+    if suffix in BINARY_EXTENSIONS or b"\x00" in data:
+        return True
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def _to_read_result(file_path: str, data: bytes, offset: int,
+                    limit: int) -> ReadResult:
+    if _is_binary(file_path, data):
+        content = base64.standard_b64encode(data).decode("ascii")
+        return ReadResult(
+            file_data=FileData(content=content, encoding="base64"))
+
+    text = data.decode("utf-8")
+    lines = text.splitlines(keepends=True)
+    if lines and offset >= len(lines):
+        error = (f"Line offset {offset} exceeds file length "
+                 f"({len(lines)} lines)")
+        return ReadResult(error=error)
+    content = "".join(lines[offset:offset + limit])
+    return ReadResult(file_data=FileData(content=content, encoding="utf-8"))
+
+
+async def _command_error(
+    io: IOResult,
+    success_exit_codes: frozenset[int] = COMMAND_SUCCESS_EXIT_CODES,
+) -> str | None:
+    io.sync_exit_code()
+    if io.exit_code in success_exit_codes:
+        return None
+    stderr = (await io.stderr_str()).strip()
+    if stderr:
+        return stderr
+    return f"Command failed with exit code {io.exit_code}"
 
 
 class LangchainWorkspace(SandboxBackendProtocol):
@@ -40,21 +114,23 @@ class LangchainWorkspace(SandboxBackendProtocol):
         self,
         workspace: Workspace,
         sandbox_id: str = "mirage",
-        session_id: str = DEFAULT_SESSION_ID,
+        session_id: str | None = None,
     ) -> None:
         self._ws = workspace
         self._id = sandbox_id
         self._session_id = session_id
 
     def _run(self, coro):
-        return asyncio.run(coro)
+        return run_async_from_sync(coro)
 
     @property
     def id(self) -> str:
         return self._id
 
     async def _exec(self, command: str) -> IOResult:
-        return await self._ws.execute(command, session_id=self._session_id)
+        result = await self._ws.execute(command, session_id=self._session_id)
+        assert isinstance(result, IOResult)
+        return result
 
     # ── execute ──────────────────────────────────────────────
 
@@ -71,16 +147,19 @@ class LangchainWorkspace(SandboxBackendProtocol):
         io = await self._exec(command)
         return io_to_execute_response(io)
 
-    # ── ls_info ─────────────────────────────────────────────
+    # ── ls ──────────────────────────────────────────────────
 
-    def ls_info(self, path: str) -> list[FileInfo]:
-        return self._run(self.als_info(path))
+    def ls(self, path: str) -> LsResult:
+        return self._run(self.als(path))
 
-    async def als_info(self, path: str) -> list[FileInfo]:
+    async def als(self, path: str) -> LsResult:
         io = await self._exec(f"ls {shlex.quote(path)}")
-        stdout = (io.stdout or b"").decode("utf-8", errors="replace").strip()
+        stdout = (await io.stdout_str()).strip()
+        error = await _command_error(io)
+        if error:
+            return LsResult(error=error)
         if not stdout:
-            return []
+            return LsResult(entries=[])
         base = path.rstrip("/")
         result: list[FileInfo] = []
         for name in stdout.split("\n"):
@@ -90,29 +169,26 @@ class LangchainWorkspace(SandboxBackendProtocol):
             is_dir = name.endswith("/")
             clean = name.rstrip("/")
             result.append(FileInfo(path=f"{base}/{clean}", is_dir=is_dir))
-        return result
+        return LsResult(entries=result)
 
     # ── read ─────────────────────────────────────────────────
 
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+    def read(self,
+             file_path: str,
+             offset: int = 0,
+             limit: int = 2000) -> ReadResult:
         return self._run(self.aread(file_path, offset, limit))
 
     async def aread(self,
                     file_path: str,
                     offset: int = 0,
-                    limit: int = 2000) -> str:
+                    limit: int = 2000) -> ReadResult:
         ops = self._ws.ops
         try:
             data = await ops.read(file_path)
         except (FileNotFoundError, ValueError) as exc:
-            return f"Error: {exc}"
-        text = data.decode("utf-8", errors="replace")
-        lines = text.splitlines(keepends=True)
-        sliced = lines[offset:offset + limit]
-        numbered = []
-        for i, line in enumerate(sliced, start=offset + 1):
-            numbered.append(f"{i:>6}\t{line}")
-        return "".join(numbered)
+            return ReadResult(error=f"Error: {exc}")
+        return _to_read_result(file_path, data, offset, limit)
 
     # ── write ────────────────────────────────────────────────
 
@@ -126,11 +202,13 @@ class LangchainWorkspace(SandboxBackendProtocol):
             return WriteResult(
                 error=f"Error: file '{file_path}' already exists")
         except (FileNotFoundError, ValueError):
+            # missing file is the good path: the write may proceed
             pass
         parent = "/".join(file_path.rstrip("/").split("/")[:-1]) or "/"
         try:
             await ops.mkdir(parent)
         except (FileExistsError, ValueError):
+            # mkdir -p semantics: an existing parent is success
             pass
         await ops.write(file_path, content.encode("utf-8"))
         return WriteResult(path=file_path)
@@ -176,42 +254,48 @@ class LangchainWorkspace(SandboxBackendProtocol):
         return EditResult(path=file_path,
                           occurrences=count if replace_all else 1)
 
-    # ── grep_raw ─────────────────────────────────────────────
+    # ── grep ─────────────────────────────────────────────────
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
-        return self._run(self.agrep_raw(pattern, path, glob))
+    ) -> GrepResult:
+        return self._run(self.agrep(pattern, path, glob))
 
-    async def agrep_raw(
+    async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         parts = ["grep", "-rn"]
         if glob:
             parts.extend(["--include", shlex.quote(glob)])
         parts.append(shlex.quote(pattern))
         parts.append(shlex.quote(path or "/"))
         io = await self._exec(" ".join(parts))
-        return io_to_grep_matches(io)
+        await io.materialize_stdout()
+        error = await _command_error(io, GREP_SUCCESS_EXIT_CODES)
+        if error:
+            return GrepResult(error=error)
+        return GrepResult(matches=io_to_grep_matches(io))
 
-    # ── glob_info ────────────────────────────────────────────
+    # ── glob ─────────────────────────────────────────────────
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        return self._run(self.aglob_info(pattern, path))
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+        return self._run(self.aglob(pattern, path))
 
-    async def aglob_info(self,
-                         pattern: str,
-                         path: str = "/") -> list[FileInfo]:
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
         name = pattern.split("/")[-1] if "/" in pattern else pattern
         io = await self._exec(
-            f"find {shlex.quote(path)} -name {shlex.quote(name)}")
-        return io_to_file_infos(io)
+            f"find {shlex.quote(path or '/')} -name {shlex.quote(name)}")
+        await io.materialize_stdout()
+        error = await _command_error(io)
+        if error:
+            return GlobResult(error=error)
+        return GlobResult(matches=io_to_file_infos(io))
 
     # ── upload / download ────────────────────────────────────
 
@@ -228,6 +312,7 @@ class LangchainWorkspace(SandboxBackendProtocol):
             try:
                 await ops.mkdir(parent)
             except (FileExistsError, ValueError):
+                # mkdir -p semantics: an existing parent is success
                 pass
             await ops.write(path, data)
             results.append(FileUploadResponse(path=path))

@@ -15,7 +15,8 @@ repos:
         exclude: |
           (?x)^(
               typescript/.*|
-              integ/truth\.txt
+              integ/truth\.txt|
+              integ/fixtures/.*
           )$
       - name: mixed-line-ending
         id: mixed-line-ending
@@ -23,14 +24,16 @@ repos:
         exclude: |
           (?x)^(
               typescript/.*|
-              integ/truth\.txt
+              integ/truth\.txt|
+              integ/fixtures/.*
           )$
       - id: trailing-whitespace
         name: Remove trailing whitespaces
         exclude: |
           (?x)^(
               typescript/.*|
-              integ/truth\.txt
+              integ/truth\.txt|
+              integ/fixtures/.*
           )$
       - id: check-toml
         name: Check toml
@@ -130,7 +133,7 @@ repos:
         pass_filenames: true
       - id: ts-eslint
         name: ESLint (typescript)
-        entry: typescript/scripts/precommit-run.sh eslint --fix
+        entry: typescript/scripts/precommit-run.sh eslint --fix --no-warn-ignored
         language: system
         files: ^typescript/.*\.(ts|tsx|js|mjs|cjs)$
         pass_filenames: true
@@ -139,4 +142,10 @@ repos:
         entry: bash -c 'cd typescript && pnpm exec knip'
         language: system
         files: ^typescript/.*\.(ts|tsx|js|mjs|cjs|json)$
+        pass_filenames: false
+      - id: py-mypy
+        name: Type check (mypy)
+        entry: bash -c 'cd python && uv run mypy'
+        language: system
+        files: ^python/(mirage/.*\.py|pyproject\.toml)$
         pass_filenames: false

@@ -1,0 +1,117 @@
+---
+title: JavaScript
+description: Run node/js inside the workspace on quickjs, a sandboxed JavaScript engine for small scripts and pipe transforms.
+---
+
+Shell lines like `node script.mjs` or `js -e "..."` need a JavaScript
+engine. Mirage calls that engine a **runtime**, and `node` and `js` are
+two names for the same command family. One runtime ships today:
+
+| Runtime | Engine | Filesystem | Default |
+| --- | --- | --- | --- |
+| `quickjs` | [quickjs-emscripten](https://github.com/justjake/quickjs-emscripten), quickjs compiled to WebAssembly (browser + Node) | Workspace mounts only, bridged through Mirage; no host filesystem, no network | Yes |
+
+## What it is for
+
+`node`/`js` runs **small, self-contained scripts and pipe transforms**:
+compute, JSON munging, regex text processing, code generation. It is a
+bare modern engine (ES2023 syntax, ES modules, `JSON`, `Promise`,
+top-level await), **not** Node: there is no `require`, no npm, no
+`process`, no `fs`, no `fetch`. Anything that needs those belongs in a
+sandboxed deployment, not the workspace runtime.
+
+```bash
+js -e "console.log(6 * 7)"                 # inline
+node /data/transform.mjs arg1 arg2         # a mounted script, args in scriptArgs
+cat data.json | node -e "const d = JSON.parse(std.in.readAsString()); console.log(d.length)"
+```
+
+Three input forms, mirroring `python3`:
+
+- **`-e <code>`** evaluates the argument.
+- **A file** (`node script.js`) is read through the workspace before the
+  run, so a mounted script executes.
+- **stdin** with no `-e` or file runs the piped text as the program.
+
+`scriptArgs` holds the arguments after the code or script,
+`std.in.readAsString()` reads piped stdin, and `std.open`/`os.readdir`
+reach workspace mounts (see [Isolation](#isolation)). These match the
+Python `quickjs` runtime, so a script behaves the same in both languages.
+
+## Modules
+
+A `.mjs` file runs as an ES module automatically (top-level
+`import`/`export`/`await`); `.js` and `-e` run as a classic script. Pass
+`-m`/`--module` to force module mode for inline code:
+
+```bash
+js -m -e "const x = await Promise.resolve(41); console.log(x + 1)"
+```
+
+## Isolation
+
+The engine runs under WebAssembly capability isolation: it sees only what
+the run passes it. Host files and the network are invisible.
+
+Workspace mounts are visible with no setup: `std.open('/data/f.txt', 'r')`
+reads the mount and `os.readdir('/data')` lists it, bridged through the
+workspace dispatch so the code sees exactly what `cat` sees, with the same
+cache and write modes. Writes are visible to every command once the file is
+closed, and a read-only mount (or a session narrowed to read) fails the
+open, so `std.open` returns `null` instead of writing. The engine runs on
+quickjs-emscripten's asyncify build, which lets `std.open` suspend the run
+while a mount read or write awaits the dispatch, matching the Python
+`quickjs` runtime's live file I/O.
+
+This is capability isolation, not a resource sandbox: the sandboxed code
+cannot reach your files or the network, but CPU and memory are bounded only
+by soft engine caps and `command_safeguards` timeouts. For untrusted code or
+hard resource limits, run behind a sandboxed deployment.
+
+## Setup
+
+The runtime needs the optional `quickjs-emscripten` peer dependency (it
+bundles its own wasm, so there is nothing else to download):
+
+```bash
+npm install quickjs-emscripten
+```
+
+Select it per workspace (it is already the default):
+
+```ts
+const ws = new Workspace(resources, {
+  mode: MountMode.EXEC,
+  runtimes: ['quickjs', 'vfs'],
+})
+```
+
+## Selecting in YAML
+
+Server workspace config files take a top-level `runtimes` list; the
+JavaScript runtime is just another entry:
+
+```yaml
+runtimes:
+  - monty
+  - quickjs
+  - vfs
+
+mounts:
+  /data:
+    resource: ram
+    command_safeguards:
+      js:
+        timeout_seconds: 30
+```
+
+## Resource limits
+
+`node`/`js` is a command like any other: the same `command_safeguards`
+that guard `cat` or `python3` guard it, enforced at the same central
+point. A run that exceeds `timeout_seconds` answers with exit 124, and
+`max_bytes`/`max_lines` cap its output.
+
+One caveat: the guard bounds how long a run may *answer*, not the engine
+itself. Give untrusted code a finite workload, or run it behind a
+sandboxed deployment.

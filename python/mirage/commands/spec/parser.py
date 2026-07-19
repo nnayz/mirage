@@ -249,7 +249,11 @@ def parse_command(
                                         and mixed[2] is None):
                 # A declared value flag (alone or ending a cluster) with no
                 # argument left on the line. GNU reports the flag character.
-                needy = tok[1:] if tok in value_flags else mixed[1][1:]
+                if tok in value_flags:
+                    needy = tok[1:]
+                else:
+                    assert mixed is not None
+                    needy = mixed[1][1:]
                 needs_value_options.append(needy)
             else:
                 # GNU reports the first offending character, not the token.
@@ -333,8 +337,8 @@ def parse_command(
     )
 
 
-def parse_to_kwargs(parsed: ParsedArgs) -> dict[str, str | bool | list[str]]:
-    result: dict[str, str | bool | list[str]] = {}
+def parse_to_kwargs(parsed: ParsedArgs) -> dict[str, object]:
+    result: dict[str, object] = {}
     for key, value in parsed.flags.items():
         result[flag_kwarg_name(key)] = value
     return result

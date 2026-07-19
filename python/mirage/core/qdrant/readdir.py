@@ -12,11 +12,13 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Any
+
 from mirage.accessor.qdrant import QdrantAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.qdrant.query import (distinct_values, list_tables,
                                       rows_matching)
-from mirage.core.qdrant.scope import ScopeLevel, detect_scope
+from mirage.core.qdrant.scope import QdrantGroupScope, ScopeLevel, detect_scope
 from mirage.types import PathSpec
 
 
@@ -33,7 +35,7 @@ def is_dir_name(child: str, config) -> bool:
     return True
 
 
-def _row_files(rows: list[dict], config) -> list[str]:
+def _row_files(rows: list[dict[str, Any]], config) -> list[str]:
     names: list[str] = []
     for row in rows:
         rid = row[config.id_field]
@@ -48,12 +50,8 @@ def _row_files(rows: list[dict], config) -> list[str]:
 async def readdir(
     accessor: QdrantAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     config = accessor.config
     scope = detect_scope(path, config)
     base = path.virtual.rstrip("/")
@@ -62,7 +60,7 @@ async def readdir(
         names = await list_tables(accessor)
         return [f"{base}/{name}" for name in names]
 
-    if scope.level == ScopeLevel.GROUP_DIR:
+    if isinstance(scope, QdrantGroupScope):
         depth = len(scope.filters)
         total = len(config.group_by)
         if depth < total:

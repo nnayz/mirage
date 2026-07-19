@@ -12,10 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum, StrEnum
-from typing import Annotated
+from typing import Annotated, Any, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt
 
@@ -29,10 +29,10 @@ class Aggr:
     field's aggregation behavior lives next to the field.
 
     Args:
-        reduce (Callable[[list], object]): the per-field aggregation rule.
+        reduce (Callable[[list[Any]], object]): the per-field aggregation rule.
     """
 
-    def __init__(self, reduce: Callable[[list], object]) -> None:
+    def __init__(self, reduce: Callable[[list[Any]], object]) -> None:
         self.reduce = reduce
 
 
@@ -81,13 +81,109 @@ class FileStat(BaseModel):
     fingerprint: str | None = None
     revision: str | None = None
     type: FileType | None = None
-    extra: dict = Field(default_factory=dict)
+    mode: int | None = None
+    uid: int | str | None = None
+    gid: int | str | None = None
+    atime: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+ReadBytesFn: TypeAlias = Callable[..., Awaitable[bytes]]
+ReadStreamFn: TypeAlias = Callable[..., AsyncIterator[bytes]]
+# A "polymorphic" reader is the loose `read` contract head/tail/wc
+# accept: a backend may hand back materialized bytes, an awaitable of
+# bytes, or an async byte stream; ensure_stream normalizes downstream.
+PolymorphicReadResult: TypeAlias = (bytes | AsyncIterator[bytes]
+                                    | Awaitable[bytes | AsyncIterator[bytes]])
+PolymorphicReadFn: TypeAlias = Callable[..., PolymorphicReadResult]
+CopyFn: TypeAlias = Callable[..., Awaitable[None]]
+MoveFn: TypeAlias = Callable[..., Awaitable[None]]
+FindFn: TypeAlias = Callable[..., Awaitable[list[str]]]
+ReaddirFn: TypeAlias = Callable[..., Awaitable[list[str]]]
+StatFn: TypeAlias = Callable[..., Awaitable["FileStat"]]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeCopy:
+    copy: CopyFn
+    find: FindFn
+    dir_copy: CopyFn | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PrimitiveCopy:
+    read_bytes: ReadBytesFn
+    write: CopyFn
+    mkdir: CopyFn
+    readdir: ReaddirFn
+
+
+CopyStrategy: TypeAlias = NativeCopy | PrimitiveCopy
+
+
+@dataclass(frozen=True, slots=True)
+class NativeMove:
+    rename: MoveFn
+
+
+@dataclass(frozen=True, slots=True)
+class PrimitiveMove:
+    read_bytes: ReadBytesFn
+    write: MoveFn
+    mkdir: MoveFn
+    readdir: ReaddirFn
+    unlink: MoveFn
+    rmdir: MoveFn
+
+
+MoveStrategy: TypeAlias = NativeMove | PrimitiveMove
 
 
 class MountMode(str, Enum):
     READ = "read"
     WRITE = "write"
     EXEC = "exec"
+
+
+MOUNT_MODE_RANK: dict[MountMode, int] = {
+    MountMode.READ: 1,
+    MountMode.WRITE: 2,
+    MountMode.EXEC: 3,
+}
+
+
+def weaker_mode(a: MountMode, b: MountMode) -> MountMode:
+    """The weaker of two mount modes on the READ < WRITE < EXEC lattice.
+
+    Args:
+        a (MountMode): first mode.
+        b (MountMode): second mode.
+    """
+    return a if MOUNT_MODE_RANK[a] <= MOUNT_MODE_RANK[b] else b
+
+
+MOUNT_MODE_ALIASES: dict[str, MountMode] = {
+    "r": MountMode.READ,
+    "rw": MountMode.WRITE,
+    "rwx": MountMode.EXEC,
+}
+
+
+def parse_mount_mode(value: MountMode | str) -> MountMode:
+    """Coerce a mount mode, accepting cumulative filesystem aliases.
+
+    The mode ladder is cumulative (exec implies write implies read),
+    so only the cumulative spellings ``r``, ``rw``, ``rwx`` alias the
+    modes; bit-style forms like ``w`` or ``x`` are rejected.
+
+    Args:
+        value (MountMode | str): a mode name ("read", "write", "exec")
+            or its filesystem alias ("r", "rw", "rwx").
+    """
+    if isinstance(value, MountMode):
+        return value
+    alias = MOUNT_MODE_ALIASES.get(value)
+    return alias if alias is not None else MountMode(value)
 
 
 class ConsistencyPolicy(str, Enum):
@@ -129,7 +225,7 @@ class CommandSafeguard(BaseModel):
         present = [s for s in safeguards if s is not None]
         if not present:
             return None
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         for name, field in cls.model_fields.items():
             rule = next((m for m in field.metadata if isinstance(m, Aggr)),
                         None)
@@ -168,6 +264,7 @@ class ResourceName(str, Enum):
     GMAIL = "gmail"
     TRELLO = "trello"
     MONGODB = "mongodb"
+    GRIDFS = "gridfs"
     POSTGRES = "postgres"
     NOTION = "notion"
     LANGFUSE = "langfuse"
@@ -186,28 +283,48 @@ class ResourceName(str, Enum):
     NEXTCLOUD = "nextcloud"
     LANCEDB = "lancedb"
     ONEDRIVE = "onedrive"
+    DROPBOX = "dropbox"
     QDRANT = "qdrant"
     SHAREPOINT = "sharepoint"
+    BOX = "box"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class PathSpec:
     virtual: str
     directory: str
     resource_path: str
+    raw_path: str
     pattern: str | None = None
     resolved: bool = True
-    raw_path: str | None = None
 
-    def __post_init__(self) -> None:
-        """Default ``raw_path`` to ``virtual``.
+    def __init__(
+        self,
+        virtual: str,
+        directory: str,
+        resource_path: str,
+        pattern: str | None = None,
+        resolved: bool = True,
+        raw_path: str | None = None,
+    ) -> None:
+        """Create a path whose stored spelling is always concrete.
 
-        ``raw_path`` is the word's spelling: as typed for relative
-        words, the absolute path for everything else. It is always a
-        ``str`` after construction; pass None to take the default.
+        Args:
+            virtual (str): Absolute path in the workspace.
+            directory (str): Directory containing the path.
+            resource_path (str): Path relative to the mounted resource.
+            pattern (str | None): Unresolved glob pattern.
+            resolved (bool): Whether glob resolution is complete.
+            raw_path (str | None): Spelling supplied by the user; defaults
+                to ``virtual`` only at the construction boundary.
         """
-        if self.raw_path is None:
-            object.__setattr__(self, "raw_path", self.virtual)
+        object.__setattr__(self, "virtual", virtual)
+        object.__setattr__(self, "directory", directory)
+        object.__setattr__(self, "resource_path", resource_path)
+        object.__setattr__(self, "pattern", pattern)
+        object.__setattr__(self, "resolved", resolved)
+        object.__setattr__(self, "raw_path",
+                           virtual if raw_path is None else raw_path)
 
     @property
     def mount_path(self) -> str:
@@ -266,7 +383,9 @@ def word_text(word: "str | PathSpec") -> str:
     Args:
         word (str | PathSpec): text argument or path.
     """
-    return word.raw_path if isinstance(word, PathSpec) else word
+    if isinstance(word, PathSpec):
+        return word.raw_path
+    return word
 
 
 class IndexType(str, Enum):
@@ -277,15 +396,6 @@ class IndexType(str, Enum):
 class CacheType(str, Enum):
     RAM = "ram"
     REDIS = "redis"
-
-
-class RuntimeType(str, Enum):
-    RAM = "ram"
-    DISK = "disk"
-
-
-DEFAULT_SESSION_ID = "default"
-DEFAULT_AGENT_ID = "default"
 
 
 class StateKey(StrEnum):
@@ -301,7 +411,7 @@ class StateKey(StrEnum):
     JOBS = "jobs"
     FINGERPRINTS = "fingerprints"
     LIVE_ONLY_MOUNTS = "live_only_mounts"
-    SYMLINKS = "symlinks"
+    NODES = "nodes"
 
 
 class DriftPolicy(StrEnum):
@@ -357,23 +467,13 @@ class JobKey(StrEnum):
     SESSION_ID = "session_id"
 
 
-class RecordKey(StrEnum):
-    AGENT = "agent"
-    COMMAND = "command"
-    STDOUT = "stdout"
-    STDIN = "stdin"
-    EXIT_CODE = "exit_code"
-    TREE = "tree"
-    TIMESTAMP = "timestamp"
-    SESSION_ID = "session_id"
-
-
-class NodeKey(StrEnum):
-    COMMAND = "command"
-    OP = "op"
-    STDERR = "stderr"
-    EXIT_CODE = "exit_code"
-    CHILDREN = "children"
+class NodeMetaKey(StrEnum):
+    TARGET = "target"
+    MTIME = "mtime"
+    MODE = "mode"
+    UID = "uid"
+    GID = "gid"
+    ATIME = "atime"
 
 
 class SessionKey(StrEnum):

@@ -15,7 +15,8 @@
 import logging
 
 from mirage.accessor.s3 import S3Accessor
-from mirage.cache.index import IndexCacheStore, IndexEntry, ResourceType
+from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
+                                ResourceType)
 from mirage.core.s3._client import (_client_kwargs, _prefix, _strip_prefix,
                                     async_session)
 from mirage.core.s3.constants import SCOPE_ERROR
@@ -26,18 +27,14 @@ from mirage.utils.key_prefix import mount_prefix_of
 logger = logging.getLogger(__name__)
 
 
-async def readdir(accessor: S3Accessor, path: PathSpec,
-                  index: IndexCacheStore) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        prefix = mount_prefix_of(path.virtual, path.resource_path)
-        # When called from resolve_glob with a pattern (e.g. *.txt),
-        # use path.directory for the listing. Direct callers (ls, ops)
-        # pass pattern=None so path.virtual is used.
-        path = path.directory if path.pattern else path.virtual
+async def readdir(accessor: S3Accessor,
+                  path_spec: PathSpec,
+                  index: IndexCacheStore = NULL_INDEX) -> list[str]:
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    # When called from resolve_glob with a pattern (e.g. *.txt),
+    # use path.directory for the listing. Direct callers (ls, ops)
+    # pass pattern=None so path.virtual is used.
+    path = path_spec.directory if path_spec.pattern else path_spec.virtual
     if prefix and path.startswith(prefix):
         rest = path[len(prefix):]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):

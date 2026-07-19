@@ -13,33 +13,31 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { BoxAccessor } from '../../accessor/box.ts'
-import type { IndexCacheStore } from '../../cache/index/store.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import type { FindOptions } from '../../resource/base.ts'
 import type { PathSpec } from '../../types.ts'
 import { walkFind } from '../generic/find.ts'
-import { readdir } from './readdir.ts'
+import { isDirName, readdir } from './readdir.ts'
 import { stat } from './stat.ts'
 
-function isDirName(child: string): boolean | null {
-  // Cold reads mark folders with a trailing slash; warm index-cache hits
-  // return slash-less keys, so fall back to stat for classification.
-  return child.endsWith('/') ? true : null
-}
-
-export async function find(
+export function find(
   accessor: BoxAccessor,
   path: PathSpec,
-  options: FindOptions = {},
-  index?: IndexCacheStore,
+  options: FindOptions,
 ): Promise<string[]> {
+  // Box readdir/stat resolve folder ids through an index cache. The generic
+  // cp/find builders may call find without threading one (unlike Python,
+  // whose cp threads the resource index), so walk with a scratch index that
+  // this call populates as it descends.
+  const idx = new RAMIndexCacheStore({ ttl: 86_400 })
   return walkFind(
     path,
     {
-      readdir: (spec, idx) => readdir(accessor, spec, idx),
-      stat: (spec, idx) => stat(accessor, spec, idx),
-      isDirName,
+      readdir: (spec, i) => readdir(accessor, spec, i),
+      stat: (spec, i) => stat(accessor, spec, i),
+      isDirName: (child) => isDirName(child),
     },
     options,
-    index,
+    idx,
   )
 }

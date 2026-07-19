@@ -16,7 +16,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from mirage.accessor.slack import SlackAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.slack._client import slack_get
 from mirage.core.slack.channels import list_channels, list_dms
 from mirage.core.slack.files import file_blob_name
@@ -78,11 +78,7 @@ async def _latest_message_ts(config, channel_id: str) -> float | None:
     return None
 
 
-def _normalize_path(path: PathSpec | str) -> tuple[PathSpec, str, str, str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
+def _normalize_path(path: PathSpec) -> tuple[PathSpec, str, str, str]:
     prefix = mount_prefix_of(path.virtual, path.resource_path) or ""
     raw = path.directory if path.pattern else path.virtual
     if prefix and raw.startswith(prefix):
@@ -100,12 +96,11 @@ async def _readdir_channels(
     accessor: SlackAccessor,
     prefix: str,
     virtual_key: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if index is not None:
-        listing = await index.list_dir(virtual_key)
-        if listing.entries is not None:
-            return listing.entries
+    listing = await index.list_dir(virtual_key)
+    if listing.entries is not None:
+        return listing.entries
     channels = await list_channels(accessor.config)
     entries: list[tuple[str, IndexEntry]] = []
     names: list[str] = []
@@ -120,8 +115,7 @@ async def _readdir_channels(
         )
         entries.append((dirname, entry))
         names.append(f"{prefix}/channels/{dirname}")
-    if index is not None:
-        await index.set_dir(virtual_key, entries)
+    await index.set_dir(virtual_key, entries)
     return names
 
 
@@ -129,12 +123,11 @@ async def _readdir_dms(
     accessor: SlackAccessor,
     prefix: str,
     virtual_key: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if index is not None:
-        listing = await index.list_dir(virtual_key)
-        if listing.entries is not None:
-            return listing.entries
+    listing = await index.list_dir(virtual_key)
+    if listing.entries is not None:
+        return listing.entries
     dms = await list_dms(accessor.config)
     users = await list_users(accessor.config)
     user_map = {u["id"]: u.get("name", u["id"]) for u in users}
@@ -152,8 +145,7 @@ async def _readdir_dms(
         )
         entries.append((dirname, entry))
         names.append(f"{prefix}/dms/{dirname}")
-    if index is not None:
-        await index.set_dir(virtual_key, entries)
+    await index.set_dir(virtual_key, entries)
     return names
 
 
@@ -161,12 +153,11 @@ async def _readdir_users(
     accessor: SlackAccessor,
     prefix: str,
     virtual_key: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if index is not None:
-        listing = await index.list_dir(virtual_key)
-        if listing.entries is not None:
-            return listing.entries
+    listing = await index.list_dir(virtual_key)
+    if listing.entries is not None:
+        return listing.entries
     users = await list_users(accessor.config)
     entries: list[tuple[str, IndexEntry]] = []
     names: list[str] = []
@@ -180,8 +171,7 @@ async def _readdir_users(
         )
         entries.append((filename, entry))
         names.append(f"{prefix}/users/{filename}")
-    if index is not None:
-        await index.set_dir(virtual_key, entries)
+    await index.set_dir(virtual_key, entries)
     return names
 
 
@@ -192,10 +182,8 @@ async def _readdir_channel_dates(
     key: str,
     virtual_key: str,
     container: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if index is None:
-        raise enoent(path)
     lookup = await index.get(virtual_key)
     if lookup.entry is None:
         parent_str = prefix + "/" + container
@@ -241,10 +229,8 @@ async def _readdir_date_contents(
     container: str,
     chan_seg: str,
     date_str: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if index is None:
-        raise enoent(path)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
@@ -276,10 +262,8 @@ async def _readdir_files_dir(
     container: str,
     chan_seg: str,
     date_str: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if index is None:
-        raise enoent(path)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
@@ -297,7 +281,7 @@ async def _readdir_files_dir(
 async def readdir(
     accessor: SlackAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
     path, prefix, key, virtual_key = _normalize_path(path)
 
@@ -334,7 +318,7 @@ async def _fetch_day(
     channel_id: str,
     date_str: str,
     date_vkey: str,
-    index: IndexCacheStore,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> None:
     try:
         messages = await fetch_messages_for_day(accessor.config, channel_id,
@@ -395,4 +379,11 @@ async def _fetch_day(
     await index.set_dir(date_vkey + "/files", file_entries)
 
 
-__all__ = ["readdir", "VIRTUAL_ROOTS", "SlackScope"]
+def is_dir_name(child: str) -> bool:
+    # Entries are recognized by extension, so classification never needs
+    # the stat fallback.
+    name = child.rsplit("/", 1)[-1]
+    return not (name.endswith(".json") or name.endswith(".jsonl"))
+
+
+__all__ = ["readdir", "is_dir_name", "VIRTUAL_ROOTS", "SlackScope"]

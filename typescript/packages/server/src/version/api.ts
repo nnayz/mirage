@@ -16,7 +16,7 @@ import { applyStateDict, type Workspace as CoreWorkspace } from '@struktoai/mira
 import { NoSuchBranchError } from './errors.ts'
 import {
   blobToMeta,
-  CACHE_PREFIX,
+  CONTROL_PREFIX,
   META_PATH,
   metaToBlob,
   toState,
@@ -39,9 +39,11 @@ const EMPTY_META: VersionMeta = {
   liveOnlyMounts: [],
 }
 
+// File-level diff/status stay content-only: the control-plane subtree
+// changes on every command (history) and is surfaced by the structured
+// structured stateDiff instead.
 function stripMeta(d: DiffResult): DiffResult {
-  const keep = (xs: string[]): string[] =>
-    xs.filter((p) => p !== META_PATH && !p.startsWith(CACHE_PREFIX))
+  const keep = (xs: string[]): string[] => xs.filter((p) => !p.startsWith(CONTROL_PREFIX))
   return { added: keep(d.added), modified: keep(d.modified), deleted: keep(d.deleted) }
 }
 

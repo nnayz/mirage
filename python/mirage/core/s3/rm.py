@@ -18,19 +18,14 @@ from mirage.core.s3._client import _client_kwargs, _prefix, async_session
 from mirage.types import PathSpec
 
 
-async def rm_r(accessor: S3Accessor, path: PathSpec) -> None:
+async def rm_r(accessor: S3Accessor, path_spec: PathSpec) -> None:
     """Recursively delete all objects under a prefix.
 
     Args:
         accessor (S3Accessor): S3 accessor.
-        path (PathSpec | str): Prefix path.
+        path_spec (PathSpec): Prefix path_spec.
     """
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+    path = path_spec.mount_path
     config = accessor.config
     pfx = _prefix(path, config)
     session = async_session(config)
@@ -43,4 +38,4 @@ async def rm_r(accessor: S3Accessor, path: PathSpec) -> None:
                     Bucket=config.bucket,
                     Delete={"Objects": keys},
                 )
-    await invalidate_after_unlink(path)
+    await invalidate_after_unlink(path_spec)

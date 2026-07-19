@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { Runtime } from '../executor/runtime.ts'
+import type { RoutingDecision } from '../executor/route/index.ts'
 import { type ByteSource, IOResult, materialize } from '../../io/types.ts'
 import type { Resource } from '../../resource/base.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
@@ -23,7 +25,6 @@ import {
   getText,
   splitEnvPrefix,
 } from '../../shell/helpers.ts'
-import type { PyodideRuntime } from '../executor/python/runtime.ts'
 import type { JobTable } from '../../shell/job_table.ts'
 import { NodeType as NT, ShellBuiltin as SB } from '../../shell/types.ts'
 import { PathSpec } from '../../types.ts'
@@ -45,6 +46,8 @@ import {
   handleEval,
   handleExport,
   handleHistory,
+  handleChmod,
+  handleChown,
   handleLn,
   handleLocal,
   handleMan,
@@ -52,6 +55,8 @@ import {
   handlePrintf,
   handleRead,
   handleReadlink,
+  handleTouch,
+  handleExit,
   handleReturn,
   handleSet,
   handleShift,
@@ -68,7 +73,7 @@ import {
   stripLinkOperands,
 } from '../executor/builtins/index.ts'
 import { CycleError } from '../../utils/path.ts'
-import type { Namespace } from '../mount/namespace.ts'
+import type { Namespace } from '../mount/namespace/namespace.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import { NO_FOLLOW_COMMANDS, UNSUPPORTED_BUILTINS } from '../route/index.ts'
 import type { Session } from '../session/session.ts'
@@ -135,7 +140,8 @@ export async function executeCommand(
   jobTable: JobTable | null,
   ensureOpen?: (resource: Resource) => Promise<void>,
   unmount?: (prefix: string) => Promise<void>,
-  pythonRuntime?: PyodideRuntime,
+  runtimeBindings?: Record<string, Runtime>,
+  routingDecision?: RoutingDecision,
   signal?: AbortSignal,
 ): Promise<Result> {
   const name = getCommandName(node)
@@ -195,7 +201,8 @@ export async function executeCommand(
       jobTable,
       ensureOpen,
       unmount,
-      pythonRuntime,
+      runtimeBindings,
+      routingDecision,
       signal,
     )
   } finally {
@@ -230,7 +237,8 @@ async function runCommandBody(
   jobTable: JobTable | null,
   ensureOpen?: (resource: Resource) => Promise<void>,
   unmount?: (prefix: string) => Promise<void>,
-  pythonRuntime?: PyodideRuntime,
+  runtimeBindings?: Record<string, Runtime>,
+  routingDecision?: RoutingDecision,
   signal?: AbortSignal,
 ): Promise<Result> {
   let stdin = stdinIn
@@ -303,7 +311,8 @@ async function runCommandBody(
       jobTable,
       ensureOpen,
       unmount,
-      pythonRuntime,
+      runtimeBindings,
+      routingDecision,
       signal,
     ),
     timeout,
@@ -329,7 +338,8 @@ async function runArgv(
   jobTable: JobTable | null,
   ensureOpen?: (resource: Resource) => Promise<void>,
   unmount?: (prefix: string) => Promise<void>,
-  pythonRuntime?: PyodideRuntime,
+  runtimeBindings?: Record<string, Runtime>,
+  routingDecision?: RoutingDecision,
   signal?: AbortSignal,
 ): Promise<Result> {
   const name = argv.name
@@ -465,7 +475,7 @@ async function runArgv(
   if (name === SB.PRINTENV) {
     return handlePrintenv(args.length > 0 ? (args[0] ?? null) : null, session)
   }
-  if (name === SB.WHOAMI) return handleWhoami(session)
+  if (name === SB.WHOAMI) return handleWhoami(namespace)
   if (name === SB.MAN) return handleMan(args, session, registry)
   if (name === SB.HISTORY) return handleHistory(registry, args, session)
   if (name === SB.SET) return handleSet(args, session, callStack)
@@ -491,6 +501,9 @@ async function runArgv(
   if (name === SB.RETURN) {
     return handleReturn(args)
   }
+  if (name === SB.EXIT) {
+    return handleExit(args, session)
+  }
   if (name === SB.BREAK) throw new BreakSignal()
   if (name === SB.CONTINUE) throw new ContinueSignal()
 
@@ -506,7 +519,7 @@ async function runArgv(
   // They mutate the addressing layer. `readlink -f/-e/-m` is canonicalization,
   // which falls through to the mount command.
   if (name === 'ln' && linkFlags(operands, 'sfnv').has('s')) {
-    return handleLn(namespace, session, operands)
+    return await handleLn(namespace, session, operands)
   }
   if (name === 'readlink') {
     const flags = linkFlags(operands, 'fenm')
@@ -515,14 +528,27 @@ async function runArgv(
     }
   }
 
+  // Metadata commands (namespace-routed: resolve-then-setattr with
+  // overlay fallback; they run their own link follow).
+  if (name === 'chmod') {
+    return handleChmod(namespace, dispatch, operands)
+  }
+  if (name === 'chown') {
+    return handleChown(namespace, dispatch, operands)
+  }
+  if (name === 'touch') {
+    return handleTouch(namespace, dispatch, session, operands)
+  }
+
   // Symlink-aware dispatch: reads follow links (open(2)); rm/mv act on
   // the link entry itself (lstat semantics).
   let postUnlink: string | null = null
+  let postRename: [string, string] | null = null
   let dispatchArgv = argv
-  if (namespace.symlinks.size > 0) {
+  if (namespace.nodes.size > 0) {
     try {
       if (name === 'rm') {
-        const [rest, removed] = stripLinkOperands(namespace, operands)
+        const [rest, removed] = await stripLinkOperands(namespace, operands)
         operands = rest
         if (removed > 0 && !rest.some((a) => a instanceof PathSpec)) {
           return [null, new IOResult(), new ExecutionNode({ command: name, exitCode: 0 })]
@@ -531,6 +557,7 @@ async function runArgv(
         const prepared = await prepareMv(namespace, dispatch, operands)
         operands = prepared.items
         postUnlink = prepared.postUnlink
+        postRename = prepared.postRename
         if (prepared.early !== null) return prepared.early
       } else if (!NO_FOLLOW_COMMANDS.has(name)) {
         operands = followPaths(namespace, operands)
@@ -563,17 +590,29 @@ async function runArgv(
     jobTable,
     ensureOpen,
     unmount,
-    pythonRuntime,
+    runtimeBindings,
     namespace,
+    routingDecision,
   )
 
-  if (io.exitCode === 0 && namespace.symlinks.size > 0) {
+  if (io.exitCode === 0 && namespace.nodes.size > 0) {
     if (name === 'rm') {
+      // A removed path takes its node meta (overlay attrs) with it; a
+      // removed dir purges everything underneath. Glob operands reach
+      // here unexpanded (backend wrappers expand them), so the node
+      // table matches the pattern itself.
       for (const item of operands) {
-        if (item instanceof PathSpec) namespace.purgeUnder(item.virtual)
+        if (!(item instanceof PathSpec)) continue
+        if (item.pattern !== null) {
+          await namespace.unlinkGlob(item.virtual)
+        } else {
+          await namespace.unlink(item.virtual)
+          await namespace.purgeUnder(item.virtual)
+        }
       }
     }
-    if (postUnlink !== null) namespace.unlink(postUnlink)
+    if (postUnlink !== null) await namespace.unlink(postUnlink)
+    if (postRename !== null) await namespace.rename(postRename[0], postRename[1])
   }
   return [stdout, io, execNode]
 }

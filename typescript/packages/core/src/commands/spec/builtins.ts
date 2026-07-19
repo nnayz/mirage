@@ -163,6 +163,20 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
     options: [new Option({ short: '-c', valueKind: OperandKind.TEXT })],
     rest: new Operand({ kind: OperandKind.TEXT }),
   }),
+  js: new CommandSpec({
+    options: [
+      new Option({ short: '-e', valueKind: OperandKind.TEXT }),
+      new Option({ short: '-m', long: '--module' }),
+    ],
+    rest: new Operand({ kind: OperandKind.TEXT }),
+  }),
+  node: new CommandSpec({
+    options: [
+      new Option({ short: '-e', valueKind: OperandKind.TEXT }),
+      new Option({ short: '-m', long: '--module' }),
+    ],
+    rest: new Operand({ kind: OperandKind.TEXT }),
+  }),
   nl: new CommandSpec({
     options: [
       new Option({ short: '-b', valueKind: OperandKind.TEXT }),
@@ -393,7 +407,6 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
       new Option({ short: '-L', description: 'Follow HTTP redirects.' }),
       new Option({ short: '-s', description: 'Run silently with no progress or messages.' }),
       new Option({ short: '-S', description: 'Show errors even when silent.' }),
-      new Option({ long: '--jina', description: 'Fetch via the Jina Reader proxy.' }),
     ],
     rest: new Operand({ kind: OperandKind.TEXT }),
   }),
@@ -685,7 +698,7 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
   mktemp: new CommandSpec({
     options: [
       new Option({ short: '-d' }),
-      new Option({ short: '-p', valueKind: OperandKind.TEXT }),
+      new Option({ short: '-p', valueKind: OperandKind.PATH }),
       new Option({ short: '-t' }),
     ],
     positional: [new Operand({ kind: OperandKind.TEXT })],

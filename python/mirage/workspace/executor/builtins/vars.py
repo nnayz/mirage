@@ -18,8 +18,10 @@ from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.stream import async_chain
 from mirage.io.types import ByteSource
 from mirage.shell.call_stack import CallStack
+from mirage.shell.errors import ExitSignal
 from mirage.shell.types import SET_FLAG_TO_OPTION
 from mirage.workspace.executor.control import ReturnSignal
+from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.session import Session
 from mirage.workspace.types import ExecutionNode
 
@@ -92,16 +94,19 @@ async def handle_printenv(
 
 
 async def handle_whoami(
-        session: Session,  # noqa: E125
+        namespace: Namespace,  # noqa: E125
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
-    user = session.env.get("USER")
-    if user is None:
-        err = b"whoami: USER not set\n"
+    # GNU whoami reports the effective user and never consults $USER;
+    # the workspace user (launch agent_id, shared via the namespace
+    # store) is the effective identity here. With no claimed identity
+    # it fails like GNU does for a uid with no passwd entry.
+    if namespace.user is None:
+        err = b"whoami: cannot find name for user ID\n"
         return None, IOResult(exit_code=1,
                               stderr=err), ExecutionNode(command="whoami",
                                                          exit_code=1,
                                                          stderr=err)
-    out = f"{user}\n".encode()
+    out = f"{namespace.user}\n".encode()
     return out, IOResult(), ExecutionNode(command="whoami", exit_code=0)
 
 
@@ -284,3 +289,30 @@ async def handle_return(
             2,
             stderr=f"return: {args[0]}: numeric argument required\n".encode())
     raise ReturnSignal(int(args[0]) if args else 0)
+
+
+async def handle_exit(
+    args: list[str],
+    session: Session,
+) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
+    """Exit the shell, with bash's argument checks.
+
+    Args:
+        args (list[str]): words after the command name; at most one,
+            the exit status.
+        session (Session): session whose last exit code is the default
+            status.
+    """
+    if args and not _is_shift_count(args[0]):
+        # bash exits with 2 after the diagnostic.
+        raise ExitSignal(
+            2, stderr=f"exit: {args[0]}: numeric argument required\n".encode())
+    if len(args) > 1:
+        # bash refuses to exit and the command fails with 1.
+        err = b"exit: too many arguments\n"
+        return None, IOResult(exit_code=1,
+                              stderr=err), ExecutionNode(command="exit",
+                                                         exit_code=1,
+                                                         stderr=err)
+    code = int(args[0]) if args else session.last_exit_code
+    raise ExitSignal(code % 256)

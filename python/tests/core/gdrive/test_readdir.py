@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mirage.accessor.gdrive import GDriveAccessor
+from mirage.cache.index import NULL_INDEX
 from mirage.cache.index.config import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.gdrive.readdir import readdir
@@ -255,8 +256,8 @@ async def test_readdir_root_uniquifies_duplicate_shared_drive_names(
 
     assert result == [
         "/Team/",
-        "/Team [Shared Drive]/",
         "/Team [Shared Drive 2]/",
+        "/Team [Shared Drive]/",
     ]
     assert (await index.get("/Team")).entry.id == "drive1"
     assert (await index.get("/Team [Shared Drive]")).entry.id == "drive2"
@@ -330,3 +331,59 @@ async def test_readdir_workspace_files_get_extensions(accessor, index):
         assert "/My Document.gdoc.json" in result
         assert "/My Sheet.gsheet.json" in result
         assert "/My Slides.gslide.json" in result
+
+
+@pytest.mark.asyncio
+async def test_readdir_size_binary_kept_google_apps_in_extra(accessor, index):
+    files = [
+        {
+            "id": "f1",
+            "name": "report.pdf",
+            "mimeType": "application/pdf",
+            "modifiedTime": "2026-04-01T00:00:00.000Z",
+            "size": "2048",
+            "owners": [],
+            "capabilities": {},
+        },
+        {
+            "id": "d1",
+            "name": "My Document",
+            "mimeType": "application/vnd.google-apps.document",
+            "modifiedTime": "2026-04-01T00:00:00.000Z",
+            "quotaBytesUsed": "9999",
+            "owners": [],
+            "capabilities": {},
+        },
+    ]
+    with patch(
+            "mirage.core.gdrive.readdir.list_files",
+            new_callable=AsyncMock,
+            return_value=files,
+    ):
+        await readdir(accessor,
+                      PathSpec(resource_path="", virtual="/", directory="/"),
+                      index)
+
+    # Binary files download raw: Drive's size is the rendered byte length.
+    binary = (await index.get("/report.pdf")).entry
+    assert binary.size == 2048
+    # Google-apps files render to JSON: Drive's source size must not
+    # become the entry size, it lives in extra only.
+    doc = (await index.get("/My Document.gdoc.json")).entry
+    assert doc.size is None
+    assert doc.extra["source_size"] == 9999
+
+
+@pytest.mark.asyncio
+async def test_readdir_scoped_mount_lists_folder_children(
+        fake_drive, scoped_accessor):
+    scope = fake_drive.folder("scope")
+    fake_drive.add("in.txt", parent=scope, content=b"x")
+    fake_drive.add("out.txt", content=b"y")
+    accessor = scoped_accessor(scope)
+    entries = await readdir(
+        accessor,
+        PathSpec(virtual="/", directory="/", resource_path=""),
+        index=NULL_INDEX,
+    )
+    assert entries == ["/in.txt"]

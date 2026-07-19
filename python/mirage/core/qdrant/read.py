@@ -13,18 +13,19 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import base64
+from typing import Any
 
 from mirage.accessor.qdrant import QdrantAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.qdrant.query import row_record
 from mirage.core.qdrant.render import render_json, render_text
-from mirage.core.qdrant.scope import ScopeLevel, detect_scope
+from mirage.core.qdrant.scope import QdrantRowScope, detect_scope
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
 
 async def _resolve_row(accessor: QdrantAccessor, scope, config,
-                       virtual: str) -> dict:
+                       virtual: str) -> dict[str, Any]:
     row = await row_record(accessor, scope.table, config.id_field,
                            scope.row_id)
     if row is None:
@@ -43,15 +44,11 @@ def _blob_bytes(value: object) -> bytes:
 async def read(
     accessor: QdrantAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> bytes:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     config = accessor.config
     scope = detect_scope(path, config)
-    if scope.level != ScopeLevel.ROW:
+    if not isinstance(scope, QdrantRowScope):
         raise enoent(path)
     row = await _resolve_row(accessor, scope, config, path.virtual)
     if scope.kind == "blob":

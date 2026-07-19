@@ -12,53 +12,37 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Awaitable, Callable
+from typing import Callable
 
-from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.generic.cp import walk
+from mirage.commands.builtin.generic.cp import descendant_path, walk
 from mirage.commands.builtin.utils.copy import (backend_key_default,
                                                 copy_targets, is_directory,
                                                 path_exists)
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import PathSpec
+from mirage.types import MoveStrategy, PathSpec, PrimitiveMove, StatFn
 
 
 async def mv(
     paths: list[PathSpec],
     *,
-    stat: Callable[..., Awaitable[object]],
+    stat: StatFn,
+    strategy: MoveStrategy,
     n: bool,
     v: bool,
-    rename: Callable[..., Awaitable[None]] | None = None,
-    read_bytes: Callable[..., Awaitable[bytes]] | None = None,
-    write: Callable[..., Awaitable[None]] | None = None,
-    mkdir: Callable[..., Awaitable[None]] | None = None,
-    readdir: Callable[..., Awaitable[list[str]]] | None = None,
-    unlink: Callable[..., Awaitable[None]] | None = None,
-    rmdir: Callable[..., Awaitable[None]] | None = None,
-    index: IndexCacheStore | None = None,
     backend_key: Callable[[PathSpec], str] | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Move sources to a destination, fanning out into a directory.
 
-    A backend injects its native atomic ``rename``. When ``rename`` is omitted
-    (cross-mount, where no atomic rename spans two mounts), the primitive path
-    copies the tree (parents first, via ``walk`` + ``mkdir``/``write``) then
-    removes the source (children first, by the types ``walk`` captured).
+    ``NativeMove`` uses an atomic backend rename. ``PrimitiveMove`` handles
+    cross-mount moves by copying the tree (parents first, via ``walk`` plus
+    ``mkdir``/``write``) and then removing the source children first.
 
     Args:
         paths (list[PathSpec]): Source operands followed by the destination.
         stat (Callable): Stats a path; raises when missing.
         n (bool): No-clobber; skip targets that already exist.
         v (bool): Verbose; emit one ``src -> target`` line per move.
-        rename (Callable | None): Native atomic rename; None for primitive.
-        read_bytes (Callable | None): Whole-file reader (primitive path).
-        write (Callable | None): Byte writer, for the primitive path.
-        mkdir (Callable | None): Directory creator, for the primitive path.
-        readdir (Callable | None): Directory lister, for the primitive walk.
-        unlink (Callable | None): File remover, for the primitive path.
-        rmdir (Callable | None): Directory remover, for the primitive path.
-        index (IndexCacheStore | None): Cache for the destination dir probe.
+        strategy (MoveStrategy): Complete native or primitive move capability.
         backend_key (Callable | None): Maps a path to its backend storage key
             for the same-file and into-own-subtree guards; defaults to the
             normalized mount-relative path.
@@ -70,8 +54,8 @@ async def mv(
     """
     key_of = backend_key if backend_key is not None else backend_key_default
     *sources, dst = paths
-    dst_is_dir = await is_directory(stat, dst, index)
-    writes: dict[str, bytes] = {}
+    dst_is_dir = await is_directory(stat, dst)
+    writes: dict[str, ByteSource] = {}
     lines: list[str] = []
     errors: list[str] = []
     for src, target in copy_targets(sources, dst, dst_is_dir):
@@ -89,22 +73,25 @@ async def mv(
             continue
         if n and await path_exists(stat, target):
             continue
-        if rename is None:
-            src_base = src.mount_path.rstrip("/")
-            dst_base = target.mount_path.rstrip("/")
-            entries = await walk(readdir, stat, src.virtual, index)
+        if isinstance(strategy, PrimitiveMove):
+            entries = await walk(strategy.readdir, stat, src)
             for entry, is_dir in entries:
-                entry_dst = dst_base + entry[len(src_base):]
+                entry_dst = descendant_path(
+                    target,
+                    target.virtual.rstrip("/") +
+                    entry.virtual[len(src.virtual.rstrip("/")):],
+                )
                 if is_dir:
-                    if not await is_directory(stat, entry_dst, index):
-                        await mkdir(entry_dst)
+                    if not await is_directory(stat, entry_dst):
+                        await strategy.mkdir(entry_dst)
                 else:
                     # write takes bytes, not a stream: file materialized here.
-                    await write(entry_dst, data=await read_bytes(entry))
+                    await strategy.write(entry_dst,
+                                         data=await strategy.read_bytes(entry))
             for entry, is_dir in reversed(entries):
-                await (rmdir if is_dir else unlink)(entry)
+                await (strategy.rmdir if is_dir else strategy.unlink)(entry)
         else:
-            await rename(src, target)
+            await strategy.rename(src, target)
         writes[src.mount_path] = b""
         writes[target.mount_path] = b""
         if v:

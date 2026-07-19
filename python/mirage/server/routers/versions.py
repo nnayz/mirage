@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from mirage import Workspace
@@ -34,7 +36,7 @@ from mirage.server.schemas import (  # isort: skip
 router = APIRouter(prefix="/v1")
 
 
-async def _state_of(ws: Workspace) -> dict:
+async def _state_of(ws: Workspace) -> dict[str, Any]:
     return await to_state_dict(ws)
 
 
@@ -100,18 +102,21 @@ async def diff_versions(
 ) -> DiffResponse:  # noqa: E125
     store = await VersionStore.open(request.app.state.version_backend,
                                     workspace_id)
-    state = None
-    if a is None or b is None:
-        registry = request.app.state.registry
-        if workspace_id not in registry:
-            raise HTTPException(status_code=404, detail="workspace not found")
-        entry = registry.get(workspace_id)
-        state = await entry.runner.call(_state_of(entry.runner.ws))
-    try:
-        if a is not None and b is not None:
+    if a is not None and b is not None:
+        try:
             changes = await version_diff(store, await resolve_ref(store, a),
                                          await resolve_ref(store, b))
-        elif a is not None:
+        except KeyError:
+            raise HTTPException(status_code=404, detail="version not found")
+        return DiffResponse(**changes)
+
+    registry = request.app.state.registry
+    if workspace_id not in registry:
+        raise HTTPException(status_code=404, detail="workspace not found")
+    entry = registry.get(workspace_id)
+    state = await entry.runner.call(_state_of(entry.runner.ws))
+    try:
+        if a is not None:
             changes = await diff_live_vs_ref(store, state, a)
         else:
             changes = await status_state(store, state, branch)

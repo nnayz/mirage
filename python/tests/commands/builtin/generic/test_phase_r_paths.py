@@ -55,7 +55,7 @@ async def test_dirname_multiple():
 @pytest.mark.asyncio
 async def test_realpath_normalizes():
 
-    async def stat_fn(accessor, path):
+    async def stat_fn(path):
         return FileStat(name="x")
 
     out, _ = await realpath([_spec("/a/./b/../c")], stat_fn=stat_fn)
@@ -65,7 +65,7 @@ async def test_realpath_normalizes():
 @pytest.mark.asyncio
 async def test_realpath_exists_check_passes():
 
-    async def stat_fn(accessor, path):
+    async def stat_fn(path):
         return FileStat(name="x")
 
     out, _ = await realpath([_spec("/a/b")], stat_fn=stat_fn, e=True)
@@ -75,7 +75,7 @@ async def test_realpath_exists_check_passes():
 @pytest.mark.asyncio
 async def test_realpath_exists_check_fails():
 
-    async def stat_fn(accessor, path):
+    async def stat_fn(path):
         raise FileNotFoundError
 
     with pytest.raises(FileNotFoundError, match="realpath"):
@@ -85,7 +85,7 @@ async def test_realpath_exists_check_fails():
 @pytest.mark.asyncio
 async def test_realpath_multiple():
 
-    async def stat_fn(accessor, path):
+    async def stat_fn(path):
         return FileStat(name="x")
 
     out, _ = await realpath([_spec("/a"), _spec("/b/../c")], stat_fn=stat_fn)
@@ -127,10 +127,10 @@ async def test_mktemp_creates_file():
     mkdir_calls: list[tuple] = []
     write_calls: list[tuple] = []
 
-    async def mkdir_fn(accessor, path, parents=False):
+    async def mkdir_fn(path, parents=False):
         mkdir_calls.append((path, parents))
 
-    async def write_bytes_fn(accessor, path, data):
+    async def write_bytes_fn(path, data):
         write_calls.append((path, data))
 
     out, _ = await mktemp(mkdir_fn=mkdir_fn,
@@ -139,8 +139,10 @@ async def test_mktemp_creates_file():
     text = out.decode()
     assert text.startswith("/tmp/tmp.")
     assert text.endswith("\n")
-    assert mkdir_calls == [("/tmp", True)]
+    assert [(path.virtual, parents)
+            for path, parents in mkdir_calls] == [("/tmp", True)]
     assert len(write_calls) == 1
+    assert write_calls[0][0].virtual == text.rstrip("\n")
     assert write_calls[0][1] == b""
 
 
@@ -149,10 +151,10 @@ async def test_mktemp_creates_directory():
     mkdir_calls: list[tuple] = []
     write_calls: list[tuple] = []
 
-    async def mkdir_fn(accessor, path, parents=False):
+    async def mkdir_fn(path, parents=False):
         mkdir_calls.append((path, parents))
 
-    async def write_bytes_fn(accessor, path, data):
+    async def write_bytes_fn(path, data):
         write_calls.append((path, data))
 
     out, _ = await mktemp(mkdir_fn=mkdir_fn,
@@ -160,7 +162,9 @@ async def test_mktemp_creates_directory():
                           d=True,
                           t=True)
     text = out.decode().rstrip("\n")
-    assert mkdir_calls == [("/tmp", True), (text, False)]
+    assert [(path.virtual, parents)
+            for path, parents in mkdir_calls] == [("/tmp", True),
+                                                  (text, False)]
     assert write_calls == []
 
 
@@ -168,27 +172,28 @@ async def test_mktemp_creates_directory():
 async def test_mktemp_custom_parent():
     mkdir_calls: list[tuple] = []
 
-    async def mkdir_fn(accessor, path, parents=False):
+    async def mkdir_fn(path, parents=False):
         mkdir_calls.append((path, parents))
 
-    async def write_bytes_fn(accessor, path, data):
+    async def write_bytes_fn(path, data):
         pass
 
     out, _ = await mktemp(mkdir_fn=mkdir_fn,
                           write_bytes_fn=write_bytes_fn,
                           p="/var/cache")
     assert out.decode().startswith("/var/cache/tmp.")
-    assert mkdir_calls[0] == ("/var/cache", True)
+    assert (mkdir_calls[0][0].virtual, mkdir_calls[0][1]) == ("/var/cache",
+                                                              True)
 
 
 @pytest.mark.asyncio
 async def test_mktemp_pathspec_parent():
     mkdir_calls: list[tuple] = []
 
-    async def mkdir_fn(accessor, path, parents=False):
+    async def mkdir_fn(path, parents=False):
         mkdir_calls.append((path, parents))
 
-    async def write_bytes_fn(accessor, path, data):
+    async def write_bytes_fn(path, data):
         pass
 
     out, _ = await mktemp(mkdir_fn=mkdir_fn,
@@ -202,10 +207,10 @@ async def test_mktemp_custom_template():
     mkdir_calls: list[tuple] = []
     write_calls: list[tuple] = []
 
-    async def mkdir_fn(accessor, path, parents=False):
+    async def mkdir_fn(path, parents=False):
         mkdir_calls.append((path, parents))
 
-    async def write_bytes_fn(accessor, path, data):
+    async def write_bytes_fn(path, data):
         write_calls.append((path, data))
 
     out, _ = await mktemp("session_XXXXXX",

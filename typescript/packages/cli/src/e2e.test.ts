@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -135,8 +135,7 @@ describe('mirage CLI end-to-end', () => {
   beforeAll(() => {
     tmp = mkdtempSync(join(tmpdir(), 'mirage-e2e-'))
     env = cliEnv()
-    env.MIRAGE_VERSION_ROOT = join(tmp, 'repos')
-    env.MIRAGE_SNAPSHOT_ROOT = tmp
+    env.MIRAGE_HOME = tmp
   })
 
   afterAll(async () => {
@@ -149,7 +148,9 @@ describe('mirage CLI end-to-end', () => {
     const cfgPath = writeRamConfig(tmp, 'config.yaml')
 
     const created = (await runCli(env, ['workspace', 'create', cfgPath])) as { id: string }
-    expect(created.id).toMatch(/^ws_/)
+    expect(created.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
 
     const listed = (await runCli(env, ['workspace', 'list'])) as { id: string }[]
     expect(listed.some((w) => w.id === created.id)).toBe(true)
@@ -551,7 +552,8 @@ describe('mirage CLI end-to-end', () => {
     }
     expect(created.id).toBe('round-ws')
 
-    const tarPath = join(tmp, 'round.tar')
+    const tarPath = join(tmp, 'snapshots', 'round.tar')
+    mkdirSync(join(tmp, 'snapshots'), { recursive: true })
     await runCli(env, ['workspace', 'snapshot', 'round-ws', tarPath])
     expect(existsSync(tarPath)).toBe(true)
 

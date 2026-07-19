@@ -29,9 +29,30 @@ vi.mock('./stat.ts', async () => {
 import { QdrantAccessor } from '../../accessor/qdrant.ts'
 import type { QdrantConfigResolved } from '../../resource/qdrant/config.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { find } from './find.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
+import type { FindOptions } from '../../resource/base.ts'
+import { walkFind } from '../generic/find.ts'
+import { isDirName } from './readdir.ts'
 import * as readdirMod from './readdir.ts'
 import * as statMod from './stat.ts'
+
+async function find(
+  accessor: QdrantAccessor,
+  path: PathSpec,
+  options: FindOptions = {},
+  index?: IndexCacheStore,
+): Promise<string[]> {
+  return walkFind(
+    path,
+    {
+      readdir: (spec, idx) => readdirMod.readdir(accessor, spec, idx),
+      stat: (spec, idx) => statMod.stat(accessor, spec, idx),
+      isDirName: (child) => isDirName(child, accessor.config),
+    },
+    options,
+    index,
+  )
+}
 
 function makeAccessor(): QdrantAccessor {
   const config = { blobField: null, blobExt: 'bin' } as QdrantConfigResolved
@@ -82,6 +103,9 @@ describe('qdrant core find', () => {
   beforeEach(() => {
     vi.mocked(readdirMod.readdir).mockReset()
     vi.mocked(statMod.stat).mockReset()
+    // walkFind stats the start path to decide whether to emit it; no
+    // fixture entry for '/' keeps these walks root-less.
+    mockStats({})
   })
 
   it('walks recursively classifying row files by extension', async () => {
@@ -94,10 +118,13 @@ describe('qdrant core find', () => {
     expect(dirs).toEqual(['/col', '/col/grp'])
   })
 
-  it('never stats entries for classification', async () => {
+  it('stats only the start path, never entries for classification', async () => {
     mockTree(TREE)
     await find(makeAccessor(), ROOT)
-    expect(vi.mocked(statMod.stat)).not.toHaveBeenCalled()
+    const statted = vi
+      .mocked(statMod.stat)
+      .mock.calls.map((c) => (typeof c[1] === 'string' ? c[1] : c[1].virtual))
+    expect([...new Set(statted)]).toEqual(['/'])
   })
 
   it('keeps a child whose readdir raises ENOENT but stops descending', async () => {

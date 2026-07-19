@@ -17,7 +17,7 @@ import { createRequire } from 'node:module'
 import { OpsRegistry } from '../../ops/registry.ts'
 import { RAMResource } from '../../resource/ram/ram.ts'
 import { createShellParser, type ShellParser } from '../../shell/parse.ts'
-import { DEFAULT_SESSION_ID, MountMode } from '../../types.ts'
+import { MountMode } from '../../types.ts'
 import { Workspace } from '../workspace.ts'
 
 const require = createRequire(import.meta.url)
@@ -49,7 +49,7 @@ function putDir(res: RAMResource, path: string): void {
   res.store.dirs.add(path)
 }
 
-export async function makeWorkspace(): Promise<TestWorkspace> {
+export async function makeWorkspace(extra: { agentId?: string } = {}): Promise<TestWorkspace> {
   const parser = await getTestParser()
   const s3 = new RAMResource()
   const disk = new RAMResource()
@@ -81,9 +81,9 @@ export async function makeWorkspace(): Promise<TestWorkspace> {
 
   const ws = new Workspace(
     { '/s3': s3, '/disk': disk, '/ram': ram },
-    { mode: MountMode.EXEC, ops: registry, shellParser: parser },
+    { mode: MountMode.EXEC, ops: registry, shellParser: parser, ...extra },
   )
-  ws.getSession(DEFAULT_SESSION_ID).cwd = '/s3'
+  ws.getSession(ws.defaultSessionId).cwd = '/s3'
   return { ws, s3, disk, ram }
 }
 
@@ -103,5 +103,3 @@ export function countOccurrences(buf: Uint8Array, needle: string): number {
   const hay = DEC.decode(buf)
   return hay.split(needle).length - 1
 }
-
-export { DEFAULT_SESSION_ID }

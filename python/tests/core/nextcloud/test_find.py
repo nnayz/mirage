@@ -279,7 +279,13 @@ async def test_find_uses_server_for_supported_name_with_unsupported_path(
                      name="*.pdf",
                      path_pattern="*/deep/*")
 
-    # Server used name; full tree (path etc.) filtered client-side
     assert out == ["/Projects/deep/b.pdf"]
     query = mock_search_files.await_args.args[2]
     assert query.names[0].pattern == "*.pdf"
+
+
+@pytest.mark.asyncio
+async def test_find_empty_matches_zero_length_file(make_acc):
+    acc = make_acc({"empty.txt": b"", "full.txt": b"x"})
+    out = await find(acc, PathSpec.from_str_path("/"), empty=True)
+    assert out == ["/empty.txt"]

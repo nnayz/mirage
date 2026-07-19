@@ -13,28 +13,16 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from pathlib import Path
+from typing import Any
 
-import asyncssh
-
-from mirage.types import PathSpec
-
-
-def _resolve_path(path: PathSpec) -> str:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        return path.mount_path
-    return path
+from mirage.core.ssh.config import SSHConfig
 
 
 def _key(path: str) -> str:
     return path.lstrip("/")
 
 
-def _abs(config, path: PathSpec) -> str:
-    path = _resolve_path(path)
+def _abs(config: SSHConfig, path: str) -> str:
     root = config.root.rstrip("/")
     rel = _key(path)
     if not rel:
@@ -42,8 +30,8 @@ def _abs(config, path: PathSpec) -> str:
     return f"{root}/{rel}"
 
 
-def _connect_kwargs(config) -> dict:
-    kwargs: dict = {"host": config.host}
+def _connect_kwargs(config: SSHConfig) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"host": config.host}
     if config.hostname:
         kwargs["host"] = config.hostname
     if config.port:
@@ -58,7 +46,3 @@ def _connect_kwargs(config) -> dict:
         kwargs["known_hosts"] = None
     kwargs["login_timeout"] = config.timeout
     return kwargs
-
-
-async def connect(config) -> asyncssh.SSHClientConnection:
-    return await asyncssh.connect(**_connect_kwargs(config))

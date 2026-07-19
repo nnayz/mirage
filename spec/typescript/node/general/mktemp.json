@@ -5,8 +5,11 @@
     "has_provision": true,
     "has_write": true,
     "resources": [
+      "box",
       "databricks_volume",
       "disk",
+      "dropbox",
+      "gdrive",
       "hf_buckets",
       "hf_datasets",
       "hf_models",
@@ -35,7 +38,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-p",
-      "value_kind": "text",
+      "value_kind": "path",
       "value_optional": false
     },
     {

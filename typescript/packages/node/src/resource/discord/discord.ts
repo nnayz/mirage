@@ -17,7 +17,7 @@ import {
   DISCORD_API,
   DISCORD_COMMANDS,
   DISCORD_PROMPT,
-  DISCORD_VFS_OPS,
+  DISCORD_OPS,
   DISCORD_WRITE_PROMPT,
   DiscordAccessor,
   HttpDiscordTransport,
@@ -28,13 +28,15 @@ import {
   discordStat,
   mountKey,
   mountPrefixOf,
-  resolveDiscordGlob,
+  makeResolveGlob,
   type FileStat,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
 } from '@struktoai/mirage-core'
 import { redactDiscordConfig, type DiscordConfig, type DiscordConfigRedacted } from './config.ts'
+
+const resolveDiscordGlob = makeResolveGlob(discordReaddir)
 
 class NodeDiscordTransport extends HttpDiscordTransport {
   constructor(private readonly token: string) {
@@ -81,7 +83,7 @@ export class DiscordResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return DISCORD_VFS_OPS
+    return DISCORD_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -94,11 +96,6 @@ export class DiscordResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return discordStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

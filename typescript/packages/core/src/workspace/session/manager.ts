@@ -13,14 +13,70 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Session } from './session.ts'
+import { RAMSessionStore } from './ram.ts'
+import { CAS_MAX_RETRIES, generationOf, type SessionFields, type SessionStore } from './store.ts'
+import type { MountMode } from '../../types.ts'
 
+type StoredSession = Parameters<typeof Session.fromJSON>[0]
+
+/**
+ * Owns the live session table over a storage-agnostic SessionStore.
+ *
+ * Mirrors the Namespace/NamespaceStore split: sessions are worked on in
+ * memory (creation stays synchronous), the store hydrates once at the
+ * first async entry point, and durable fields flush back at async
+ * boundaries (end of execute, snapshot, explicit persist). `close`
+ * deletes from the store — closing a session revokes it everywhere —
+ * while process shutdown leaves stored sessions in place.
+ */
 export class SessionManager {
   private readonly sessions = new Map<string, Session>()
-  readonly defaultId: string
+  private readonly sessionStore: SessionStore
+  private defaultIdInternal: string
+  private loaded = false
+  private loadPromise: Promise<void> | null = null
+  // What the store last saw from us, per session id. Flush compares
+  // against this to skip clean sessions without a network read, and to
+  // avoid clobbering other writers. Kept as JSON strings: a string
+  // cannot alias the live session (Python needs a deep copy instead).
+  private readonly persisted = new Map<string, string>()
 
-  constructor(defaultSessionId: string) {
-    this.defaultId = defaultSessionId
+  constructor(defaultSessionId: string, store?: SessionStore) {
+    this.defaultIdInternal = defaultSessionId
+    this.sessionStore = store ?? new RAMSessionStore()
     this.sessions.set(defaultSessionId, new Session({ sessionId: defaultSessionId }))
+  }
+
+  get store(): SessionStore {
+    return this.sessionStore
+  }
+
+  get defaultId(): string {
+    return this.defaultIdInternal
+  }
+
+  /**
+   * Re-key the default session to an externally decided id.
+   *
+   * Two callers: attach (the discovery record already names a default
+   * session, so the freshly minted placeholder re-keys before hydration
+   * lands the stored durable fields on it) and snapshot restore (the
+   * snapshot's default identity wins). The store itself is untouched;
+   * the next flush or snapshot replace writes the new key.
+   */
+  adoptDefault(sessionId: string): void {
+    if (sessionId === this.defaultIdInternal) return
+    this.persisted.delete(this.defaultIdInternal)
+    const existing = this.sessions.get(sessionId)
+    if (existing !== undefined) {
+      this.sessions.delete(this.defaultIdInternal)
+    } else {
+      const session = this.defaultSession()
+      this.sessions.delete(this.defaultIdInternal)
+      session.sessionId = sessionId
+      this.sessions.set(sessionId, session)
+    }
+    this.defaultIdInternal = sessionId
   }
 
   get cwd(): string {
@@ -39,13 +95,100 @@ export class SessionManager {
     this.defaultSession().env = value
   }
 
-  create(sessionId: string, options: { allowedMounts?: ReadonlySet<string> | null } = {}): Session {
+  /**
+   * Hydrate sessions from the store once.
+   *
+   * Stored sessions fill in ids this process has not created; locally
+   * created sessions win a conflict (they overwrite the store on the
+   * next flush). The default session adopts the stored durable fields
+   * so a restarted daemon keeps its cwd/env.
+   */
+  ensureLoaded(): Promise<void> {
+    if (this.loaded) return Promise.resolve()
+    this.loadPromise ??= this.hydrate()
+    return this.loadPromise
+  }
+
+  private async hydrate(): Promise<void> {
+    const entries = await this.sessionStore.load()
+    for (const [sid, fields] of entries) {
+      const stored = Session.fromJSON(fields as StoredSession)
+      if (sid === this.defaultId) {
+        const dflt = this.defaultSession()
+        dflt.cwd = stored.cwd
+        dflt.env = stored.env
+        dflt.createdAt = stored.createdAt
+        dflt.mountModes = stored.mountModes
+        dflt.generation = stored.generation
+        // Hydrated sessions start clean: baseline what the store
+        // holds so the next flush skips them.
+        this.persisted.set(sid, JSON.stringify(dflt.toJSON()))
+        continue
+      }
+      if (this.sessions.has(sid)) continue
+      this.sessions.set(sid, stored)
+      this.persisted.set(sid, JSON.stringify(stored.toJSON()))
+    }
+    this.loaded = true
+  }
+
+  /** Write dirty sessions through the store's generation gate. */
+  async flush(): Promise<void> {
+    for (const session of [...this.sessions.values()]) {
+      await this.flushOne(session)
+    }
+  }
+
+  /** Persist one session, retrying when another writer races us. */
+  private async flushOne(session: Session): Promise<void> {
+    const sid = session.sessionId
+    // Clean: the store already has exactly this state.
+    if (JSON.stringify(session.toJSON()) === this.persisted.get(sid)) return
+    for (let attempt = 0; attempt < CAS_MAX_RETRIES; attempt++) {
+      const expected = session.generation
+      session.generation = expected + 1
+      const fields = session.toJSON() as SessionFields
+      if (await this.sessionStore.casSet(sid, fields, expected)) {
+        this.persisted.set(sid, JSON.stringify(fields))
+        return
+      }
+      // Lost the race: adopt the winner's generation and retry our
+      // content on top (last-writer-wins until a merge policy exists).
+      session.generation = expected
+      const stored = (await this.sessionStore.load()).get(sid)
+      if (stored !== undefined) {
+        session.generation = generationOf(stored)
+      }
+    }
+    throw new Error(`session ${sid} flush kept conflicting with another writer`)
+  }
+
+  /**
+   * Adopt a snapshot's session table and replace the store. The
+   * snapshot wins over prior store contents, mirroring
+   * `Namespace.replaceNodes`.
+   */
+  async replaceFromSnapshot(sessions: readonly Session[]): Promise<void> {
+    this.loaded = true
+    this.loadPromise = Promise.resolve()
+    const entries = new Map<string, SessionFields>()
+    for (const s of this.sessions.values()) entries.set(s.sessionId, s.toJSON() as SessionFields)
+    for (const s of sessions) entries.set(s.sessionId, s.toJSON() as SessionFields)
+    await this.sessionStore.replaceAll(entries)
+    this.persisted.clear()
+    for (const [sid, fields] of entries) this.persisted.set(sid, JSON.stringify(fields))
+  }
+
+  create(
+    sessionId: string,
+    options: { mountModes?: ReadonlyMap<string, MountMode> | null } = {},
+  ): Session {
     if (this.sessions.has(sessionId)) {
       throw new Error(`Session ${sessionId} already exists`)
     }
     const session = new Session({
       sessionId,
-      allowedMounts: options.allowedMounts ?? null,
+      mountModes: options.mountModes ?? null,
     })
     this.sessions.set(sessionId, session)
     return session
@@ -61,20 +204,25 @@ export class SessionManager {
     return [...this.sessions.values()]
   }
 
-  close(sessionId: string): Promise<void> {
+  async close(sessionId: string): Promise<void> {
     if (sessionId === this.defaultId) {
-      return Promise.reject(new Error('Cannot close the default session'))
+      throw new Error('Cannot close the default session')
     }
     if (!this.sessions.has(sessionId)) {
-      return Promise.reject(new Error(`unknown session: ${sessionId}`))
+      throw new Error(`unknown session: ${sessionId}`)
     }
     this.sessions.delete(sessionId)
-    return Promise.resolve()
+    this.persisted.delete(sessionId)
+    await this.sessionStore.delete([sessionId])
   }
 
   async closeAll(): Promise<void> {
     const ids = [...this.sessions.keys()].filter((id) => id !== this.defaultId)
     for (const id of ids) await this.close(id)
+  }
+
+  closeStore(): Promise<void> {
+    return this.sessionStore.close()
   }
 
   private defaultSession(): Session {

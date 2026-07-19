@@ -82,8 +82,42 @@ describe('parseFindExpression', () => {
 
   it('size extracted as global', () => {
     const e = parseFindExpression(['-size', '+50c'])
-    expect(e.minSize).toBe(50)
+    expect(e.minSize).toBe(51)
     expect(e.maxSize).toBeNull()
+  })
+
+  it('size bounds follow GNU strictness', () => {
+    let e = parseFindExpression(['-size', '+0c'])
+    expect([e.minSize, e.maxSize]).toEqual([1, null])
+    e = parseFindExpression(['-size', '-2c'])
+    expect([e.minSize, e.maxSize]).toEqual([null, 1])
+    e = parseFindExpression(['-size', '2c'])
+    expect([e.minSize, e.maxSize]).toEqual([2, 2])
+  })
+
+  it('repeated -mtime windows merge to their union', () => {
+    // `-mtime +0 -o -mtime -1` is a tautology in GNU; the flat window
+    // must impose no bounds rather than keep only the last predicate.
+    let e = parseFindExpression(['-mtime', '+0', '-o', '-mtime', '-1'])
+    expect([e.mtimeMin, e.mtimeMax]).toEqual([null, null])
+    e = parseFindExpression(['-mtime', '-1'])
+    expect(e.mtimeMin).not.toBeNull()
+    expect(e.mtimeMax).toBeNull()
+    e = parseFindExpression(['-mtime', '1', '-o', '-mtime', '3'])
+    expect(e.mtimeMin).not.toBeNull()
+    expect(e.mtimeMax).not.toBeNull()
+    expect((e.mtimeMax ?? 0) - (e.mtimeMin ?? 0)).toBeCloseTo(3 * 86400, 0)
+  })
+
+  it('size rounds up to the unit like GNU', () => {
+    // GNU -size -1k keeps only empty files; 1k keeps 1..1024 bytes;
+    // +1k excludes a file of exactly 1024 bytes.
+    let e = parseFindExpression(['-size', '-1k'])
+    expect([e.minSize, e.maxSize]).toEqual([null, 0])
+    e = parseFindExpression(['-size', '1k'])
+    expect([e.minSize, e.maxSize]).toEqual([1, 1024])
+    e = parseFindExpression(['-size', '+1k'])
+    expect([e.minSize, e.maxSize]).toEqual([1025, null])
   })
 
   it('empty expression is true', () => {

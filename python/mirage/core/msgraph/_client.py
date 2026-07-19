@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+from typing import Any
 
 import aiohttp
 
@@ -26,11 +27,7 @@ RETRY_STATUSES = {429, 503, 504}
 MAX_BACKOFF = 30.0
 
 
-def split_path(path: PathSpec | str) -> tuple[str, str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
+def split_path(path: PathSpec) -> tuple[str, str]:
     prefix = mount_prefix_of(path.virtual, path.resource_path) or ""
     raw = path.virtual
     if prefix and raw.startswith(prefix):
@@ -50,9 +47,8 @@ class GraphError(RuntimeError):
 
 def _resolve_token(config: MsGraphConfig) -> str:
     token = config.access_token
-    if callable(token):
-        token = token()
-    return reveal_secret(token)
+    resolved = token() if callable(token) else token
+    return reveal_secret(resolved)
 
 
 def headers(config: MsGraphConfig) -> dict[str, str]:
@@ -89,6 +85,7 @@ def _retry_delay(resp: aiohttp.ClientResponse, attempt: int) -> float:
         try:
             return float(retry_after)
         except ValueError:
+            # malformed Retry-After header: fall back to exponential backoff
             pass
     return min(2.0**attempt, MAX_BACKOFF)
 
@@ -114,14 +111,15 @@ async def _request(config: MsGraphConfig,
                    url: str,
                    *,
                    session: aiohttp.ClientSession | None = None,
-                   params: dict | None = None,
-                   json_body: dict | None = None,
+                   params: dict[str, Any] | None = None,
+                   json_body: dict[str, Any] | None = None,
                    data: bytes | None = None,
-                   extra_headers: dict | None = None,
+                   extra_headers: dict[str, Any] | None = None,
                    auth: bool = True,
                    read: str = "json"):
     own = session is None
-    sess = session or aiohttp.ClientSession(timeout=_timeout(config))
+    sess = (session if session is not None else aiohttp.ClientSession(
+        timeout=_timeout(config)))
     try:
         attempt = 0
         refreshed = False
@@ -161,23 +159,25 @@ async def _request(config: MsGraphConfig,
             await sess.close()
 
 
-async def graph_get(config: MsGraphConfig,
-                    url: str,
-                    params: dict | None = None,
-                    session: aiohttp.ClientSession | None = None) -> dict:
+async def graph_get(
+        config: MsGraphConfig,
+        url: str,
+        params: dict[str, Any] | None = None,
+        session: aiohttp.ClientSession | None = None) -> dict[str, Any]:
     return await _request(config, "GET", url, params=params, session=session)
 
 
 async def graph_list(
         config: MsGraphConfig,
         url: str,
-        params: dict | None = None,
-        session: aiohttp.ClientSession | None = None) -> list[dict]:
-    items: list[dict] = []
+        params: dict[str, Any] | None = None,
+        session: aiohttp.ClientSession | None = None) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     next_url: str | None = url
     next_params = params
     own = session is None
-    sess = session or aiohttp.ClientSession(timeout=_timeout(config))
+    sess = (session if session is not None else aiohttp.ClientSession(
+        timeout=_timeout(config)))
     try:
         while next_url:
             data = await _request(config,
@@ -215,7 +215,8 @@ async def graph_stream(config: MsGraphConfig,
                        session: aiohttp.ClientSession | None = None,
                        auth: bool = True):
     own = session is None
-    sess = session or aiohttp.ClientSession(timeout=_timeout(config))
+    sess = (session if session is not None else aiohttp.ClientSession(
+        timeout=_timeout(config)))
     try:
         attempt = 0
         refreshed = False
@@ -239,10 +240,11 @@ async def graph_stream(config: MsGraphConfig,
             await sess.close()
 
 
-async def graph_post(config: MsGraphConfig,
-                     url: str,
-                     body: dict | None = None,
-                     session: aiohttp.ClientSession | None = None) -> dict:
+async def graph_post(
+        config: MsGraphConfig,
+        url: str,
+        body: dict[str, Any] | None = None,
+        session: aiohttp.ClientSession | None = None) -> dict[str, Any]:
     return await _request(config,
                           "POST",
                           url,
@@ -253,20 +255,25 @@ async def graph_post(config: MsGraphConfig,
 async def graph_post_monitor(
         config: MsGraphConfig,
         url: str,
-        body: dict | None = None,
-        session: aiohttp.ClientSession | None = None) -> str | None:
-    return await _request(config,
-                          "POST",
-                          url,
-                          json_body=body or {},
-                          session=session,
-                          read="location")
+        body: dict[str, Any] | None = None,
+        session: aiohttp.ClientSession | None = None) -> str:
+    location = await _request(config,
+                              "POST",
+                              url,
+                              json_body=body or {},
+                              session=session,
+                              read="location")
+    if not isinstance(location, str) or not location:
+        raise GraphError(502, "missingMonitor",
+                         f"POST {url} did not return a Location header")
+    return location
 
 
-async def graph_patch(config: MsGraphConfig,
-                      url: str,
-                      body: dict,
-                      session: aiohttp.ClientSession | None = None) -> dict:
+async def graph_patch(
+        config: MsGraphConfig,
+        url: str,
+        body: dict[str, Any],
+        session: aiohttp.ClientSession | None = None) -> dict[str, Any]:
     return await _request(config,
                           "PATCH",
                           url,
@@ -285,7 +292,7 @@ async def graph_put_bytes(
         url: str,
         data: bytes,
         content_type: str = "application/octet-stream",
-        session: aiohttp.ClientSession | None = None) -> dict:
+        session: aiohttp.ClientSession | None = None) -> dict[str, Any]:
     return await _request(config,
                           "PUT",
                           url,
@@ -296,7 +303,7 @@ async def graph_put_bytes(
 
 async def poll_monitor(url: str,
                        timeout: float,
-                       interval: float = 1.0) -> dict:
+                       interval: float = 1.0) -> dict[str, Any]:
     waited = 0.0
     async with aiohttp.ClientSession() as session:
         while True:
@@ -304,7 +311,13 @@ async def poll_monitor(url: str,
                 if resp.status >= 400:
                     raise GraphError(resp.status, "monitorError", f"GET {url}")
                 payload = await resp.json()
+            if not isinstance(payload, dict):
+                raise GraphError(502, "invalidMonitorResponse",
+                                 f"GET {url} did not return an object")
             status = payload.get("status")
+            if not isinstance(status, str) or not status:
+                raise GraphError(502, "invalidMonitorResponse",
+                                 f"GET {url} did not return a status")
             if status in ("completed", "failed"):
                 return payload
             if waited >= timeout:
@@ -314,7 +327,7 @@ async def poll_monitor(url: str,
 
 
 async def upload_chunk(config: MsGraphConfig, upload_url: str, data: bytes,
-                       start: int, total: int) -> dict:
+                       start: int, total: int) -> dict[str, Any]:
     end = start + len(data) - 1
     hdrs = {"Content-Range": f"bytes {start}-{end}/{total}"}
     async with aiohttp.ClientSession(timeout=_timeout(config)) as session:

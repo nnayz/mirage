@@ -13,19 +13,21 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import dataclasses
-import fnmatch
 import logging
-import posixpath
 from collections.abc import Callable
+from typing import Any
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.types import PathSpec
+from mirage.utils.fnmatch import fnmatch
 from mirage.utils.key_prefix import rekey
 
 logger = logging.getLogger(__name__)
 
 GLOB_CHARS = ("*", "?", "[")
+
+DEFAULT_MAX_GLOB_MATCHES = 10000
 
 
 def has_glob(segment: str) -> bool:
@@ -71,10 +73,10 @@ def spell_match(raw: str, virtual: str, walked: int) -> str:
 
 
 async def expand_pattern(
-    readdir: Callable,
+    readdir: Callable[..., Any],
     accessor: Accessor,
     path: PathSpec,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
 ) -> list[PathSpec]:
     """Expand a glob PathSpec segment-by-segment via readdir.
 
@@ -92,7 +94,7 @@ async def expand_pattern(
         accessor (Accessor): backend handle passed through to readdir.
         path (PathSpec): unresolved spec whose ``resource_path`` still
             contains the pattern.
-        index (IndexCacheStore | None): the per-call cache index.
+        index (IndexCacheStore): the per-call cache index.
     """
     prefix = path.virtual[:len(path.virtual.rstrip("/")) -
                           len(path.resource_path)]
@@ -117,7 +119,7 @@ async def expand_pattern(
                 continue
             next_level.extend(
                 e for e in entries
-                if fnmatch.fnmatch(e.rstrip("/").rsplit("/", 1)[-1], seg))
+                if fnmatch(e.rstrip("/").rsplit("/", 1)[-1], seg))
         level = next_level
         if not level:
             return []
@@ -138,11 +140,34 @@ async def expand_pattern(
     ]
 
 
+def make_resolve_glob(
+    readdir: Callable[..., Any],
+    max_glob_matches: int | None = DEFAULT_MAX_GLOB_MATCHES,
+) -> Callable[..., Any]:
+    """Build a resolve_glob generic over a backend's readdir.
+
+    Args:
+        readdir (Callable): backend readdir ``(accessor, path, index)``.
+        max_glob_matches (int | None): cap on matches per pattern before
+            truncation.
+    """
+
+    async def resolve_glob(
+        accessor: Accessor,
+        paths: list[PathSpec],
+        index: IndexCacheStore = NULL_INDEX,
+    ) -> list[PathSpec]:
+        return await resolve_glob_with(readdir, accessor, paths, index,
+                                       max_glob_matches)
+
+    return resolve_glob
+
+
 async def resolve_glob_with(
-    readdir: Callable,
+    readdir: Callable[..., Any],
     accessor: Accessor,
     paths: list[PathSpec],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     cap: int | None = None,
 ) -> list[PathSpec]:
     """Shared resolve_glob loop over a backend's readdir.
@@ -158,17 +183,11 @@ async def resolve_glob_with(
             returning absolute virtual paths.
         accessor (Accessor): backend handle passed through to readdir.
         paths (list[PathSpec]): specs to resolve.
-        index (IndexCacheStore | None): the per-call cache index.
+        index (IndexCacheStore): the per-call cache index.
         cap (int | None): cap on matches per pattern before truncation.
     """
     result: list[PathSpec] = []
     for p in paths:
-        if isinstance(p, str):
-            result.append(
-                PathSpec(virtual=p,
-                         directory=posixpath.dirname(p),
-                         resource_path=p.strip("/")))
-            continue
         if p.resolved:
             result.append(p)
         elif p.pattern:

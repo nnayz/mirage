@@ -12,8 +12,6 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-
 from mirage.accessor.history import HistoryAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.cat import cat as generic_cat
@@ -36,17 +34,18 @@ async def cat(
     accessor: HistoryAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     n: bool = False,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
     if paths:
-        reads = {
+        contents: dict[str, bytes] = {
             p.mount_path: await history_read(accessor, p, index)
             for p in paths
         }
-        merged = b"".join(reads.values())
+        merged = b"".join(contents.values())
+        reads: dict[str, ByteSource] = {k: v for k, v in contents.items()}
         io = IOResult(reads=reads)
         if n:
             return generic_cat(merged, number_lines=True), io

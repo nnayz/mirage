@@ -15,7 +15,8 @@
 import { mountPrefixOf } from '../../../utils/key_prefix.ts'
 import type { GmailAccessor } from '../../../accessor/gmail.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
-import { resolveGlob } from '../../../core/gmail/glob.ts'
+import { resolveGlobOf } from '../generic_bind/index.ts'
+import { GMAIL_IO } from './io.ts'
 import { read as gmailRead } from '../../../core/gmail/read.ts'
 import { readdir as gmailReaddir } from '../../../core/gmail/readdir.ts'
 import { detectScope } from '../../../core/gmail/scope.ts'
@@ -28,6 +29,8 @@ import { specOf } from '../../spec/builtins.ts'
 import { grepGeneric } from '../generic/grep.ts'
 import { patternArg } from '../grep_helper.ts'
 import { fileReadProvision } from './provision.ts'
+
+const resolveGlob = resolveGlobOf(GMAIL_IO)
 
 const ENC = new TextEncoder()
 
@@ -47,9 +50,13 @@ async function grepCommand(
 ): Promise<CommandFnResult> {
   const pattern = patternArg(texts, opts.flags)
   const maxCount = typeof opts.flags.m === 'string' ? Number.parseInt(opts.flags.m, 10) : null
+  // Output-shaping flags need real per-line matching, which the search-API
+  // push-down cannot emulate; fall through to the generic grep over
+  // rendered files instead.
+  const shaping = ['args_l', 'l', 'c', 'n', 'o', 'v', 'q'].some((flag) => opts.flags[flag] === true)
 
   const first = paths[0]
-  if (first !== undefined && pattern !== null && !pattern.includes('\n')) {
+  if (first !== undefined && pattern !== null && !pattern.includes('\n') && !shaping) {
     const scope = detectScope(first)
     if (scope.useNative) {
       const filePrefix =

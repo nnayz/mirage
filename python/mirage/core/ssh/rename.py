@@ -17,18 +17,26 @@ import asyncssh
 from mirage.accessor.ssh import SSHAccessor
 from mirage.cache.context import (invalidate_after_unlink,
                                   invalidate_after_write)
-from mirage.core.ssh._client import _abs, _resolve_path
+from mirage.core.ssh._client import _abs
 from mirage.types import PathSpec
 
 
-async def rename(accessor: SSHAccessor, src: PathSpec, dst: PathSpec) -> None:
-    src = _resolve_path(src)
-    dst = _resolve_path(dst)
+async def rename(accessor: SSHAccessor, src_spec: PathSpec,
+                 dst_spec: PathSpec) -> None:
+    src = src_spec.mount_path
+    dst = dst_spec.mount_path
     config = accessor.config
     sftp = await accessor.sftp()
+    # POSIX rename semantics (replace an existing destination); plain SFTP
+    # rename refuses to overwrite, so prefer posix-rename@openssh.com.
     try:
-        await sftp.rename(_abs(config, src), _abs(config, dst))
+        await sftp.posix_rename(_abs(config, src), _abs(config, dst))
+    except asyncssh.SFTPOpUnsupported:
+        try:
+            await sftp.rename(_abs(config, src), _abs(config, dst))
+        except asyncssh.SFTPNoSuchFile:
+            raise FileNotFoundError(src)
     except asyncssh.SFTPNoSuchFile:
         raise FileNotFoundError(src)
-    await invalidate_after_write(dst)
-    await invalidate_after_unlink(src)
+    await invalidate_after_write(dst_spec)
+    await invalidate_after_unlink(src_spec)

@@ -28,13 +28,8 @@ def _resolve(root: Path, path: str) -> Path:
     return resolved
 
 
-async def unlink(accessor: DiskAccessor, path: PathSpec) -> None:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+async def unlink(accessor: DiskAccessor, path_spec: PathSpec) -> None:
+    path = path_spec.mount_path
     p = _resolve(accessor.root, path)
     await aiofiles.os.remove(p)
-    await invalidate_after_unlink(path)
+    await invalidate_after_unlink(path_spec)

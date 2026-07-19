@@ -1,6 +1,6 @@
+import re
 from collections.abc import AsyncIterator, Callable
 
-from mirage.accessor.base import Accessor
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.spec.types import CommandName
 from mirage.commands.spec.usage import extra_operand_error
@@ -12,7 +12,10 @@ from mirage.types import PathSpec
 def _parse_count(value: str | None) -> int | None:
     if value is None:
         return None
-    count = int(value)
+    normalized = value.strip()
+    if re.fullmatch(r"[+-]?[0-9]+", normalized) is None:
+        raise ValueError(f"uniq: invalid count: '{value}'")
+    count = int(normalized)
     if count < 0:
         raise ValueError(f"uniq: invalid count: '{value}'")
     return count
@@ -89,8 +92,7 @@ async def uniq(
     paths: list[PathSpec],
     *,
     read_stream: Callable[..., AsyncIterator[bytes]],
-    accessor: Accessor | None = None,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     count: bool = False,
     duplicates_only: bool = False,
     unique_only: bool = False,
@@ -100,13 +102,14 @@ async def uniq(
     check_chars: str | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     if len(paths) > 2:
-        raise extra_operand_error(CommandName.UNIQ, paths[2].raw_path)
+        raise extra_operand_error(CommandName.UNIQ, paths[2].raw_path
+                                  or paths[2].virtual)
     cache: list[str] = []
     if paths:
-        source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
+        source: AsyncIterator[bytes] = read_stream(paths[0])
         cache = [paths[0].mount_path]
     else:
-        source = _resolve_source(stdin, "uniq: missing operand")
+        source = _resolve_source(stdin)
 
     return _uniq_stream(
         source,

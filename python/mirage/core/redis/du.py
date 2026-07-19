@@ -17,13 +17,8 @@ from mirage.types import PathSpec
 from mirage.utils.path import norm
 
 
-async def du(accessor: RedisAccessor, path: PathSpec) -> int:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+async def du(accessor: RedisAccessor, path_spec: PathSpec) -> int:
+    path = path_spec.mount_path
     store = accessor.store
     p = norm(path)
     prefix = p.rstrip("/") + "/"
@@ -35,13 +30,8 @@ async def du(accessor: RedisAccessor, path: PathSpec) -> int:
 
 
 async def du_all(accessor: RedisAccessor,
-                 path: PathSpec) -> tuple[list[tuple[str, int]], int]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+                 path_spec: PathSpec) -> tuple[list[tuple[str, int]], int]:
+    path = path_spec.mount_path
     store = accessor.store
     p = norm(path)
     prefix = p.rstrip("/") + "/"

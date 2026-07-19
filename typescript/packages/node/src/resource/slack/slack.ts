@@ -19,12 +19,12 @@ import {
   ResourceName,
   SLACK_COMMANDS,
   SLACK_PROMPT,
-  SLACK_VFS_OPS,
+  SLACK_OPS,
   SLACK_WRITE_PROMPT,
   SlackAccessor,
   mountKey,
   mountPrefixOf,
-  resolveSlackGlob,
+  makeResolveGlob,
   slackRead,
   slackReaddir,
   slackStat,
@@ -34,6 +34,8 @@ import {
   type Resource,
 } from '@struktoai/mirage-core'
 import { redactSlackConfig, type SlackConfig, type SlackConfigRedacted } from './config.ts'
+
+const resolveSlackGlob = makeResolveGlob(slackReaddir)
 
 export interface SlackResourceState {
   type: string
@@ -68,7 +70,7 @@ export class SlackResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return SLACK_VFS_OPS
+    return SLACK_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -81,11 +83,6 @@ export class SlackResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return slackStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

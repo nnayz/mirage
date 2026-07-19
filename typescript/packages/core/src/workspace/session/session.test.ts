@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Session } from './session.ts'
+import { MountMode } from '../../types.ts'
 
 describe('Session', () => {
   it('defaults cwd=/ and empty env', () => {
@@ -32,14 +33,15 @@ describe('Session', () => {
     expect(s.env.FOO).toBe('bar')
   })
 
-  it('toJSON includes only the serializable fields', () => {
+  it('toJSON includes only the serializable fields, snake_case like Python', () => {
     const s = new Session({ sessionId: 'x', cwd: '/a', env: { K: 'V' } })
     const json = s.toJSON()
     expect(json).toEqual({
-      sessionId: 'x',
+      session_id: 'x',
       cwd: '/a',
       env: { K: 'V' },
-      createdAt: s.createdAt,
+      created_at: s.createdAt,
+      generation: 0,
     })
     expect('functions' in json).toBe(false)
     expect('lastExitCode' in json).toBe(false)
@@ -49,25 +51,52 @@ describe('Session', () => {
     const original = new Session({ sessionId: 'x', cwd: '/a', env: { K: 'V' } })
     const restored = Session.fromJSON(
       original.toJSON() as {
-        sessionId: string
+        session_id: string
         cwd: string
         env: Record<string, string>
-        createdAt: number
+        created_at: number
       },
     )
     expect(restored.sessionId).toBe('x')
     expect(restored.cwd).toBe('/a')
     expect(restored.env).toEqual({ K: 'V' })
   })
+
+  it('round-trips mountModes through toJSON/fromJSON', () => {
+    const original = new Session({
+      sessionId: 'x',
+      mountModes: new Map([
+        ['/s3', MountMode.READ],
+        ['/scratch', MountMode.WRITE],
+      ]),
+    })
+    const json = original.toJSON()
+    expect(json.mount_modes).toEqual({ '/s3': 'read', '/scratch': 'write' })
+    const restored = Session.fromJSON(
+      json as { session_id: string; mount_modes?: Record<string, MountMode> | null },
+    )
+    expect(restored.mountModes?.get('/s3')).toBe(MountMode.READ)
+    expect(restored.mountModes?.get('/scratch')).toBe(MountMode.WRITE)
+  })
+
+  it('toJSON omits mount_modes when unrestricted', () => {
+    const s = new Session({ sessionId: 'x' })
+    expect('mount_modes' in s.toJSON()).toBe(false)
+    expect(Session.fromJSON({ session_id: 'x' }).mountModes).toBeNull()
+  })
 })
 
 describe('Session.fork', () => {
-  it('copies every field, including allowedMounts and shellOptions', () => {
+  it('copies every field, including mountModes and shellOptions', () => {
     const original = new Session({
       sessionId: 'orig',
       cwd: '/disk',
       env: { FOO: 'bar' },
-      allowedMounts: new Set(['/s3', '/dev', '/']),
+      mountModes: new Map([
+        ['/s3', MountMode.READ],
+        ['/dev', MountMode.EXEC],
+        ['/', MountMode.EXEC],
+      ]),
       shellOptions: { errexit: true },
       readonlyVars: new Set(['HOME']),
       arrays: { ARGV: ['a', 'b'] },
@@ -78,7 +107,7 @@ describe('Session.fork', () => {
     expect(forked.sessionId).toBe('orig')
     expect(forked.cwd).toBe('/disk')
     expect(forked.env).toEqual({ FOO: 'bar' })
-    expect(forked.allowedMounts).toBe(original.allowedMounts)
+    expect(forked.mountModes).toBe(original.mountModes)
     expect(forked.shellOptions).toEqual({ errexit: true })
     expect(forked.readonlyVars.has('HOME')).toBe(true)
     expect(forked.arrays).toEqual({ ARGV: ['a', 'b'] })

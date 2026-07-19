@@ -2,7 +2,6 @@ import binascii
 import re
 from collections.abc import AsyncIterator, Callable
 
-from mirage.accessor.base import Accessor
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.spec.types import CommandName
@@ -110,8 +109,7 @@ async def xxd(
     paths: list[PathSpec],
     *,
     read_stream: Callable[..., AsyncIterator[bytes]],
-    accessor: Accessor | None = None,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     reverse: bool = False,
     plain: bool = False,
     uppercase: bool = False,
@@ -121,10 +119,11 @@ async def xxd(
     limit: int = 0,
 ) -> tuple[ByteSource | None, IOResult]:
     if len(paths) > 2:
-        raise extra_operand_error(CommandName.XXD, paths[2].raw_path)
+        raise extra_operand_error(CommandName.XXD, paths[2].raw_path
+                                  or paths[2].virtual)
     cache: list[str] = []
     if paths:
-        source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
+        source: AsyncIterator[bytes] = read_stream(paths[0])
         cache = [paths[0].mount_path]
     else:
         source = _resolve_source(stdin)

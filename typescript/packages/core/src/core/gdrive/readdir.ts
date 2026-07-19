@@ -18,6 +18,7 @@ import { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { MIME_TO_EXT, listFiles, listSharedDrives } from '../google/drive.ts'
+import { rootContext } from './resolve.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 
 export const DIRECTORY_RESOURCE_TYPES: ReadonlySet<string> = new Set([
@@ -75,7 +76,7 @@ export async function readdir(
   let folderId: string
   let driveId: string | null = null
   if (key === '') {
-    folderId = 'root'
+    ;[folderId, driveId] = await rootContext(accessor)
   } else {
     if (index === undefined) {
       const e = new Error(`ENOENT: ${path.virtual}`) as Error & { code: string }
@@ -110,21 +111,36 @@ export async function readdir(
     const isDir = mime === FOLDER_MIME
     const sizeRaw = f.size ?? f.quotaBytesUsed ?? '0'
     const sizeNum = Number.parseInt(sizeRaw, 10)
+    const sourceSize = Number.isFinite(sizeNum) && sizeNum > 0 ? sizeNum : null
+    const resourceType = resourceTypeFor(mime)
+    // Binary files download raw, so Drive's size is the rendered byte length
+    // and stays. Google-apps files (gdoc/gsheet/gslide) render to JSON, so
+    // Drive's source size must not become FileStat.size (render-derived or
+    // null, see the CLAUDE.md FUSE rules); it lives in extra instead.
+    const extra: Record<string, unknown> = f.driveId !== undefined ? { drive_id: f.driveId } : {}
+    let size: number | null = null
+    if (resourceType === 'gdrive/file') {
+      size = sourceSize
+    } else if (sourceSize !== null) {
+      extra.source_size = sourceSize
+    }
     const entry = new IndexEntry({
       id: f.id,
       name: f.name,
-      resourceType: resourceTypeFor(mime),
+      resourceType,
       remoteTime: f.modifiedTime ?? '',
       vfsName: filename,
-      size: Number.isFinite(sizeNum) && sizeNum > 0 ? sizeNum : null,
-      extra: f.driveId !== undefined ? { drive_id: f.driveId } : {},
+      size,
+      extra,
     })
     entries.push({ name: filename, entry, isDir })
   }
 
-  if (key === '') {
+  if (key === '' && folderId === 'root') {
     // Shared Drive enumeration is best-effort: if the account can't list
     // them (missing scope, API error), still return My Drive contents.
+    // A folder-scoped mount lists only the folder's children, so shared
+    // drives never surface there.
     let sharedDrives: { id: string; name: string }[] = []
     try {
       sharedDrives = await listSharedDrives(accessor.tokenManager)
@@ -146,6 +162,11 @@ export async function readdir(
     }
   }
 
+  // Deterministic vfs order: glob expansion and walkers follow readdir
+  // order, so sort by rendered filename (Drive returns modifiedTime desc).
+  // Codepoint compare, not localeCompare: python sorts by codepoint and the
+  // two runners must list identically.
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
   if (index !== undefined) {
     await index.setDir(
       virtualKey,

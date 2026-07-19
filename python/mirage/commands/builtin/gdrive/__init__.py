@@ -12,70 +12,44 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from functools import partial
-
 from mirage.commands.builtin.filetype_factory import make_filetype_commands
-from mirage.commands.builtin.gdocs.gws_docs_documents_batchUpdate import \
-    gws_docs_documents_batchUpdate
-from mirage.commands.builtin.gdocs.gws_docs_documents_create import \
-    gws_docs_documents_create
 from mirage.commands.builtin.gdocs.gws_docs_write import gws_docs_write
 from mirage.commands.builtin.gdrive._provision import \
     file_read_provision as _ft_provision
-from mirage.commands.builtin.gdrive.sed import sed
-from mirage.commands.builtin.generic_bind import (CommandIO,
-                                                  make_generic_commands)
+from mirage.commands.builtin.gdrive.du import du
+from mirage.commands.builtin.gdrive.io import IO as _IO
+from mirage.commands.builtin.generic_bind import make_generic_commands
 from mirage.commands.builtin.gsheets.gws_sheets_append import gws_sheets_append
 from mirage.commands.builtin.gsheets.gws_sheets_read import gws_sheets_read
-from mirage.commands.builtin.gsheets.gws_sheets_spreadsheets_batchUpdate import \
-    gws_sheets_spreadsheets_batchUpdate  # noqa: E501
-from mirage.commands.builtin.gsheets.gws_sheets_spreadsheets_create import \
-    gws_sheets_spreadsheets_create  # noqa: E501
 from mirage.commands.builtin.gsheets.gws_sheets_write import gws_sheets_write
-from mirage.commands.builtin.gslides.gws_slides_presentations_batchUpdate import \
-    gws_slides_presentations_batchUpdate  # noqa: E501
-from mirage.commands.builtin.gslides.gws_slides_presentations_create import \
-    gws_slides_presentations_create  # noqa: E501
-from mirage.commands.builtin.utils.wrap import stream_from_bytes
-from mirage.core.gdrive.glob import resolve_glob as _ft_resolve_glob
+from mirage.commands.builtin.gws import (GWS_DOCS_API_COMMANDS,
+                                         GWS_DRIVE_API_COMMANDS,
+                                         GWS_SHEETS_API_COMMANDS,
+                                         GWS_SLIDES_API_COMMANDS)
 from mirage.core.gdrive.read import read as _read
-from mirage.core.gdrive.readdir import readdir as _readdir
-from mirage.core.gdrive.stat import stat as _stat
 
-# Drive holds real byte files (read via the generic factory) but is written
-# only through the bespoke gws_* Workspace commands, so the generic
-# byte-mutation commands (cp/mv/tee/...) are intentionally absent. sed has no
-# generic builder and is kept as a wrapper. gdrive's native read_stream is a
-# coroutine returning bytes-or-iterator (Workspace-aware), so the stream op is
-# synthesized from the whole-file read instead.
-_GDRIVE_CMD_OPS = CommandIO(
-    readdir=_readdir,
-    read_bytes=_read,
-    read_stream=partial(stream_from_bytes, _read),
-    stat=_stat,
-    is_mounted=lambda a: True,
-    local=False,
-)
+# du keeps a wrapper because gdrive's du_all returns a flat list (du_multi
+# contract) rather than the generic (list, total) tuple, matching onedrive.
+_GDRIVE_OVERRIDES = {"du"}
 
 COMMANDS = [
     *make_filetype_commands("gdrive",
-                            _ft_resolve_glob,
+                            _IO.resolve_glob,
                             _read,
                             read_takes_index=True,
                             provision=_ft_provision),
     *make_generic_commands(
         "gdrive",
-        _GDRIVE_CMD_OPS,
+        _IO,
+        overrides=_GDRIVE_OVERRIDES,
     ),
-    sed,
-    gws_docs_documents_create,
-    gws_docs_documents_batchUpdate,
+    du,
     gws_docs_write,
-    gws_slides_presentations_create,
-    gws_slides_presentations_batchUpdate,
-    gws_sheets_spreadsheets_create,
-    gws_sheets_spreadsheets_batchUpdate,
     gws_sheets_read,
     gws_sheets_write,
     gws_sheets_append,
+    *GWS_DRIVE_API_COMMANDS,
+    *GWS_DOCS_API_COMMANDS,
+    *GWS_SHEETS_API_COMMANDS,
+    *GWS_SLIDES_API_COMMANDS,
 ]

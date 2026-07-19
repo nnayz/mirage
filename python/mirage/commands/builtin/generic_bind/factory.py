@@ -15,6 +15,7 @@
 import functools
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Any
 
 from mirage.accessor.base import Accessor
 from mirage.cache.context import active_cache_manager
@@ -28,17 +29,18 @@ from mirage.commands.spec import SPECS
 from mirage.types import PathSpec
 
 
-def _cached_stat(stat: Callable, accessor: Accessor, path: PathSpec, *args,
-                 **kwargs):
+def _cached_stat(stat: Callable[..., Any], accessor: Accessor, path: PathSpec,
+                 *args, **kwargs):
     manager = active_cache_manager()
     return _cached_stat_result(manager, stat, accessor, path, *args, **kwargs)
 
 
-async def _cached_stat_result(manager, stat: Callable, accessor: Accessor,
+async def _cached_stat_result(manager, stat: Callable[...,
+                                                      Any], accessor: Accessor,
                               path: PathSpec, *args, **kwargs):
     result = await stat(accessor, path, *args, **kwargs)
     if (result is not None and getattr(result, "size", None) is None
-            and manager is not None and isinstance(path, PathSpec)):
+            and manager is not None):
         cached = await manager.cached_bytes(path)
         if cached is not None:
             result = result.model_copy(update={"size": len(cached)})
@@ -92,8 +94,8 @@ def make_generic_commands(
     ops: CommandIO,
     *,
     overrides: set[str] | None = None,
-    provision_overrides: dict[str, Callable] | None = None,
-) -> list[Callable]:
+    provision_overrides: dict[str, Callable[..., Any]] | None = None,
+) -> list[Callable[..., Any]]:
     """Generate the default command set for a backend from its ops.
 
     Args:
@@ -107,14 +109,14 @@ def make_generic_commands(
     """
     skip = overrides or set()
     prov_over = provision_overrides or {}
-    commands: list[Callable] = []
+    commands: list[Callable[..., Any]] = []
     for b in _BUILDERS:
         if b.name in skip:
             continue
         # A read-only backend (no write op) can't run the byte-mutation
         # commands (cp/mv/tee/gunzip/...), so don't register a command that
         # would crash when invoked.
-        if b.write and ops.write is None:
+        if not ops.supports(b.requirements):
             continue
         if b.read:
             cmd_ops = with_read_cache(ops)
@@ -123,6 +125,7 @@ def make_generic_commands(
         else:
             cmd_ops = ops
         bound = functools.partial(b.fn, cmd_ops)
+        provision: Callable[..., Any] | None
         if b.name in prov_over:
             provision = prov_over[b.name]
         elif b.provision is not None:

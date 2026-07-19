@@ -19,8 +19,8 @@ import pytest
 from mirage.core.google._client import TokenManager
 from mirage.core.google.config import GoogleConfig
 from mirage.core.google.drive import (delete_file, download_file,
-                                      download_file_stream, list_all_files,
-                                      list_files, list_shared_drives)
+                                      list_all_files, list_files,
+                                      list_shared_drives)
 
 
 @pytest.fixture
@@ -169,42 +169,6 @@ async def test_download_file(token_manager):
 
 
 @pytest.mark.asyncio
-async def test_download_file_stream(token_manager):
-    chunks = [b"chunk1", b"chunk2", b"chunk3"]
-
-    async def mock_stream(*args, **kwargs):
-        for chunk in chunks:
-            yield chunk
-
-    with patch(
-            "mirage.core.google.drive.google_get_stream",
-            side_effect=mock_stream,
-    ) as mock_get:
-        result = b""
-        async for chunk in download_file_stream(token_manager, "file123"):
-            result += chunk
-        assert result == b"chunk1chunk2chunk3"
-        assert "supportsAllDrives=true" in mock_get.call_args.args[1]
-
-
-@pytest.mark.asyncio
-async def test_download_file_stream_empty(token_manager):
-
-    async def mock_stream(*args, **kwargs):
-        return
-        yield
-
-    with patch(
-            "mirage.core.google.drive.google_get_stream",
-            side_effect=mock_stream,
-    ):
-        result = b""
-        async for chunk in download_file_stream(token_manager, "file123"):
-            result += chunk
-        assert result == b""
-
-
-@pytest.mark.asyncio
 async def test_delete_file_supports_shared_drives(token_manager):
     with patch(
             "mirage.core.google.drive.google_delete",
@@ -216,7 +180,7 @@ async def test_delete_file_supports_shared_drives(token_manager):
 
 
 @pytest.mark.asyncio
-async def test_list_all_files_with_modified_range():
+async def test_list_all_files_with_modified_range(token_manager):
     captured = {}
 
     async def fake_get(token_manager, url, params=None):
@@ -225,7 +189,7 @@ async def test_list_all_files_with_modified_range():
 
     with patch("mirage.core.google.drive.google_get", new=fake_get):
         await list_all_files(
-            token_manager=None,
+            token_manager=token_manager,
             mime_type="application/vnd.google-apps.document",
             modified_after="2026-05-01T00:00:00Z",
             modified_before="2026-06-01T00:00:00Z",
@@ -239,7 +203,7 @@ async def test_list_all_files_with_modified_range():
 
 
 @pytest.mark.asyncio
-async def test_list_all_files_without_range_omits_clauses():
+async def test_list_all_files_without_range_omits_clauses(token_manager):
     captured = {}
 
     async def fake_get(token_manager, url, params=None):
@@ -247,7 +211,7 @@ async def test_list_all_files_without_range_omits_clauses():
         return {"files": []}
 
     with patch("mirage.core.google.drive.google_get", new=fake_get):
-        await list_all_files(token_manager=None)
+        await list_all_files(token_manager=token_manager)
 
     q = captured["params"].get("q")
     if q is None:
@@ -256,7 +220,7 @@ async def test_list_all_files_without_range_omits_clauses():
 
 
 @pytest.mark.asyncio
-async def test_list_files_with_modified_range():
+async def test_list_files_with_modified_range(token_manager):
     captured = {}
 
     async def fake_get(token_manager, url, params=None):
@@ -265,7 +229,7 @@ async def test_list_files_with_modified_range():
 
     with patch("mirage.core.google.drive.google_get", new=fake_get):
         await list_files(
-            token_manager=None,
+            token_manager=token_manager,
             folder_id="root",
             modified_after="2026-05-01T00:00:00Z",
         )
@@ -277,7 +241,7 @@ async def test_list_files_with_modified_range():
 
 
 @pytest.mark.asyncio
-async def test_list_files_with_full_modified_range():
+async def test_list_files_with_full_modified_range(token_manager):
     captured = {}
 
     async def fake_get(token_manager, url, params=None):
@@ -286,7 +250,7 @@ async def test_list_files_with_full_modified_range():
 
     with patch("mirage.core.google.drive.google_get", new=fake_get):
         await list_files(
-            token_manager=None,
+            token_manager=token_manager,
             folder_id="root",
             modified_after="2026-05-01T00:00:00Z",
             modified_before="2026-06-01T00:00:00Z",

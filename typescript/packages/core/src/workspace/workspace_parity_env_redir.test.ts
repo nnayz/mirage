@@ -14,7 +14,6 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  DEFAULT_SESSION_ID,
   countOccurrences,
   makeWorkspace,
   stdoutBytes,
@@ -25,7 +24,7 @@ describe('workspace: env set / unset / printenv', () => {
   it('unset removes env var', async () => {
     const { ws } = await makeWorkspace()
     await ws.execute('export FOO=bar; unset FOO')
-    expect('FOO' in ws.getSession(DEFAULT_SESSION_ID).env).toBe(false)
+    expect('FOO' in ws.getSession(ws.defaultSessionId).env).toBe(false)
     await ws.close()
   })
 
@@ -50,7 +49,7 @@ describe('workspace: env set / unset / printenv', () => {
   it('export override keeps latest', async () => {
     const { ws } = await makeWorkspace()
     await ws.execute('export X=first; export X=second')
-    expect(ws.getSession(DEFAULT_SESSION_ID).env.X).toBe('second')
+    expect(ws.getSession(ws.defaultSessionId).env.X).toBe('second')
     await ws.close()
   })
 
@@ -64,31 +63,32 @@ describe('workspace: env set / unset / printenv', () => {
 })
 
 describe('workspace: whoami', () => {
-  it('echoes $USER when set', async () => {
-    const { ws } = await makeWorkspace()
-    await ws.execute('export USER=alice')
+  it('prints the launch agentId', async () => {
+    const { ws } = await makeWorkspace({ agentId: 'alice' })
     const io = await ws.execute('whoami')
     expect(stdoutStr(io)).toBe('alice\n')
     expect(io.exitCode).toBe(0)
     await ws.close()
   })
 
-  it('exits 1 with stderr when $USER unset', async () => {
+  it('errors without an agentId', async () => {
+    // No agent ever claimed this workspace: GNU errors for a uid with
+    // no passwd entry, and so do we.
     const { ws } = await makeWorkspace()
     const io = await ws.execute('whoami')
     expect(io.exitCode).toBe(1)
-    expect(new TextDecoder().decode(io.stderr)).toBe('whoami: USER not set\n')
+    expect(new TextDecoder().decode(io.stderr)).toBe('whoami: cannot find name for user ID\n')
     await ws.close()
   })
 
-  it('reflects export → unset → whoami round-trip', async () => {
-    const { ws } = await makeWorkspace()
+  it('ignores $USER (GNU: effective user, not env)', async () => {
+    const { ws } = await makeWorkspace({ agentId: 'alice' })
     await ws.execute('export USER=bob')
-    const io1 = await ws.execute('whoami')
-    expect(stdoutStr(io1)).toBe('bob\n')
+    const io = await ws.execute('whoami')
+    expect(stdoutStr(io)).toBe('alice\n')
     await ws.execute('unset USER')
     const io2 = await ws.execute('whoami')
-    expect(io2.exitCode).toBe(1)
+    expect(stdoutStr(io2)).toBe('alice\n')
     await ws.close()
   })
 })
@@ -158,7 +158,7 @@ describe('workspace: real-world scripts', () => {
     await ws.execute('while read LINE; do export $LINE; done', {
       stdin: new TextEncoder().encode('DB_HOST=localhost\nDB_PORT=5432\n'),
     })
-    const s = ws.getSession(DEFAULT_SESSION_ID)
+    const s = ws.getSession(ws.defaultSessionId)
     expect(s.env.DB_HOST).toBe('localhost')
     expect(s.env.DB_PORT).toBe('5432')
     await ws.close()
@@ -397,7 +397,7 @@ describe('workspace: pipeline mount fallback (cwd-less commands)', () => {
 
   it('pipeline with default cwd /mirage', async () => {
     const { ws } = await makeWorkspace()
-    ws.getSession(DEFAULT_SESSION_ID).cwd = '/mirage'
+    ws.getSession(ws.defaultSessionId).cwd = '/mirage'
     const io = await ws.execute('cat /s3/report.csv | wc -l')
     expect(io.exitCode).toBe(0)
     expect(stdoutStr(io)).toContain('3')
@@ -416,7 +416,7 @@ describe('workspace: pipeline mount fallback (cwd-less commands)', () => {
 describe('workspace: cache resource fallback', () => {
   it('wc under /mirage cwd', async () => {
     const { ws } = await makeWorkspace()
-    ws.getSession(DEFAULT_SESSION_ID).cwd = '/mirage'
+    ws.getSession(ws.defaultSessionId).cwd = '/mirage'
     const io = await ws.execute('cat /s3/report.csv | wc -l')
     expect(io.exitCode).toBe(0)
     expect(stdoutStr(io)).toContain('3')
@@ -425,7 +425,7 @@ describe('workspace: cache resource fallback', () => {
 
   it('head under /nonexistent cwd', async () => {
     const { ws } = await makeWorkspace()
-    ws.getSession(DEFAULT_SESSION_ID).cwd = '/nonexistent'
+    ws.getSession(ws.defaultSessionId).cwd = '/nonexistent'
     const io = await ws.execute('cat /ram/notes.txt | head -n 1')
     expect(io.exitCode).toBe(0)
     expect(stdoutStr(io)).toContain('line1')
@@ -434,7 +434,7 @@ describe('workspace: cache resource fallback', () => {
 
   it('grep in pipeline under /mirage cwd', async () => {
     const { ws } = await makeWorkspace()
-    ws.getSession(DEFAULT_SESSION_ID).cwd = '/mirage'
+    ws.getSession(ws.defaultSessionId).cwd = '/mirage'
     const io = await ws.execute('cat /s3/report.csv | grep alice')
     expect(io.exitCode).toBe(0)
     expect(stdoutStr(io)).toContain('alice')
@@ -443,7 +443,7 @@ describe('workspace: cache resource fallback', () => {
 
   it('sort|uniq under /mirage cwd', async () => {
     const { ws } = await makeWorkspace()
-    ws.getSession(DEFAULT_SESSION_ID).cwd = '/mirage'
+    ws.getSession(ws.defaultSessionId).cwd = '/mirage'
     const io = await ws.execute('cat /ram/words.txt | sort | uniq')
     expect(io.exitCode).toBe(0)
     expect(countOccurrences(stdoutBytes(io), 'apple')).toBe(1)
@@ -452,7 +452,7 @@ describe('workspace: cache resource fallback', () => {
 
   it('4-stage pipeline under /mirage cwd', async () => {
     const { ws } = await makeWorkspace()
-    ws.getSession(DEFAULT_SESSION_ID).cwd = '/mirage'
+    ws.getSession(ws.defaultSessionId).cwd = '/mirage'
     const io = await ws.execute('cat /s3/report.csv | grep -v name | cut -d, -f1 | sort')
     expect(io.exitCode).toBe(0)
     const out = stdoutStr(io)

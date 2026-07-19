@@ -18,8 +18,7 @@ import pytest
 
 from mirage.resource.ram import RAMResource
 from mirage.server.version.state_tree import (blob_to_meta, meta_to_blob,
-                                              to_state, to_tree_inputs,
-                                              tree_inputs_from_state)
+                                              to_state, tree_inputs_from_state)
 from mirage.types import (CacheKey, FingerprintKey, MountKey, MountMode,
                           SessionKey, StateKey)
 from mirage.workspace import Workspace
@@ -36,13 +35,13 @@ def _mount_files(state: dict, prefix: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_to_tree_inputs_ram_files():
+async def test_tree_inputs_from_state_ram_files():
     ws = Workspace({"/m": (RAMResource(), MountMode.WRITE)},
                    mode=MountMode.WRITE)
     await ws.execute("echo hello > /m/a.txt")
     await ws.execute("mkdir -p /m/sub && echo world > /m/sub/b.txt")
 
-    entries, meta = await to_tree_inputs(ws)
+    entries, meta = tree_inputs_from_state(await to_state_dict(ws))
 
     assert entries["m/a.txt"] == b"hello\n"
     assert entries["m/sub/b.txt"] == b"world\n"
@@ -59,23 +58,10 @@ async def test_to_state_round_trips_files():
     await ws.execute("mkdir -p /m/sub && echo world > /m/sub/b.txt")
 
     original_files = _mount_files(await to_state_dict(ws), "/m/")
-    entries, meta = await to_tree_inputs(ws)
+    entries, meta = tree_inputs_from_state(await to_state_dict(ws))
     state = to_state(entries, meta)
 
     assert _mount_files(state, "/m/") == original_files
-
-
-@pytest.mark.asyncio
-async def test_tree_inputs_from_state_matches_ws_path():
-    ws = Workspace({"/m": (RAMResource(), MountMode.WRITE)},
-                   mode=MountMode.WRITE)
-    await ws.execute("echo hi > /m/a.txt")
-
-    entries_ws, _ = await to_tree_inputs(ws)
-    entries_state, _ = tree_inputs_from_state(await to_state_dict(ws))
-
-    assert entries_ws == entries_state
-    assert entries_state["m/a.txt"] == b"hi\n"
 
 
 @pytest.mark.asyncio
@@ -84,7 +70,7 @@ async def test_to_state_is_tar_loadable():
                    mode=MountMode.WRITE)
     await ws.execute("echo hello > /m/a.txt")
 
-    entries, meta = await to_tree_inputs(ws)
+    entries, meta = tree_inputs_from_state(await to_state_dict(ws))
     state = to_state(entries, meta)
 
     manifest, blobs = split_manifest_and_blobs(state)
@@ -97,7 +83,10 @@ async def test_to_state_is_tar_loadable():
 
 
 @pytest.mark.asyncio
-async def test_cache_fingerprints_sessions_round_trip():
+async def test_whole_world_round_trip_sessions_nodes_history():
+    """A commit is the whole world: sessions, namespace nodes, and the
+    command history round-trip through the .mirage/ control-plane
+    subtree. Cache stays out (derived, rebuildable)."""
     ws = Workspace({"/": (RAMResource(), MountMode.WRITE)},
                    mode=MountMode.WRITE)
     await ws.execute("echo hi > /a.txt")
@@ -120,72 +109,72 @@ async def test_cache_fingerprints_sessions_round_trip():
         SessionKey.SESSION_ID: "agent_a",
         SessionKey.CWD: "/sub",
         SessionKey.ENV: {
-            "FOO": "bar"
+            "API_KEY": "@aws:prod-key"
         },
+        "mount_modes": {
+            "/": "read"
+        },
+    }]
+    state[StateKey.NODES] = {"/link.txt": {"target": "/a.txt"}}
+    state[StateKey.HISTORY] = [{
+        "type": "COMMAND",
+        "command": "echo hi > /a.txt",
+        "timestamp": 123.0,
+        "session": "agent_a",
+    }, {
+        "type": "COMMAND",
+        "command": "cat /a.txt",
+        "timestamp": 456.0,
+        "session": "agent_b",
     }]
 
     entries, meta = tree_inputs_from_state(state)
     meta = blob_to_meta(meta_to_blob(meta))
     restored = to_state(entries, meta)
 
-    cache_entries = restored[StateKey.CACHE][CacheKey.ENTRIES]
-    assert len(cache_entries) == 1
-    assert cache_entries[0][CacheKey.DATA] == b"cached-bytes"
-    assert cache_entries[0][CacheKey.KEY] == "/a.txt"
-    assert restored[StateKey.FINGERPRINTS][0][FingerprintKey.REVISION] == "v1"
-    assert restored[StateKey.SESSIONS][0][SessionKey.CWD] == "/sub"
-    assert restored[StateKey.SESSIONS][0][SessionKey.ENV] == {"FOO": "bar"}
-
     files = _mount_files(restored, "/")
     assert files["/a.txt"] == b"hi\n"
-    assert all(".mirage-cache" not in k for k in files)
+    assert restored[StateKey.FINGERPRINTS][0][FingerprintKey.REVISION] == "v1"
+
+    session = restored[StateKey.SESSIONS][0]
+    assert session[SessionKey.CWD] == "/sub"
+    assert session[SessionKey.ENV] == {"API_KEY": "@aws:prod-key"}
+    assert session["mount_modes"] == {"/": "read"}
+    assert restored[StateKey.NODES] == {"/link.txt": {"target": "/a.txt"}}
+    assert [e["command"] for e in restored[StateKey.HISTORY]
+            ] == ["echo hi > /a.txt", "cat /a.txt"]
+
+    # Cache is the one exclusion: derived and rebuildable.
+    assert restored[StateKey.CACHE][CacheKey.ENTRIES] == []
+    assert all(b"cached-bytes" not in data for data in entries.values())
+
+    # Control-plane state lives under .mirage/, never in mount files.
+    assert ".mirage/sessions.json" in entries
+    assert ".mirage/namespace.json" in entries
+    # One history file per session, mirroring the live ObserverStore.
+    assert ".mirage/history/agent_a.jsonl" in entries
+    assert ".mirage/history/agent_b.jsonl" in entries
+    assert all(not p.startswith(".mirage/") for p in files)
 
 
 @pytest.mark.asyncio
-async def test_cache_and_pins_survive_tar():
+async def test_control_plane_files_never_leak_into_mount_files():
     ws = Workspace({"/": (RAMResource(), MountMode.WRITE)},
                    mode=MountMode.WRITE)
     await ws.execute("echo hi > /a.txt")
     state = await to_state_dict(ws)
-    state[StateKey.CACHE][CacheKey.ENTRIES] = [{
-        CacheKey.KEY: "/a.txt",
-        CacheKey.DATA: b"cached-bytes",
-        CacheKey.FINGERPRINT: "etag-1",
-        CacheKey.TTL: None,
-        CacheKey.CACHED_AT: 1.0,
-        CacheKey.SIZE: 12,
-    }]
-    state[StateKey.FINGERPRINTS] = [{
-        FingerprintKey.PATH: "/a.txt",
-        FingerprintKey.MOUNT_PREFIX: "/",
-        FingerprintKey.REVISION: "v1",
-    }]
     state[StateKey.SESSIONS] = [{
         SessionKey.SESSION_ID: "agent_a",
-        SessionKey.CWD: "/sub",
         SessionKey.ENV: {
-            "FOO": "bar"
+            "API_KEY": "@aws:prod-key"
         },
     }]
 
     entries, meta = tree_inputs_from_state(state)
-    meta = blob_to_meta(meta_to_blob(meta))
-    rebuilt = to_state(entries, meta)
+    restored = to_state(entries, blob_to_meta(meta_to_blob(meta)))
 
-    manifest, blobs = split_manifest_and_blobs(rebuilt)
-    buf = io.BytesIO()
-    write_tar(buf, manifest, blobs)
-    buf.seek(0)
-    restored = read_tar(buf)
-
-    ce = restored[StateKey.CACHE][CacheKey.ENTRIES]
-    assert ce[0][CacheKey.DATA] == b"cached-bytes"
-    assert restored[StateKey.FINGERPRINTS][0][FingerprintKey.REVISION] == "v1"
-    sessions = {
-        s[SessionKey.SESSION_ID]: s
-        for s in restored[StateKey.SESSIONS]
-    }
-    assert sessions["agent_a"][SessionKey.CWD] == "/sub"
+    files = _mount_files(restored, "/")
+    assert list(files) == ["/a.txt"]
 
 
 def test_meta_blob_round_trip():

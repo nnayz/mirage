@@ -13,11 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 from bson.json_util import RELAXED_JSON_OPTIONS, dumps
 
 from mirage.accessor.mongodb import MongoDBAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.mongodb._client import (find_documents, iter_documents,
                                          iter_inserts)
 from mirage.core.mongodb.scope import detect_scope
@@ -26,7 +27,7 @@ from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
 
-def _apply_elision(value: dict, paths: set[str]) -> dict:
+def _apply_elision(value: dict[str, Any], paths: set[str]) -> dict[str, Any]:
     grouped: dict[str, set[str]] = {}
     leaves: set[str] = set()
     for p in paths:
@@ -35,7 +36,7 @@ def _apply_elision(value: dict, paths: set[str]) -> dict:
             grouped.setdefault(head, set()).add(tail)
         else:
             leaves.add(head)
-    out: dict = {}
+    out: dict[str, Any] = {}
     for k, v in value.items():
         if k in leaves:
             continue
@@ -55,7 +56,7 @@ async def read_tail(
     accessor: MongoDBAccessor,
     path: PathSpec,
     n: int,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> bytes:
     """Read only the last ``n`` documents of a collection.
 
@@ -94,13 +95,9 @@ async def read_tail(
 async def read_stream(
     accessor: MongoDBAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
     batch_size: int = 100,
 ) -> AsyncIterator[bytes]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     scope = detect_scope(path)
     if scope.level != ScopeLevel.DOCUMENTS:
         raise enoent(path)
@@ -120,12 +117,8 @@ async def read_stream(
 async def watch_stream(
     accessor: MongoDBAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> AsyncIterator[bytes]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     scope = detect_scope(path)
     if scope.level != ScopeLevel.DOCUMENTS:
         raise enoent(path)

@@ -20,7 +20,7 @@ router = APIRouter(prefix="/v1/workspaces/{workspace_id}/sessions")
 
 class CreateSessionRequest(BaseModel):
     session_id: str | None = None
-    allowed_mounts: list[str] | None = None
+    mounts: dict[str, str] | list[str] | None = None
 
 
 class SessionResponse(BaseModel):
@@ -45,11 +45,15 @@ async def create_session(workspace_id: str, req: CreateSessionRequest,
     import secrets
     entry = _require_entry(request, workspace_id)
     sid = req.session_id or f"sess_{secrets.token_hex(6)}"
+    await entry.runner.call(entry.runner.ws.ensure_sessions_loaded())
     if any(s.session_id == sid for s in entry.runner.ws.list_sessions()):
         raise HTTPException(status_code=409,
                             detail=f"session id already exists: {sid!r}")
-    allowed = (frozenset(req.allowed_mounts) if req.allowed_mounts else None)
-    sess = entry.runner.ws.create_session(sid, allowed_mounts=allowed)
+    try:
+        sess = entry.runner.ws.create_session(sid, mounts=req.mounts or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await entry.runner.call(entry.runner.ws.flush_sessions())
     return SessionResponse(session_id=sess.session_id, cwd=sess.cwd)
 
 
@@ -57,6 +61,7 @@ async def create_session(workspace_id: str, req: CreateSessionRequest,
 async def list_sessions(workspace_id: str,
                         request: Request) -> list[SessionResponse]:
     entry = _require_entry(request, workspace_id)
+    await entry.runner.call(entry.runner.ws.ensure_sessions_loaded())
     return [
         SessionResponse(session_id=s.session_id, cwd=s.cwd)
         for s in entry.runner.ws.list_sessions()

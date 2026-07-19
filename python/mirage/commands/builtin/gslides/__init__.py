@@ -12,38 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from functools import partial
-
-from mirage.commands.builtin.generic_bind import (CommandIO,
-                                                  make_generic_commands)
-from mirage.commands.builtin.gslides.gws_slides_presentations_batchUpdate import \
-    gws_slides_presentations_batchUpdate  # noqa: E501
-from mirage.commands.builtin.gslides.gws_slides_presentations_create import \
-    gws_slides_presentations_create  # noqa: E501
+from mirage.commands.builtin.generic_bind import make_generic_commands
+from mirage.commands.builtin.gslides.io import IO as _IO
 from mirage.commands.builtin.gslides.rm import rm
-from mirage.commands.builtin.utils.wrap import stream_from_bytes
-from mirage.core.gslides.read import read as _read
-from mirage.core.gslides.readdir import readdir as _readdir
-from mirage.core.gslides.stat import stat as _stat
-
-# A presentation is written through the bespoke gws_slides_* API commands, not
-# by writing raw bytes, so only the read ops feed the generic factory; the
-# generic byte-mutation commands (cp/mv/tee/...) are intentionally absent.
-_GSLIDES_CMD_OPS = CommandIO(
-    readdir=_readdir,
-    read_bytes=_read,
-    read_stream=partial(stream_from_bytes, _read),
-    stat=_stat,
-    is_mounted=lambda a: True,
-    local=False,
-)
+from mirage.commands.builtin.gws import GWS_SLIDES_API_COMMANDS
 
 COMMANDS = [
     *make_generic_commands(
         "gslides",
-        _GSLIDES_CMD_OPS,
+        _IO,
     ),
     rm,
-    gws_slides_presentations_create,
-    gws_slides_presentations_batchUpdate,
+    *GWS_SLIDES_API_COMMANDS,
 ]

@@ -13,12 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
-from collections.abc import AsyncIterator
 
 from mirage.accessor.linear import LinearAccessor
 from mirage.commands.builtin.linear._input import resolve_text_input
 from mirage.commands.registry import command
-from mirage.commands.spec.types import CommandSpec, OperandKind, Option
+from mirage.commands.spec.types import (CommandSpec, FlagView, OperandKind,
+                                        Option)
 from mirage.core.linear._client import issue_create
 from mirage.core.linear.normalize import normalize_issue
 from mirage.io.stream import yield_bytes
@@ -38,9 +38,10 @@ async def linear_issue_create(
     accessor: LinearAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(_extra, spec=SPEC)
     config = accessor.config
     team_id = _extra.get("team_id")
     if not team_id or not isinstance(team_id, str):
@@ -53,10 +54,8 @@ async def linear_issue_create(
             or stdin is not None):
         description = await resolve_text_input(
             config,
-            inline_text=_extra.get("description") if isinstance(
-                _extra.get("description"), str) else None,
-            file_path=_extra.get("description_file") if isinstance(
-                _extra.get("description_file"), str) else None,
+            inline_text=fl.as_str("description"),
+            file_path=fl.as_str("description_file"),
             stdin=stdin,
             error_message="description is required",
         )

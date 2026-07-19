@@ -13,18 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
-from collections.abc import AsyncIterator
 
 from mirage.accessor.discord import DiscordAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.discord._provision import file_read_provision
+from mirage.commands.builtin.discord.io import resolve_glob
 from mirage.commands.builtin.generic.head import head as generic_head
 from mirage.commands.builtin.generic.head import head_multi
+from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.utils.stream import _read_stdin_async
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.discord._client import discord_get
-from mirage.core.discord.glob import resolve_glob
 from mirage.core.discord.history import date_to_snowflake
 from mirage.core.discord.read import read as discord_read
 from mirage.core.discord.scope import detect_scope
@@ -53,12 +53,12 @@ async def head(
     accessor: DiscordAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     n: str | None = None,
     c: str | None = None,
     q: bool = False,
     v: bool = False,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
     n_int = int(n) if n is not None else None
@@ -79,6 +79,7 @@ async def head(
                     "limit": lines
                 },
             )
+            assert isinstance(msgs, list)
             msgs.sort(key=lambda m: int(m["id"]))
             jsonl = "\n".join(
                 json.dumps(m, ensure_ascii=False, separators=(",", ":"))
@@ -87,9 +88,7 @@ async def head(
 
         paths = await resolve_glob(accessor, paths, index)
         return head_multi(paths,
-                          read=discord_read,
-                          accessor=accessor,
-                          index=index,
+                          read=bound_op(discord_read, accessor, index),
                           n=n_int,
                           c=c_int,
                           show_headers=(v or len(paths) > 1)

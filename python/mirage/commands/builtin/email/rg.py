@@ -13,11 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
-from collections.abc import AsyncIterator
 
 from mirage.accessor.email import EmailAccessor
 from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.email.io import resolve_glob
 from mirage.commands.builtin.generic.rg import rg as generic_rg
+from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import (compile_pattern,
                                                  grep_count_has_matches,
                                                  grep_lines, pattern_arg)
@@ -42,27 +43,29 @@ async def rg(
     accessor: EmailAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     prefix: str = "",
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
         raise UsageError("rg: usage: rg [flags] pattern [path]")
-    i = fl.bool("i")
-    v = fl.bool("v")
-    n = fl.bool("n")
-    c = fl.bool("c")
-    args_l = fl.bool("args_l")
-    w = fl.bool("w")
-    F = fl.bool("F")
-    o = fl.bool("o")
-    max_count = fl.int("m")
+    i = fl.as_bool("i")
+    v = fl.as_bool("v")
+    n = fl.as_bool("n")
+    c = fl.as_bool("c")
+    args_l = fl.as_bool("args_l")
+    w = fl.as_bool("w")
+    F = fl.as_bool("F")
+    o = fl.as_bool("o")
+    max_count = fl.as_int("m")
     pat = compile_pattern(pattern_str, i, F, w)
 
-    if paths:
+    # IMAP text search takes one pattern; a newline-joined multi -e set
+    # must fall through to the generic so each pattern matches (#347).
+    if paths and "\n" not in pattern_str:
         folder = extract_folder(paths)
         if not folder:
             return b"", IOResult(exit_code=1)
@@ -112,15 +115,14 @@ async def rg(
             return b"", IOResult(exit_code=1)
         return format_records(all_results), IOResult()
 
+    resolved = await resolve_glob(accessor, paths, index) if paths else []
     return await generic_rg(
-        [],
+        resolved,
         texts,
         flags,
-        readdir=_readdir,
-        stat=_stat,
-        read_bytes=email_read,
+        readdir=bound_op(_readdir, accessor, index),
+        stat=bound_op(_stat, accessor, index),
+        read_bytes=bound_op(email_read, accessor, index),
         read_stream=None,
-        accessor=accessor,
         stdin=stdin,
-        index=index,
     )

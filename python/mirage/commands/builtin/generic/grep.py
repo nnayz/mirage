@@ -3,10 +3,8 @@ from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
 from dataclasses import dataclass
 from functools import partial
 
-from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
-from mirage.cache.read_through import (cache_aware_read_bytes,
-                                       cache_aware_read_stream)
+from mirage.cache.read_through import (cache_aware_bound_bytes,
+                                       cache_aware_bound_stream)
 from mirage.commands.builtin.grep_helper import (  # yapf: disable
     compile_pattern, count_exit_stream, count_records_have_matches,
     grep_files_only, grep_lines, grep_recursive, grep_stream, prefix_lines,
@@ -55,23 +53,23 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
         never_match (bool): zero-pattern sentinel from resolve_pattern; it is
             a regex, so it suppresses -F.
     """
-    a_ctx = fl.int("A")
-    b_ctx = fl.int("B")
-    c_ctx = fl.int("C")
+    a_ctx = fl.as_int("A")
+    b_ctx = fl.as_int("B")
+    c_ctx = fl.as_int("C")
     return GrepFlags(
-        ignore_case=fl.bool("i"),
-        invert=fl.bool("v"),
-        line_numbers=fl.bool("n"),
-        count_only=fl.bool("c"),
-        files_only=fl.bool("args_l"),
-        whole_word=fl.bool("w"),
-        fixed_string=fl.bool("F") and not never_match,
-        only_matching=fl.bool("o"),
-        quiet=fl.bool("q"),
-        recursive=fl.bool("r") or fl.bool("R"),
-        with_filename=fl.bool("H"),
-        no_filename=fl.bool("h"),
-        max_count=fl.int("m"),
+        ignore_case=fl.as_bool("i"),
+        invert=fl.as_bool("v"),
+        line_numbers=fl.as_bool("n"),
+        count_only=fl.as_bool("c"),
+        files_only=fl.as_bool("args_l"),
+        whole_word=fl.as_bool("w"),
+        fixed_string=fl.as_bool("F") and not never_match,
+        only_matching=fl.as_bool("o"),
+        quiet=fl.as_bool("q"),
+        recursive=fl.as_bool("r") or fl.as_bool("R"),
+        with_filename=fl.as_bool("H"),
+        no_filename=fl.as_bool("h"),
+        max_count=fl.as_int("m"),
         after_context=a_ctx if a_ctx is not None else (c_ctx or 0),
         before_context=b_ctx if b_ctx is not None else (c_ctx or 0),
     )
@@ -83,12 +81,10 @@ async def grep(
     flags: Mapping[str, object] | None = None,
     *,
     readdir: Callable[..., Awaitable[list[str]]],
-    stat: Callable[[PathSpec], Awaitable[FileStat]],
+    stat: Callable[..., Awaitable[FileStat]],
     read_bytes: Callable[..., Awaitable[bytes]],
     read_stream: Callable[..., AsyncIterator[bytes]] | None,
-    accessor: Accessor | None = None,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
-    index: IndexCacheStore | None = None,
+    stdin: ByteSource | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Run grep-style fallback search over backend paths or stdin.
 
@@ -108,43 +104,24 @@ async def grep(
         read_bytes (Callable[..., Awaitable[bytes]]): Whole-file reader.
         read_stream (Callable[..., AsyncIterator[bytes]] | None): Optional
             stream reader.
-        accessor (Accessor | None): Backend accessor passed through wrapper
-            helpers.
-        stdin (AsyncIterator[bytes] | bytes | None): Input used when paths is
-            empty.
-        index (IndexCacheStore | None): Optional cache index for wrapped
-            backend calls.
 
     Returns:
         tuple[ByteSource | None, IOResult]: Output stream and exit metadata.
     """
-    read_bytes = cache_aware_read_bytes(read_bytes)
+    read_bytes = cache_aware_bound_bytes(read_bytes)
     if read_stream is not None:
-        read_stream = cache_aware_read_stream(read_stream)
+        read_stream = cache_aware_bound_stream(read_stream)
     fl = FlagView(flags, spec=SPECS["grep"])
     pattern, never_match = await resolve_pattern(
-        texts, fl, read_bytes, accessor, index,
-        "grep: usage: grep [flags] pattern [path]")
+        texts, fl, read_bytes, "grep: usage: grep [flags] pattern [path]")
     f = parse_flags(fl, never_match)
 
     if paths:
         mount_prefix = mount_prefix_of(paths[0].virtual,
                                        paths[0].resource_path)
-        rd = partial(call_readdir,
-                     readdir,
-                     accessor,
-                     index=index,
-                     prefix=mount_prefix)
-        st = partial(call_stat,
-                     stat,
-                     accessor,
-                     index=index,
-                     prefix=mount_prefix)
-        rb = partial(call_read_bytes,
-                     read_bytes,
-                     accessor,
-                     index=index,
-                     prefix=mount_prefix)
+        rd = partial(call_readdir, readdir, prefix=mount_prefix)
+        st = partial(call_stat, stat, prefix=mount_prefix)
+        rb = partial(call_read_bytes, read_bytes, prefix=mount_prefix)
 
         if f.files_only:
             warnings: list[str] = []
@@ -170,6 +147,9 @@ async def grep(
                 )
                 results.extend(rebase_raw(hits, p.virtual, p.raw_path))
             stderr = format_optional_records(warnings)
+            if f.quiet:
+                return b"", IOResult(exit_code=0 if results else 1,
+                                     stderr=stderr)
             if not results:
                 return b"", IOResult(exit_code=1, stderr=stderr)
             return format_records(results), IOResult(stderr=stderr)
@@ -219,9 +199,14 @@ async def grep(
                     else:
                         all_results.extend(f"{label}{rl}" for rl in hits)
             stderr = format_optional_records(warnings)
+            matched = bool(all_results) and (
+                not f.count_only or count_records_have_matches(all_results))
+            if f.quiet:
+                return b"", IOResult(exit_code=0 if matched else 1,
+                                     stderr=stderr)
             if not all_results:
                 return b"", IOResult(exit_code=1, stderr=stderr)
-            if f.count_only and not count_records_have_matches(all_results):
+            if not matched:
                 return format_records(all_results), IOResult(exit_code=1,
                                                              stderr=stderr)
             return format_records(all_results), IOResult(stderr=stderr)
@@ -257,9 +242,14 @@ async def grep(
                 else:
                     all_results.extend(f"{label}{r}" for r in hits)
             stderr = format_optional_records(multi_warnings)
+            matched = bool(all_results) and (
+                not f.count_only or count_records_have_matches(all_results))
+            if f.quiet:
+                return b"", IOResult(exit_code=0 if matched else 1,
+                                     stderr=stderr)
             if not all_results:
                 return b"", IOResult(exit_code=1, stderr=stderr)
-            if f.count_only and not count_records_have_matches(all_results):
+            if not matched:
                 return format_records(all_results), IOResult(exit_code=1,
                                                              stderr=stderr)
             return format_records(all_results), IOResult(stderr=stderr)
@@ -270,10 +260,10 @@ async def grep(
             return b"", IOResult(exit_code=1, stderr=stderr)
 
         if read_stream is not None:
-            source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
+            source: AsyncIterator[bytes] = read_stream(paths[0])
         else:
-            data = await rb(paths[0].virtual)
-            source = _wrap_bytes(data)
+            raw_bytes = await rb(paths[0].virtual)
+            source = _wrap_bytes(raw_bytes)
         stream = grep_stream(
             source,
             pat,

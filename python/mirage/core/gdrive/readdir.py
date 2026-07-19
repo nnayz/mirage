@@ -15,7 +15,8 @@
 import logging
 
 from mirage.accessor.gdrive import GDriveAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.core.gdrive.resolve import root_context
 from mirage.core.google.drive import (MIME_TO_EXT, list_files,
                                       list_shared_drives)
 from mirage.types import PathSpec
@@ -44,33 +45,25 @@ def unique_shared_drive_name(name: str, existing_names: set[str]) -> str:
 
 async def readdir(
     accessor: GDriveAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = None,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    path = (path.dir if path.pattern else path).mount_path
+    virtual = path_spec.virtual
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     virtual_key = prefix + "/" + key if key else prefix or "/"
 
-    if index is not None:
-        cached = await index.list_dir(virtual_key)
-        # Cached entries are slash-less, while the cold path below marks
-        # folders with a trailing slash. Callers must not infer dir-ness
-        # from the slash alone (see find's stat fallback).
-        if cached.entries is not None:
-            return cached.entries
+    cached = await index.list_dir(virtual_key)
+    # Cached entries are slash-less, while the cold path below marks
+    # folders with a trailing slash. Callers must not infer dir-ness
+    # from the slash alone (see find's stat fallback).
+    if cached.entries is not None:
+        return cached.entries
 
     if not key:
-        folder_id = "root"
-        drive_id = None
+        folder_id, drive_id = await root_context(accessor)
     else:
-        if index is None:
-            raise enoent(virtual)
         result = await index.get(virtual_key)
         if result.entry is None:
             parent_virtual = virtual_key.rstrip("/").rsplit("/", 1)[0] or "/"
@@ -107,22 +100,35 @@ async def readdir(
             rt = "gdrive/gslide"
         else:
             rt = "gdrive/file"
-        owners = f.get("owners", [])
-        owners[0] if owners else {}
+        source_size = int(f.get("size") or f.get("quotaBytesUsed") or 0)
+        extra = {"drive_id": f.get("driveId")} if f.get("driveId") else {}
+        # Binary files download raw, so Drive's size is the rendered byte
+        # length and stays. Google-apps files (gdoc/gsheet/gslide) render to
+        # JSON, so Drive's source size must not become FileStat.size
+        # (render-derived or None, see the CLAUDE.md FUSE rules); it lives in
+        # extra instead.
+        if rt == "gdrive/file":
+            size = source_size or None
+        else:
+            size = None
+            if source_size:
+                extra["source_size"] = source_size
         entry = IndexEntry(
             id=f["id"],
             name=name,
             resource_type=rt,
             remote_time=f.get("modifiedTime", ""),
             vfs_name=filename,
-            size=int(f.get("size") or f.get("quotaBytesUsed") or 0) or None,
-            extra={"drive_id": f.get("driveId")} if f.get("driveId") else {},
+            size=size,
+            extra=extra,
         )
         entries.append((filename, entry, is_dir))
 
-    if not key:
+    if not key and folder_id == "root":
         # Shared Drive enumeration is best-effort: if the account can't list
         # them (missing scope, API error), still return My Drive contents.
+        # A folder-scoped mount lists only the folder's children, so shared
+        # drives never surface there.
         try:
             shared_drives = await list_shared_drives(accessor.token_manager)
         except Exception:
@@ -142,8 +148,10 @@ async def readdir(
             )
             entries.append((filename, entry, True))
 
-    if index is not None:
-        await index.set_dir(virtual_key, [(name, e) for name, e, _ in entries])
+    # Deterministic vfs order: glob expansion and walkers follow readdir
+    # order, so sort by rendered filename (Drive returns modifiedTime desc).
+    entries.sort(key=lambda e: e[0])
+    await index.set_dir(virtual_key, [(name, e) for name, e, _ in entries])
     path_prefix = f"/{key}/" if key else "/"
     result_paths = []
     for name, _, is_folder in entries:

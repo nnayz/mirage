@@ -14,7 +14,10 @@
 
 import inspect
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
+
+from mirage.accessor.base import Accessor
+from mirage.types import PathSpec
 
 
 @dataclass
@@ -22,7 +25,7 @@ class RegisteredOp:
     name: str
     resource: str
     filetype: str | None
-    fn: Callable
+    fn: Callable[..., Any]
     write: bool = False
 
 
@@ -32,12 +35,11 @@ def op(
     resource: str | list[str],
     filetype: str | None = None,
     write: bool = False,
-) -> Callable:
+) -> Callable[..., Any]:
 
-    def decorator(fn: Callable) -> Callable:
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         resources = (resource if isinstance(resource, list) else [resource])
-        if not hasattr(fn, "_registered_ops"):
-            fn._registered_ops = []
+        ops = getattr(fn, "_registered_ops", [])
         for p in resources:
             ro = RegisteredOp(
                 name=name,
@@ -46,7 +48,8 @@ def op(
                 fn=fn,
                 write=write,
             )
-            fn._registered_ops.append(ro)
+            ops.append(ro)
+        setattr(fn, "_registered_ops", ops)
         return fn
 
     return decorator
@@ -84,9 +87,10 @@ class OpsRegistry:
         name: str,
         resource: str,
         filetype: str | None = None,
-    ) -> Callable:
+    ) -> Callable[..., Any]:
         if filetype:
-            key = (name, filetype, resource)
+            key: tuple[str, str | None,
+                       str | None] = (name, filetype, resource)
             if key in self._registered:
                 return self._registered[key].fn
 
@@ -104,15 +108,16 @@ class OpsRegistry:
         self,
         name: str,
         resource: str,
-        accessor: object,
-        path: str,
+        accessor: Accessor,
+        path: PathSpec,
         *args,
         filetype: str | None = None,
         **kwargs,
     ):
         levels = []
         if filetype:
-            key = (name, filetype, resource)
+            key: tuple[str, str | None,
+                       str | None] = (name, filetype, resource)
             if key in self._registered:
                 levels.append(self._registered[key].fn)
 

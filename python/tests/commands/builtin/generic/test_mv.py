@@ -15,7 +15,7 @@
 import pytest
 
 from mirage.commands.builtin.generic.mv import mv
-from mirage.types import FileStat, FileType, PathSpec
+from mirage.types import FileStat, FileType, NativeMove, PathSpec
 
 
 def _spec(path: str) -> PathSpec:
@@ -30,7 +30,7 @@ def _key(p) -> str:
 
 def _make_backend(files: dict[str, bytes], dirs: set[str]):
 
-    async def stat(p, index=None) -> FileStat:
+    async def stat(p) -> FileStat:
         k = _key(p)
         if k in dirs:
             return FileStat(name=k.rsplit("/", 1)[-1], type=FileType.DIRECTORY)
@@ -47,7 +47,7 @@ def _make_backend(files: dict[str, bytes], dirs: set[str]):
 async def _run(files, dirs, paths, **kw):
     stat, rename = _make_backend(files, dirs)
     return await mv([_spec(p) for p in paths],
-                    rename=rename,
+                    strategy=NativeMove(rename=rename),
                     stat=stat,
                     n=kw.get("n", False),
                     v=kw.get("v", False))

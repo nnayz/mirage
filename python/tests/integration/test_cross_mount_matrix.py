@@ -28,7 +28,7 @@ from mirage.resource.gdrive import GoogleDriveConfig, GoogleDriveResource
 from mirage.resource.ram import RAMResource
 from mirage.resource.redis import RedisResource
 from mirage.resource.s3 import S3Config, S3Resource
-from mirage.types import DEFAULT_SESSION_ID, MountMode
+from mirage.types import MountMode, PathSpec
 from mirage.workspace import Workspace
 from tests.integration.gdrive_mock import FakeGDrive, patch_gdrive
 from tests.integration.s3_mock import patch_s3_multi
@@ -131,11 +131,9 @@ async def _populate_file_async(state: _MountState, name: str,
         for i in range(1, len(parts)):
             d = "/" + "/".join(parts[:i])
             if d not in state.accessor.store.dirs:
-                try:
-                    await mem_mkdir(state.accessor, d)
-                except (FileExistsError, ValueError):
-                    pass
-        await mem_write(state.accessor, "/" + name, content)
+                await mem_mkdir(state.accessor, PathSpec.from_str_path(d))
+        await mem_write(state.accessor, PathSpec.from_str_path("/" + name),
+                        content)
     elif state.ptype == "disk":
         full = state.disk_root / name
         full.parent.mkdir(parents=True, exist_ok=True)
@@ -144,11 +142,10 @@ async def _populate_file_async(state: _MountState, name: str,
         parts = ("/" + name).strip("/").split("/")
         for i in range(1, len(parts)):
             d = "/" + "/".join(parts[:i])
-            try:
-                await redis_mkdir(state.resource.accessor, d)
-            except (FileExistsError, ValueError):
-                pass
-        await redis_write(state.resource.accessor, "/" + name, content)
+            await redis_mkdir(state.resource.accessor,
+                              PathSpec.from_str_path(d))
+        await redis_write(state.resource.accessor,
+                          PathSpec.from_str_path("/" + name), content)
 
 
 def _populate_file(state: _MountState, name: str, content: bytes,
@@ -247,7 +244,7 @@ def cross(request, tmp_path):
         },
         mode=MountMode.WRITE,
     )
-    ws.get_session(DEFAULT_SESSION_ID).cwd = "/m1"
+    ws.get_session(ws.default_session_id).cwd = "/m1"
 
     buckets: dict[str, dict[str, bytes]] = {}
     if m1.ptype == "s3":

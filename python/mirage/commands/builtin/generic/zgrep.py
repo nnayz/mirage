@@ -1,11 +1,9 @@
 import gzip as gziplib
 import re
-from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
-                             Sequence)
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 
-from mirage.accessor.base import Accessor
 from mirage.commands.builtin.grep_helper import (build_pattern_str,
                                                  resolve_pattern)
 from mirage.commands.builtin.utils.lines import split_lines
@@ -18,11 +16,9 @@ from mirage.types import PathSpec
 
 async def _read_plain(
     read_bytes: Callable[..., Awaitable[bytes]],
-    accessor: Accessor,
     path: PathSpec,
-    index: object = None,
 ) -> bytes:
-    return await read_bytes(accessor, path)
+    return await read_bytes(path)
 
 
 def _zgrep_search(
@@ -113,18 +109,18 @@ def parse_flags(fl: FlagView, never_match: bool) -> ZgrepFlags:
             a regex, so it suppresses -F.
     """
     return ZgrepFlags(
-        ignore_case=fl.bool("i"),
-        invert=fl.bool("v"),
-        count=fl.bool("c"),
-        files_only=fl.bool("args_l"),
-        line_numbers=fl.bool("n"),
-        fixed=fl.bool("F") and not never_match,
-        force_filename=fl.bool("H"),
-        suppress_filename=fl.bool("h"),
-        only_matching=fl.bool("o"),
-        quiet=fl.bool("q"),
-        whole_word=fl.bool("w"),
-        max_count=fl.int("m"),
+        ignore_case=fl.as_bool("i"),
+        invert=fl.as_bool("v"),
+        count=fl.as_bool("c"),
+        files_only=fl.as_bool("args_l"),
+        line_numbers=fl.as_bool("n"),
+        fixed=fl.as_bool("F") and not never_match,
+        force_filename=fl.as_bool("H"),
+        suppress_filename=fl.as_bool("h"),
+        only_matching=fl.as_bool("o"),
+        quiet=fl.as_bool("q"),
+        whole_word=fl.as_bool("w"),
+        max_count=fl.as_int("m"),
     )
 
 
@@ -134,13 +130,11 @@ async def zgrep(
     flags: Mapping[str, object] | None = None,
     *,
     read_bytes: Callable[..., Awaitable[bytes]],
-    accessor: Accessor | None = None,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
-    index: object = None,
+    stdin: ByteSource | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["zgrep"])
     pattern, never_match = await resolve_pattern(
-        texts, fl, partial(_read_plain, read_bytes), accessor, index,
+        texts, fl, partial(_read_plain, read_bytes),
         "zgrep: usage: zgrep [flags] pattern [path]")
     f = parse_flags(fl, never_match)
     compiled = build_pattern_str(pattern, f.fixed, f.whole_word)
@@ -151,7 +145,7 @@ async def zgrep(
 
     if paths:
         for p in paths:
-            raw = await read_bytes(accessor, p)
+            raw = await read_bytes(p)
             data = gziplib.decompress(raw)
             fname = p.virtual if show_filename else None
             if f.files_only:
@@ -168,16 +162,18 @@ async def zgrep(
                     any_match = True
                 all_results.extend(result)
     else:
-        raw = await _read_stdin_async(stdin)
-        data = gziplib.decompress(raw) if raw else b""
+        stdin_raw = await _read_stdin_async(stdin)
+        data = gziplib.decompress(stdin_raw) if stdin_raw else b""
         if f.files_only:
             if _files_only_match(data, compiled, f.ignore_case, f.invert):
                 all_results.append("(standard input)")
                 any_match = True
         else:
+            # GNU zgrep labels stdin "(standard input)" under -H.
+            stdin_name = "(standard input)" if f.force_filename else None
             result, had_match = _zgrep_search(data, compiled, f.ignore_case,
                                               f.invert, f.count,
-                                              f.line_numbers, None,
+                                              f.line_numbers, stdin_name,
                                               f.only_matching, f.max_count)
             if had_match:
                 any_match = True

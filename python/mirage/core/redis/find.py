@@ -23,7 +23,7 @@ from mirage.utils.path import norm
 
 async def find(
     accessor: RedisAccessor,
-    path: PathSpec,
+    path_spec: PathSpec,
     name: str | None = None,
     type: str | None = None,
     min_size: int | None = None,
@@ -37,13 +37,8 @@ async def find(
     empty: bool = False,
     tree: PredNode | None = None,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    start_name = start_basename(path)
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+    start_name = start_basename(path_spec)
+    path = path_spec.mount_path
     store = accessor.store
     p = norm(path)
     prefix = p.rstrip("/") + "/"
@@ -105,8 +100,10 @@ async def find(
         if not keep(entry, tree, mindepth):
             continue
 
-        if kind == "f" and (min_size is not None or max_size is not None):
-            size = await store.file_len(key)
+        if min_size is not None or max_size is not None:
+            # Directories count as size 0 for -size (deliberate GNU
+            # divergence).
+            size = await store.file_len(key) if kind == "f" else 0
             if min_size is not None and size < min_size:
                 continue
             if max_size is not None and size > max_size:

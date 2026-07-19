@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.sharepoint import SharePointAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.sharepoint.stat import stat as sharepoint_stat
 from mirage.provision.types import Precision, ProvisionResult
 from mirage.types import PathSpec
@@ -22,7 +22,7 @@ from mirage.types import PathSpec
 async def _resolve_sizes(
     accessor: SharePointAccessor,
     paths: list[PathSpec],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> tuple[list[tuple[str, int]], int]:
     """Walk paths, return (path, size) pairs. Self-heals via stat fallback.
 
@@ -41,15 +41,16 @@ async def _resolve_sizes(
     for p in paths:
         path_str = p.virtual if isinstance(p, PathSpec) else p
         size = None
-        if index is not None:
-            lookup = await index.get(path_str)
-            if lookup.entry is not None:
-                size = lookup.entry.size
+        lookup = await index.get(path_str)
+        if lookup.entry is not None:
+            size = lookup.entry.size
         if size is None:
             try:
                 file_stat = await sharepoint_stat(accessor, p, index)
                 size = file_stat.size
             except (FileNotFoundError, ValueError):
+                # provision estimates degrade, never fail: unresolved
+                # sizes stay UNKNOWN
                 pass
         if size is not None:
             resolved.append((path_str, size))
@@ -63,7 +64,7 @@ async def file_read_provision(
     paths: list[PathSpec],
     *_args: object,
     command: str = "",
-    index: IndexCacheStore | None = None,
+    index: IndexCacheStore = NULL_INDEX,
     **_extra: object,
 ) -> ProvisionResult:
     """Cost estimate for full file reads (cat, wc).
@@ -83,72 +84,5 @@ async def file_read_provision(
         network_read_low=total,
         network_read_high=total,
         read_ops=len(resolved),
-        precision=Precision.EXACT,
-    )
-
-
-async def head_tail_provision(
-    accessor: SharePointAccessor,
-    paths: list[PathSpec],
-    *_args: object,
-    command: str = "",
-    n: str | int | None = None,
-    c: str | int | None = None,
-    index: IndexCacheStore | None = None,
-    **_extra: object,
-) -> ProvisionResult:
-    """Cost estimate for partial reads (head, tail).
-
-    With ``-c BYTES`` the byte count is exact: ``min(c, file_size)``
-    per file. With ``-n LINES`` (the default) we cannot predict bytes
-    without reading, so we mark precision RANGE with the full file
-    size as the upper bound.
-    """
-    if not paths:
-        return ProvisionResult(command=command, precision=Precision.UNKNOWN)
-    resolved, missing = await _resolve_sizes(accessor, paths, index)
-    if missing > 0 or not resolved:
-        return ProvisionResult(command=command, precision=Precision.UNKNOWN)
-
-    if c is not None:
-        c_bytes = int(c)
-        total = sum(min(c_bytes, size) for _, size in resolved)
-        return ProvisionResult(
-            command=command,
-            network_read_low=total,
-            network_read_high=total,
-            read_ops=len(resolved),
-            precision=Precision.EXACT,
-        )
-
-    full = sum(size for _, size in resolved)
-    return ProvisionResult(
-        command=command,
-        network_read_low=0,
-        network_read_high=full,
-        read_ops=len(resolved),
-        precision=Precision.RANGE,
-    )
-
-
-async def metadata_provision(
-    accessor: SharePointAccessor,
-    paths: list[PathSpec],
-    *_args: object,
-    command: str = "",
-    index: IndexCacheStore | None = None,
-    **_extra: object,
-) -> ProvisionResult:
-    """Cost estimate for metadata-only ops (stat, ls, find).
-
-    These hit the Graph API but don't transfer bytes. We report
-    ``read_ops`` so callers can multiply by the per-request cost.
-    """
-    n = max(1, len(paths) if paths else 1)
-    return ProvisionResult(
-        command=command,
-        network_read_low=0,
-        network_read_high=0,
-        read_ops=n,
         precision=Precision.EXACT,
     )

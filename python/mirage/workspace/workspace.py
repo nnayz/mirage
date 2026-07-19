@@ -16,23 +16,22 @@ import asyncio
 import builtins
 import logging
 import sys
-from collections.abc import AsyncIterator
+import time
+from collections.abc import Iterable, Mapping
 from functools import partial
-from typing import Any
+from types import TracebackType
+from typing import Any, Literal, TypeAlias, cast, overload
 
+from mirage.bridge.sync import run_async_from_sync
 from mirage.cache.file.config import CacheConfig, RedisCacheConfig
 from mirage.cache.file.ram import RAMFileCacheStore
 from mirage.cache.index import IndexConfig
 from mirage.commands.builtin.utils.safeguard import (CommandTimeoutError,
                                                      run_with_timeout)
 from mirage.commands.errors import FindParseError, UsageError
-from mirage.commands.safeguard import resolve_safeguard
-
-try:
-    from mirage.cache.file.redis import RedisFileCacheStore
-except ImportError:
-    RedisFileCacheStore = None  # type: ignore[misc, assignment]
+from mirage.commands.safeguard import CommandSafeguard, resolve_safeguard
 from mirage.io import IOResult
+from mirage.io.types import ByteSource, materialize
 from mirage.observe.context import RecordingScope
 from mirage.observe.observer import Observer
 from mirage.observe.record import OpRecord
@@ -44,21 +43,30 @@ from mirage.provision import ProvisionResult
 from mirage.resource.base import BaseResource
 from mirage.resource.history import HISTORY_PREFIX, HistoryViewResource
 from mirage.resource.ram import RAMResource
+from mirage.runtime.base import RunResult, Runtime
+from mirage.runtime.route import (RouteContext, RouteFn, RoutingDecision,
+                                  RoutingDecisionError, command_facts,
+                                  decide_line)
+from mirage.runtime.table import (DEFAULT_ENTRIES, VfsRuntime, bind_commands,
+                                  build_runtime, catch_all,
+                                  runtime_bindings_for, whole_line_runtime)
 from mirage.shell.job_table import JobTable
 from mirage.shell.parse import find_syntax_error, parse
-from mirage.types import (DEFAULT_AGENT_ID, DEFAULT_SESSION_ID,
-                          ConsistencyPolicy, DriftPolicy, FileStat, MountMode,
-                          PathSpec, StateKey)
+from mirage.types import (ConsistencyPolicy, DriftPolicy, FileStat, MountMode,
+                          PathSpec, StateKey, parse_mount_mode)
 from mirage.utils.errors import format_fs_error
+from mirage.utils.ids import new_session_id, new_workspace_id
 from mirage.workspace.abort import MirageAbortError
 from mirage.workspace.dispatcher import Dispatcher
 from mirage.workspace.file_prompt import build_file_prompt
 from mirage.workspace.fuse import FuseManager
 from mirage.workspace.mount import MountEntry, MountRegistry
 from mirage.workspace.mount.namespace import Namespace
+from mirage.workspace.mount.namespace.overlay import merge_overlay_stat
+from mirage.workspace.mount.namespace.store import NamespaceStore
 from mirage.workspace.mount.spec import Mount
 from mirage.workspace.node import provision_node, run_command_tree
-from mirage.workspace.session import (Session, SessionManager,
+from mirage.workspace.session import (Session, SessionManager, SessionStore,
                                       reset_current_session,
                                       set_current_session)
 from mirage.workspace.snapshot import (ContentDriftError, apply_state_dict,
@@ -67,8 +75,45 @@ from mirage.workspace.snapshot import (ContentDriftError, apply_state_dict,
                                        read_tar, requires_resource_override)
 from mirage.workspace.snapshot import snapshot as _write_snapshot
 from mirage.workspace.snapshot import to_state_dict
+from mirage.workspace.store import RAMWorkspaceStateStore, WorkspaceStateStore
+
+RedisFileCacheStore: Any
+try:
+    from mirage.cache.file.redis import \
+        RedisFileCacheStore as _RedisFileCacheStore
+except ImportError:
+    RedisFileCacheStore = None
+else:
+    RedisFileCacheStore = _RedisFileCacheStore
 
 logger = logging.getLogger(__name__)
+
+ResourceMount: TypeAlias = (BaseResource | Mount
+                            | tuple[BaseResource, MountMode]
+                            | tuple[BaseResource, MountMode,
+                                    dict[str, CommandSafeguard]])
+
+
+def _reject_config_script(kind: str, value: object) -> None:
+    """Guard the code API: script source strings belong to config.
+
+    In code, scripts and routes are callables; a plain string is
+    almost always a script that should live next to the workspace
+    yaml and be referenced there (``script:`` on an entry, ``route:``
+    on the workspace), where the loader wraps it as ScriptSource.
+
+    Args:
+        kind (str): what carried the string, for the error message.
+        value (object): the suspect script value.
+
+    Raises:
+        TypeError: the value is a plain string.
+    """
+    if isinstance(value, str):
+        raise TypeError(
+            f"{kind} must be a callable taking the RouteContext; config "
+            f"scripts reference a .py file (script:/route: in the "
+            f"workspace yaml)")
 
 
 class Workspace:
@@ -80,17 +125,47 @@ class Workspace:
 
     def __init__(
         self,
-        resources: dict[str, BaseResource | tuple | Mount],
+        resources: dict[str, ResourceMount],
         cache_limit: str | int = "512MB",
         cache: CacheConfig | None = None,
         index: IndexConfig | None = None,
         mode: MountMode = MountMode.READ,
         consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY,
-        session_id: str = DEFAULT_SESSION_ID,
-        agent_id: str = DEFAULT_AGENT_ID,
+        session_id: str | None = None,
+        agent_id: str | None = None,
+        workspace_id: str | None = None,
+        store: WorkspaceStateStore | None = None,
+        owns_store: bool = False,
         observe: ObserverStore | None = None,
+        namespace_store: NamespaceStore | None = None,
+        session_store: SessionStore | None = None,
+        runtimes: list[Runtime | str] | None = None,
+        route: RouteFn | None = None,
     ) -> None:
         self._registry = MountRegistry()
+        # One provider scopes every control-plane store by workspace id;
+        # the per-plane params (observe / namespace_store / session_store)
+        # remain as direct overrides that win over the provider.
+        self._workspace_id = workspace_id if workspace_id is not None \
+            else new_workspace_id()
+        # A minted default session id is provisional: attaching to a
+        # workspace whose discovery record already names one adopts the
+        # stored pointer instead (see _ensure_meta).
+        self._session_id_explicit = session_id is not None
+        if session_id is None:
+            session_id = new_session_id()
+        # A caller-passed provider may be shared with sibling workspaces,
+        # so only a workspace that built its own provider closes it.
+        self._owns_state_store = store is None or owns_store
+        self._meta_written = False
+        self._state_store = store if store is not None \
+            else RAMWorkspaceStateStore()
+        if observe is None:
+            observe = self._state_store.observer(self._workspace_id)
+        if namespace_store is None:
+            namespace_store = self._state_store.namespace(self._workspace_id)
+        if session_store is None:
+            session_store = self._state_store.sessions(self._workspace_id)
         if isinstance(cache, RedisCacheConfig):
             if RedisFileCacheStore is None:
                 raise ImportError(
@@ -109,26 +184,36 @@ class Workspace:
                                             max_drain_bytes=max_drain)
         self._locked_paths: set[str] = set()
         self._closed = False
+        self._async_closed = False
+        self._close_lock = asyncio.Lock()
+        # Resources reused from another live workspace (copy() / load
+        # resource overrides) stay open here; their origin closes them.
+        self._shared_resources: set[int] = set()
         self._drift_policy: DriftPolicy = DriftPolicy.OFF
         self._drift_check_pending: bool = False
         # Queued at Workspace.load: (mount, path, expected_fingerprint).
         # First dispatch/execute drains via asyncio.gather, then clears.
         self._pending_drift: list[tuple[MountEntry, str, str]] = []
         self.job_table = JobTable()
-        self._current_agent_id: str = agent_id
+        self._current_agent_id: str | None = agent_id
         self._default_session_id = session_id
         self._default_agent_id = agent_id
-        self._session_mgr = SessionManager(session_id)
+        self._session_mgr = SessionManager(session_id, store=session_store)
         self._consistency = consistency
         self._registry.set_consistency(consistency)
         self._registry.attach_file_cache(self._cache)
-        self._namespace = Namespace(self._registry)
+        # Only an explicit agent_id claims the workspace user; a bare
+        # launch adopts whatever identity the namespace store holds.
+        self._namespace = Namespace(self._registry,
+                                    store=namespace_store,
+                                    user=agent_id)
         self._dispatcher = Dispatcher(self._namespace, self._cache,
                                       consistency)
+        self._registry.set_reconciler(self._dispatcher.reconciler)
 
         fuse_targets: list[tuple[str, bool | str]] = []
         for prefix, value in resources.items():
-            mount_safeguards: dict = {}
+            mount_safeguards: dict[str, CommandSafeguard] = {}
             mount_fuse: bool | str = False
             if isinstance(value, Mount):
                 prov = value.resource
@@ -136,23 +221,27 @@ class Workspace:
                 if value.command_safeguards:
                     mount_safeguards = dict(value.command_safeguards)
                 mount_fuse = value.fuse
-            elif isinstance(value, tuple) and len(value) >= 2:
+            elif isinstance(value, tuple):
+                if len(value) not in (2, 3):
+                    raise TypeError(
+                        "resource tuples must be (resource, mode) or "
+                        "(resource, mode, command_safeguards)")
                 prov = value[0]
                 mount_mode = value[1]
-                if len(value) >= 3 and value[2]:
+                if len(value) == 3 and value[2]:
                     mount_safeguards = dict(value[2])
             else:
                 prov = value
                 mount_mode = mode
-            if index is not None:
-                prov.set_index(index)
+            prov.set_index(index)
             mount_obj = self._registry.mount(prefix, prov, mount_mode)
             if mount_safeguards:
                 mount_obj.command_safeguards.update(mount_safeguards)
             if mount_fuse:
                 fuse_targets.append((prefix, mount_fuse))
 
-        if self._registry.root_mount is None:
+        self._implicit_root = self._registry.root_mount is None
+        if self._implicit_root:
             self._registry.mount("/", RAMResource(), mode)
 
         self._fuse_mountpoints: dict[str, str] = {}
@@ -166,14 +255,32 @@ class Workspace:
         self._ops = Ops(self._registry.ops_mounts(),
                         on_write=self._invalidate_after_write_by_path,
                         observer=self.observer,
-                        agent_id=agent_id,
-                        session_id=session_id)
+                        agent_id=agent_id or "",
+                        session_id=session_id,
+                        links=self._namespace,
+                        stat_overlay=self._merge_overlay)
+
+        # The workspace's ordered runtime world: instances and the vfs
+        # marker, first capturer binds each command. An explicit list
+        # fails loud per entry; the default world builds gracefully (a
+        # missing extra leaves the command reporting its install hint
+        # per invocation, never a silent escalation to another runtime).
+        self._runtime_entries = self._resolve_runtime_entries(runtimes)
+        self._registry.runtime_bindings = bind_commands(self._runtime_entries)
+        self._registry.vfs_runtime = next(
+            (entry for entry in self._runtime_entries
+             if isinstance(entry, VfsRuntime)), None)
+        if isinstance(self._registry.vfs_runtime, VfsRuntime):
+            self._registry.vfs_runtime.bind_line_executor(
+                self._execute_line_for_vfs)
+        _reject_config_script("route", route)
+        self._route = route
 
         for prefix, fuse_target in fuse_targets:
             mountpoint = fuse_target if isinstance(fuse_target, str) else None
             self.add_fuse_mount(prefix, mountpoint)
 
-    async def history(self) -> list[dict]:
+    async def history(self) -> list[dict[str, Any]]:
         """Command events recorded by the hidden recorder.
 
         Returns:
@@ -201,7 +308,7 @@ class Workspace:
     def max_drain_bytes(self, value: int | None) -> None:
         self._cache.max_drain_bytes = value
 
-    def mounts(self) -> list:
+    def mounts(self) -> list[Any]:
         return self._registry.mounts()
 
     @property
@@ -262,31 +369,42 @@ class Workspace:
 
     def add_fuse_mount(self,
                        prefix: str,
-                       mountpoint: str | None = None) -> str:
+                       mountpoint: str | None = None,
+                       session_id: str | None = None) -> str:
         # Register a pinned path BEFORE mounting so a collision is rejected
         # without leaving a partial mount. Each mount gets its own manager,
         # so a workspace can expose any number of FUSE subtrees at once.
+        # A session-bound mount runs every op under that session's mount
+        # grants (the kernel-tier primitive: bind-mount the tree into a
+        # container and the narrowing travels with it); it is keyed
+        # separately so the same prefix can also be exposed unbound.
+        session = (self._session_mgr.get(session_id)
+                   if session_id is not None else None)
+        key = prefix if session_id is None else f"{prefix}@{session_id}"
         if mountpoint is not None:
-            self._register_fuse(prefix, mountpoint)
+            self._register_fuse(key, mountpoint)
         fm = FuseManager()
-        self._fuse_managers[prefix] = fm
+        self._fuse_managers[key] = fm
         try:
-            mp = fm.setup(self._ops, prefix, mountpoint)
+            mp = fm.setup(self._ops, prefix, mountpoint, session=session)
         except Exception:
             # The mount never came up; drop the manager and any registered
             # path so fuse_mountpoints does not misreport it as live.
-            self._fuse_managers.pop(prefix, None)
-            self._deregister_fuse(prefix)
+            self._fuse_managers.pop(key, None)
+            self._deregister_fuse(key)
             raise
         if mountpoint is None:
-            self._register_fuse(prefix, mp)
+            self._register_fuse(key, mp)
         return mp
 
-    def remove_fuse_mount(self, prefix: str) -> None:
-        fm = self._fuse_managers.pop(prefix, None)
+    def remove_fuse_mount(self,
+                          prefix: str,
+                          session_id: str | None = None) -> None:
+        key = prefix if session_id is None else f"{prefix}@{session_id}"
+        fm = self._fuse_managers.pop(key, None)
         if fm is not None:
             fm.unmount()
-        self._deregister_fuse(prefix)
+        self._deregister_fuse(key)
 
     @property
     def fuse_mountpoint(self) -> str | None:
@@ -301,6 +419,174 @@ class Workspace:
     @property
     def fuse_mountpoints(self) -> dict[str, str]:
         return dict(self._fuse_mountpoints)
+
+    def _runtime_mount_prefixes(self) -> list[str]:
+        # Pull-model provider for the wasm runtimes: read per run, so
+        # mounts added or removed after construction are picked up.
+        return self._ops.mount_prefixes()
+
+    def _resolve_runtime_entries(
+            self, runtimes: list[Runtime | str] | None) -> list[Runtime]:
+        """Build and wire the workspace's ordered runtime world.
+
+        Name strings become no-option instances and every instance gets
+        the workspace dispatch attached. The vfs runtime is required:
+        when the list omits it, an unconditional one is appended, so
+        the world always names an executor for unclaimed commands. An
+        explicit list fails loud per entry. The default world (monty,
+        quickjs, vfs) builds gracefully: a missing extra skips the
+        entry so its commands report the install hint per invocation,
+        never a silent escalation to another runtime.
+
+        Args:
+            runtimes (list[Runtime | str] | None): user entries, or
+                None for the default world.
+        """
+        entries: list[Runtime] = []
+        if runtimes is None:
+            for name in DEFAULT_ENTRIES:
+                try:
+                    entries.append(build_runtime(name))
+                except (ImportError, FileNotFoundError):
+                    continue
+        else:
+            for entry in runtimes:
+                entries.append(
+                    build_runtime(entry) if isinstance(entry, str) else entry)
+        if not any(entry.name == VfsRuntime.name for entry in entries):
+            entries.append(VfsRuntime())
+        for entry in entries:
+            _reject_config_script(f"runtime {entry.name!r} script",
+                                  entry.script)
+            entry.attach(self.dispatch, self._runtime_mount_prefixes)
+        return entries
+
+    def add_runtime(self, runtime: Runtime | str) -> Runtime:
+        """Append a runtime entry to the workspace's ordered world.
+
+        The entry lands last, so it never steals a command an earlier
+        entry already captures (first capturer still wins). A name
+        builds like a config entry and fails loud; a duplicate name is
+        rejected before any state changes.
+
+        Args:
+            runtime (Runtime | str): a Runtime instance or a registry
+                runtime name (built like a config entry).
+
+        Raises:
+            ValueError: unknown name or duplicate entry.
+        """
+        entry = (build_runtime(runtime)
+                 if isinstance(runtime, str) else runtime)
+        _reject_config_script(f"runtime {entry.name!r} script", entry.script)
+        candidate = [*self._runtime_entries, entry]
+        bindings = bind_commands(candidate)
+        entry.attach(self.dispatch, self._runtime_mount_prefixes)
+        self._runtime_entries = candidate
+        self._registry.runtime_bindings = bindings
+        return entry
+
+    def _whole_line_runtime(
+            self, ast: Any,
+            decision: RoutingDecision | None) -> Runtime | None:
+        """The runtime taking this whole line, None for the executor.
+
+        A runtime with ``runs_lines`` takes the raw line when the
+        line's resolved bindings place one of its commands (or "*") on
+        it; everything else walks the executor's tree as today. The
+        common world has no such runtime, so this is a cheap scan.
+
+        Args:
+            ast: the parsed tree-sitter root node.
+            decision (RoutingDecision | None): the line's decision,
+                None when only static bindings apply.
+        """
+        if not any(entry.runs_lines and not isinstance(entry, VfsRuntime)
+                   for entry in self._runtime_entries):
+            return None
+        bindings: Mapping[str, Runtime
+                          | None] = (decision.bindings if decision is not None
+                                     else self._registry.runtime_bindings)
+        facts = command_facts(ast)
+        return whole_line_runtime(bindings, [fact.command for fact in facts])
+
+    async def _execute_line_for_vfs(self, line: str, stdin: bytes | None,
+                                    env: dict[str,
+                                              str], cwd: str) -> RunResult:
+        """The workspace executor as the vfs runtime's run_line.
+
+        Args:
+            line (str): the raw command line.
+            stdin (bytes | None): bytes piped into the line.
+            env (dict[str, str]): environment overrides for the line.
+            cwd (str): working directory for the line.
+        """
+        io = await self.execute(line, stdin=stdin, cwd=cwd, env=env)
+        stdout = (await materialize(io.stdout)
+                  if io.stdout is not None else b"")
+        stderr = (await materialize(io.stderr)
+                  if io.stderr is not None else None)
+        return RunResult(stdout=stdout, stderr=stderr, exit_code=io.exit_code)
+
+    async def _resolve_routing_decision(
+            self, ast: Any, command: str, runtime: str | None, provision: bool,
+            session: Session, session_id: str,
+            inherited: RoutingDecision | None) -> RoutingDecision | None:
+        """The routing ladder for one typed line: runtime, route, scripts.
+
+        Returns None when nothing decides (no runtime argument, no
+        policy configured) so dispatch falls to the static bindings. A
+        nested eval passes its typed line's decision as ``inherited``
+        and keeps it: nested lines never re-route. Provision never
+        routes.
+
+        Args:
+            ast: the parsed tree-sitter root node.
+            command: the raw command line.
+            runtime: the execute() runtime argument, top of the ladder.
+            provision: whether this is a provision run.
+            session: the effective session (cwd, env).
+            session_id: session hosting the line.
+            inherited: the calling line's decision, for nested evals.
+        """
+        if inherited is not None:
+            return inherited
+        if runtime is not None:
+            try:
+                overlay = runtime_bindings_for(self._runtime_entries, runtime)
+            except ValueError as exc:
+                raise RoutingDecisionError(str(exc)) from exc
+            return RoutingDecision(bindings={
+                **self._registry.runtime_bindings,
+                **overlay
+            },
+                                   fallback=catch_all(self._runtime_entries))
+        if provision:
+            return None
+        has_scripts = any(entry.script is not None
+                          for entry in self._runtime_entries)
+        if self._route is None and not has_scripts:
+            return None
+        facts = command_facts(ast)
+        ctx = RouteContext(
+            line=command,
+            commands=facts,
+            command=facts[0].command if facts else "",
+            builtin=facts[0].builtin if facts else False,
+            cwd=session.cwd,
+            env=dict(session.env),
+            session_id=session_id,
+            agent_id=self._current_agent_id or "",
+            mounts=tuple(self._runtime_mount_prefixes()),
+        )
+        try:
+            return await decide_line(self._runtime_entries, self._route, ctx,
+                                     self._registry.runtime_bindings,
+                                     self.dispatch)
+        except RoutingDecisionError:
+            raise
+        except (ValueError, ImportError) as exc:
+            raise RoutingDecisionError(str(exc)) from exc
 
     @property
     def _cwd(self) -> str:
@@ -327,14 +613,16 @@ class Workspace:
     def __enter__(self) -> "Workspace":
         self._original_open = builtins.open
         self._original_os = sys.modules["os"]
-        builtins.open = make_open(self._ops)
+        builtins.open = cast(Any, make_open(self._ops))
         sys.modules["os"] = make_os_module(self._ops)
         return self
 
-    def __exit__(self, *_: object) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None,
+                 exc_value: BaseException | None,
+                 traceback: TracebackType | None) -> None:
         builtins.open = self._original_open
         sys.modules["os"] = self._original_os
-        self._close_parts()
+        run_async_from_sync(self.close())
 
     def _close_parts(self) -> None:
         if self._closed:
@@ -351,14 +639,32 @@ class Workspace:
         self._cache._drain_tasks.clear()
 
     async def close(self) -> None:
-        drain_tasks = list(self._cache._drain_tasks.values())
-        self._close_parts()
-        for task in drain_tasks:
+        async with self._close_lock:
+            if self._async_closed:
+                return
+            drain_tasks = list(self._cache._drain_tasks.values())
+            for line_runtime in self._runtime_entries:
+                await line_runtime.close()
+            resources = {
+                id(mount.resource): mount.resource
+                for mount in self._registry.mounts()
+                if id(mount.resource) not in self._shared_resources
+            }
+            await asyncio.gather(*(resource.close()
+                                   for resource in resources.values()))
+            if self._owns_state_store:
+                await self._state_store.close()
+            self._close_parts()
+            for task in drain_tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        await self._cache.clear()
+                await self._cache.clear()
+            finally:
+                await self._cache.close()
+            self._async_closed = True
 
     # ── snapshot / load / copy ─────────────────────────────────────────────
 
@@ -396,7 +702,7 @@ class Workspace:
             cls,
             source,
             *,
-            resources: dict | None = None,
+            resources: dict[str, Any] | None = None,
             drift_policy: DriftPolicy = DriftPolicy.STRICT) -> "Workspace":
         """Reconstruct a Workspace from a tar.
 
@@ -432,9 +738,9 @@ class Workspace:
     @classmethod
     async def from_state(
             cls,
-            state: dict,
+            state: dict[str, Any],
             *,
-            resources: dict | None = None,
+            resources: dict[str, Any] | None = None,
             drift_policy: DriftPolicy = DriftPolicy.STRICT) -> "Workspace":
         """Reconstruct a Workspace directly from a state dict (no tar).
 
@@ -486,15 +792,18 @@ class Workspace:
         return await type(self)._from_state(state, resources=resources)
 
     @classmethod
-    async def _from_state(cls,
-                          state: dict,
-                          *,
-                          resources: dict | None = None) -> "Workspace":
+    async def _from_state(
+            cls,
+            state: dict[str, Any],
+            *,
+            resources: dict[str, Any] | None = None) -> "Workspace":
         args = build_mount_args(state, resources)
         ws = cls(args.mount_args,
                  consistency=args.consistency,
                  session_id=args.default_session_id,
                  agent_id=args.default_agent_id)
+        if resources:
+            ws._shared_resources = {id(r) for r in resources.values()}
         await apply_state_dict(ws, state)
         return ws
 
@@ -510,29 +819,51 @@ class Workspace:
     # ── session lifecycle ──────────────────────────────────────────────────
 
     def create_session(
-            self,
-            session_id: str,
-            allowed_mounts: frozenset[str] | None = None) -> Session:
-        if allowed_mounts is not None:
-            normalized = {("/" + m.strip("/")) for m in allowed_mounts}
-            normalized.update(self._infrastructure_mount_prefixes())
-            allowed_mounts = frozenset(normalized)
-        return self._session_mgr.create(session_id,
-                                        allowed_mounts=allowed_mounts)
+        self,
+        session_id: str,
+        mounts: Mapping[str, MountMode | str] | Iterable[str] | None = None,
+    ) -> Session:
+        """Create a session, optionally restricted to per-mount modes.
+
+        Args:
+            session_id (str): unique id for the session.
+            mounts (Mapping[str, MountMode | str] | Iterable[str] | None):
+                per-mount modes. A mapping assigns each prefix a mode
+                ceiling ("read", "write", "exec", or the filesystem
+                aliases "r", "rw", "rwx"); a plain iterable of
+                prefixes keeps each mount at its own configured mode (the
+                previous allowlist behavior). ``None`` leaves the
+                session unrestricted.
+        """
+        modes: dict[str, MountMode] | None = None
+        if mounts is not None:
+            if isinstance(mounts, str):
+                mounts = [mounts]
+            if isinstance(mounts, Mapping):
+                modes = {
+                    ("/" + p.strip("/")): parse_mount_mode(m)
+                    for p, m in mounts.items()
+                }
+            else:
+                modes = {("/" + p.strip("/")): MountMode.EXEC for p in mounts}
+            for prefix in self._infrastructure_mount_prefixes():
+                modes.setdefault(prefix, MountMode.EXEC)
+        return self._session_mgr.create(session_id, mount_modes=modes)
 
     def _infrastructure_mount_prefixes(self) -> set[str]:
         """Mount prefixes a session is always allowed to touch.
 
-        The virtual root (where text-processing commands like ``wc``
-        without a path argument resolve), the device mount, and the
-        history view are infrastructure: they hold no user
+        The implicit scratch root (where text-processing commands like
+        ``wc`` without a path argument resolve), the device mount, and
+        the history view are infrastructure: they hold no user
         credentials, and rejecting them would break common shell
-        idioms or the history builtin.
+        idioms or the history builtin. A user-defined root mount is
+        NOT infrastructure; sessions must be granted ``/`` explicitly
+        to touch it.
         """
         prefixes = {"/dev", HISTORY_PREFIX}
-        root_mount = self._registry.root_mount
-        if root_mount is not None:
-            prefixes.add("/" + root_mount.prefix.strip("/"))
+        if self._implicit_root:
+            prefixes.add("/")
         return prefixes
 
     def get_session(self, session_id: str) -> Session:
@@ -540,6 +871,68 @@ class Workspace:
 
     def list_sessions(self) -> list[Session]:
         return self._session_mgr.list()
+
+    async def ensure_sessions_loaded(self) -> None:
+        """Hydrate sessions from the session store (idempotent).
+
+        The discovery record resolves first so a minted default session
+        id can adopt the stored pointer before hydration keys off it.
+        """
+        await self._ensure_meta()
+        await self._session_mgr.ensure_loaded()
+
+    @property
+    def workspace_id(self) -> str:
+        return self._workspace_id
+
+    @property
+    def default_session_id(self) -> str:
+        return self._session_mgr.default_id
+
+    @property
+    def state_store(self) -> WorkspaceStateStore:
+        return self._state_store
+
+    async def workspace_meta(self) -> dict[str, Any]:
+        """This workspace's metadata record (discovery surface)."""
+        await self._ensure_meta()
+        meta = await self._state_store.load_meta(self._workspace_id)
+        return meta if meta is not None else {}
+
+    async def _ensure_meta(self) -> None:
+        """Write the discovery record once per process.
+
+        An existing record wins (another process or an earlier run of
+        this workspace already registered it); a fresh workspace
+        registers itself so siblings pointed at the same store can find
+        its sessions and default session.
+        """
+        if self._meta_written:
+            return
+        existing = await self._state_store.load_meta(self._workspace_id)
+        if existing is None:
+            created = await self._state_store.cas_set_meta(
+                self._workspace_id, {
+                    "workspace_id": self._workspace_id,
+                    "default_session_id": self._default_session_id,
+                    "created_at": time.time(),
+                    "generation": 1,
+                }, 0)
+            if not created:
+                # Lost the create race: a sibling registered first and
+                # its record wins, like any other existing record.
+                existing = await self._state_store.load_meta(self._workspace_id
+                                                             )
+        if existing is not None:
+            stored = existing.get("default_session_id")
+            if not self._session_id_explicit and isinstance(stored, str):
+                self._session_mgr.adopt_default(stored)
+                self._default_session_id = stored
+        self._meta_written = True
+
+    async def flush_sessions(self) -> None:
+        """Persist every session's durable fields to the session store."""
+        await self._session_mgr.flush()
 
     async def close_session(self, session_id: str) -> None:
         await self._session_mgr.close(session_id)
@@ -549,8 +942,21 @@ class Workspace:
 
     # ── mount management ────────────────────────────────────────────────────
 
+    def _merge_overlay(self, path: str, stat: FileStat) -> FileStat:
+        """Overlay namespace attrs onto an ops-facade stat.
+
+        Injected into Ops so FUSE and the os patch report chmod/chown/touch
+        results identically to dispatch("stat").
+
+        Args:
+            path (str): virtual path (already link-resolved).
+            stat (FileStat): the backend-reported stat.
+        """
+        return merge_overlay_stat(self._namespace.meta_for(path), stat)
+
     async def dispatch(self, op: str, path: PathSpec,
                        **kwargs: Any) -> tuple[Any, IOResult]:
+        await self._namespace.ensure_loaded()
         if self._drift_check_pending:
             await self._run_pending_drift_check()
         return await self._dispatcher.dispatch(op, path, **kwargs)
@@ -627,25 +1033,68 @@ class Workspace:
         """
         return IOResult()
 
-    async def _exec_recursion(self, cancel: asyncio.Event | None, cmd: str,
-                              **opts: Any) -> Any:
+    async def _exec_recursion(self, cancel: asyncio.Event | None,
+                              routing_decision: "RoutingDecision | None",
+                              cmd: str, **opts: Any) -> Any:
         # The executor's internal eval ($(), source, eval, xargs, ...):
         # never a typed line, so it must not record a history entry or
         # open its own recording context (GNU: history is appended by
-        # the line reader, the evaluator can't touch it).
-        return await self.execute(cmd, cancel=cancel, record=False, **opts)
+        # the line reader, the evaluator can't touch it). It inherits
+        # the typed line's routing decision: nested lines never
+        # re-route.
+        return await self.execute(cmd,
+                                  cancel=cancel,
+                                  record=False,
+                                  routing_decision=routing_decision,
+                                  **opts)
+
+    @overload
+    async def execute(
+            self,
+            command: str,
+            session_id: str | None = ...,
+            stdin: ByteSource | None = ...,
+            provision: Literal[False] = ...,
+            agent_id: str | None = ...,
+            cwd: str | None = ...,
+            env: dict[str, str] | None = ...,
+            cancel: asyncio.Event | None = ...,
+            record: bool = ...,
+            runtime: str | None = ...,
+            routing_decision: "RoutingDecision | None" = ...) -> IOResult:
+        ...
+
+    @overload
+    async def execute(
+            self,
+            command: str,
+            session_id: str | None = ...,
+            stdin: ByteSource | None = ...,
+            *,
+            provision: Literal[True],
+            agent_id: str | None = ...,
+            cwd: str | None = ...,
+            env: dict[str, str] | None = ...,
+            cancel: asyncio.Event | None = ...,
+            record: bool = ...,
+            runtime: str | None = ...,
+            routing_decision: "RoutingDecision | None" = ...
+    ) -> ProvisionResult:
+        ...
 
     async def execute(
         self,
         command: str,
         session_id: str | None = None,
-        stdin: AsyncIterator[bytes] | bytes | None = None,
+        stdin: ByteSource | None = None,
         provision: bool = False,
-        agent_id: str = DEFAULT_AGENT_ID,
+        agent_id: str | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         cancel: asyncio.Event | None = None,
         record: bool = True,
+        runtime: str | None = None,
+        routing_decision: RoutingDecision | None = None,
     ) -> IOResult | ProvisionResult:
         """Execute a shell command in the workspace.
 
@@ -671,10 +1120,23 @@ class Workspace:
                 opening a recording context; ops emitted by the command
                 flow into the caller's recorder. Used by the executor's
                 internal evaluations and available to SDK callers that
-                need an unrecorded run.
+                need an unrecorded run. Nested lines inherit the typed
+                line's routing decision and never re-route.
+            runtime: Explicit runtime for this line, naming a workspace
+                runtime entry. Stages the named runtime captures rebind
+                to it for this line only (nested evals inherit it);
+                everything else keeps its normal binding, so the
+                argument overrides policy, never capability. Raises
+                ValueError for a name that is not a workspace entry.
+            routing_decision: Internal. The typed line's routing decision,
+                forwarded by the executor's nested evals so inner
+                lines never re-route.
         """
         if cancel is not None and cancel.is_set():
             raise MirageAbortError()
+        await self._namespace.ensure_loaded()
+        await self._ensure_meta()
+        await self._session_mgr.ensure_loaded()
         if self._drift_check_pending:
             await self._run_pending_drift_check()
 
@@ -691,7 +1153,8 @@ class Workspace:
             effective_session = session.fork(**overrides)
         else:
             effective_session = session
-        self._current_agent_id = agent_id
+        self._current_agent_id = (agent_id if agent_id is not None else
+                                  self._default_agent_id)
         io = IOResult()
         # The line-reader decision (GNU: history is appended where the
         # typed line is read, never inside the evaluator). Internal
@@ -699,11 +1162,13 @@ class Workspace:
         is_line = record and not provision
         scope = RecordingScope(active=is_line)
 
-        exec_recursion = partial(self._exec_recursion, cancel)
-
         session_token = set_current_session(effective_session)
         try:
             ast = parse(command)
+            decision = await self._resolve_routing_decision(
+                ast, command, runtime, provision, effective_session,
+                session_id, routing_decision)
+            exec_recursion = partial(self._exec_recursion, cancel, decision)
             offending = find_syntax_error(ast)
             if offending is not None:
                 snippet = offending.strip()[:40]
@@ -721,18 +1186,32 @@ class Workspace:
                 return await run_with_timeout(
                     provision_node(self._registry, self.dispatch,
                                    self._plan_eval_stub, self._namespace, ast,
-                                   effective_session), prov_timeout, prov_name)
+                                   effective_session), prov_timeout, prov_name
+                    or "")
+            line_runtime = self._whole_line_runtime(ast, decision)
+            if line_runtime is not None:
+                data = (await materialize(stdin)
+                        if stdin is not None else None)
+                result = await line_runtime.run_line(
+                    command, data, dict(effective_session.env),
+                    effective_session.cwd)
+                io = IOResult(exit_code=result.exit_code,
+                              stdout=result.stdout,
+                              stderr=result.stderr)
+                session.last_exit_code = io.exit_code
+                return io
             io, _ = await run_command_tree(
                 self.dispatch,
                 self._registry,
                 self._namespace,
                 self.job_table,
                 exec_recursion,
-                self._current_agent_id,
+                self._current_agent_id or "",
                 ast,
                 effective_session,
                 stdin,
                 cancel,
+                routing_decision=decision,
             )
             session.last_exit_code = io.exit_code
             await self.apply_io(io, records=scope.records)
@@ -746,7 +1225,7 @@ class Workspace:
             io = IOResult(exit_code=124, stderr=msg)
             session.last_exit_code = 124
             return io
-        except (MirageAbortError, ContentDriftError):
+        except (MirageAbortError, ContentDriftError, RoutingDecisionError):
             raise
         except FindParseError as exc:
             msg = f"{exc}\n".encode()
@@ -772,8 +1251,9 @@ class Workspace:
             # emitted them succeeded.
             scope.close()
             reset_current_session(session_token)
+            await self._session_mgr.flush()
             self._ops.records.extend(scope.records)
             if is_line:
                 await self.observer.log_execution(
-                    command, io, scope.records, agent_id, session_id,
-                    self._session_cwd(session_id))
+                    command, io, scope.records, self._current_agent_id or "",
+                    session_id, self._session_cwd(session_id))

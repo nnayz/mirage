@@ -13,16 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
+import logging
 import posixpath
 
 from mirage.accessor.gsheets import GSheetsAccessor
-from mirage.cache.index import IndexCacheStore
-from mirage.core.gsheets._client import (SHEETS_API_BASE, TokenManager,
-                                         google_get)
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.gsheets._client import TokenManager, google_get, sheets_base
 from mirage.core.gsheets.readdir import readdir
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
+
+logger = logging.getLogger(__name__)
 
 
 async def read_spreadsheet(token_manager: TokenManager,
@@ -36,7 +38,7 @@ async def read_spreadsheet(token_manager: TokenManager,
     Returns:
         bytes: JSON response as bytes.
     """
-    url = f"{SHEETS_API_BASE}/spreadsheets/{spreadsheet_id}"
+    url = f"{sheets_base(token_manager)}/spreadsheets/{spreadsheet_id}"
     data = await google_get(token_manager, url)
     return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
@@ -53,7 +55,8 @@ async def read_values(token_manager: TokenManager, spreadsheet_id: str,
     Returns:
         bytes: JSON response as bytes.
     """
-    url = f"{SHEETS_API_BASE}/spreadsheets/{spreadsheet_id}/values/{range_}"
+    base = sheets_base(token_manager)
+    url = f"{base}/spreadsheets/{spreadsheet_id}/values/{range_}"
     data = await google_get(token_manager, url)
     return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
@@ -61,17 +64,11 @@ async def read_values(token_manager: TokenManager, spreadsheet_id: str,
 async def read(
     accessor: GSheetsAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> bytes:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     virtual = path.virtual
     prefix = mount_prefix_of(path.virtual, path.resource_path)
     key = path.resource_path
-    if index is None:
-        raise enoent(virtual)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None:
@@ -82,8 +79,9 @@ async def read(
             try:
                 await readdir(accessor, parent_path, index)
                 result = await index.get(virtual_key)
-            except Exception:
-                pass
+            except FileNotFoundError as exc:
+                logger.debug("read populate failed for %s: %s", virtual_key,
+                             exc)
         if result.entry is None:
             raise enoent(virtual)
     return await read_spreadsheet(accessor.token_manager, result.entry.id)

@@ -23,7 +23,7 @@ from mirage.types import PathSpec
 
 async def find(
     accessor: S3Accessor,
-    path: PathSpec,
+    path_spec: PathSpec,
     name: str | None = None,
     type: str | None = None,
     min_size: int | None = None,
@@ -43,7 +43,7 @@ async def find(
 
     Args:
         accessor (S3Accessor): S3 accessor.
-        path (PathSpec | str): Prefix path.
+        path_spec (PathSpec): Prefix path.
         name (str | None): Glob pattern to match entry name.
         type (str | None): "f" (file) or "d" (directory).
         min_size (int | None): Minimum object size.
@@ -51,18 +51,17 @@ async def find(
         maxdepth (int | None): Maximum directory depth.
         name_exclude (str | None): Glob pattern to exclude.
         or_names (list[str] | None): Alternative name patterns (OR logic).
-        mtime_min (float | None): Minimum modification time as timestamp.
-        mtime_max (float | None): Maximum modification time as timestamp.
+        mtime_min (float | None): Accepted for signature parity but not
+            applied: S3 prefixes carry no mtime, so filtering would drop
+            every directory and diverge from the TS backend and the shared
+            integ truth.
+        mtime_max (float | None): See mtime_min.
         iname (str | None): Case-insensitive glob pattern for basename.
         path_pattern (str | None): Glob pattern to match full path.
         mindepth (int | None): Minimum depth to include.
     """
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    start_name = start_basename(path)
-    path = path.mount_path
+    start_name = start_basename(path_spec)
+    path = path_spec.mount_path
     config = accessor.config
     pfx = _prefix(path, config)
     results: list[str] = []
@@ -103,10 +102,13 @@ async def find(
                                   is_empty=is_empty)
                 if not keep(entry, tree, mindepth):
                     continue
-                if not is_dir:
-                    if min_size is not None and size < min_size:
+                if min_size is not None or max_size is not None:
+                    # Directories count as size 0 for -size (deliberate GNU
+                    # divergence).
+                    effective = 0 if is_dir else size
+                    if min_size is not None and effective < min_size:
                         continue
-                    if max_size is not None and size > max_size:
+                    if max_size is not None and effective > max_size:
                         continue
                 results.append(full_path)
     stripped = path.strip("/")
@@ -120,5 +122,7 @@ async def find(
                         exists=True,
                         tree=tree,
                         maxdepth=maxdepth,
-                        mindepth=mindepth)
+                        mindepth=mindepth,
+                        min_size=min_size,
+                        max_size=max_size)
     return sorted(results)

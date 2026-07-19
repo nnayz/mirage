@@ -21,8 +21,7 @@ import {
 import type { DiskAccessor } from '../../../accessor/disk.ts'
 import { read as diskRead } from '../../../core/disk/read.ts'
 import { stat as diskStat } from '../../../core/disk/stat.ts'
-import { DISK_CMD_OPS } from './ops.ts'
-import { DISK_SED } from './sed.ts'
+import { DISK_IO } from './io.ts'
 
 export const DISK_COMMANDS: readonly RegisteredCommand[] = [
   ...makeFiletypeCommands<DiskAccessor>({
@@ -30,6 +29,5 @@ export const DISK_COMMANDS: readonly RegisteredCommand[] = [
     readBytes: diskRead,
     statEntry: diskStat,
   }),
-  ...makeGenericCommands<DiskAccessor>(ResourceName.DISK, DISK_CMD_OPS),
-  ...DISK_SED,
+  ...makeGenericCommands<DiskAccessor>(ResourceName.DISK, DISK_IO),
 ]

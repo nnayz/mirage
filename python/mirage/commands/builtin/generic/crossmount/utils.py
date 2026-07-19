@@ -14,7 +14,6 @@
 
 import dataclasses
 import functools
-from collections.abc import AsyncIterator
 from typing import Any, Callable
 
 from mirage.commands.builtin.generic.crossmount.types import (OperandRun,
@@ -25,33 +24,19 @@ from mirage.types import PathSpec
 from mirage.utils.errors import FS_ERRORS, fs_error_line
 
 
-async def relay(dispatch: Callable,
-                name: str,
-                accessor: object,
-                path: PathSpec | str,
-                index: object = None,
+async def relay(dispatch: Callable[..., Any], name: str, path: PathSpec,
                 **kwargs: Any) -> Any:
     # Relay one op for one path to the mount that owns it. The generics call
-    # ops as (accessor, path, index); dispatch ignores both and keys off the
-    # path. It is also the single place a raw str (the generic's string path
-    # arithmetic) is coerced to the PathSpec dispatch needs.
-    spec = path if isinstance(path, PathSpec) else PathSpec.from_str_path(path)
-    data, _ = await dispatch(name, spec, **kwargs)
+    # ops as (path); dispatch keys off the path.
+    data, _ = await dispatch(name, path, **kwargs)
     return data
-
-
-async def stream(dispatch: Callable,
-                 accessor: object,
-                 path: PathSpec,
-                 index: object = None) -> AsyncIterator[bytes]:
-    yield await relay(dispatch, "read", accessor, path)
 
 
 async def run_operands(run_single: RunSingle,
                        cmd_name: str,
                        scopes: list[PathSpec],
                        texts: list[str],
-                       flag_kwargs: dict,
+                       flag_kwargs: dict[str, object],
                        stdin_bytes: bytes | None = None) -> list[OperandRun]:
     """Run one native single-mount command per operand, in operand order.
 
@@ -112,7 +97,7 @@ def flat_scopes(scopes: list[PathSpec]) -> list[PathSpec]:
     ]
 
 
-def transfer_primitives(dispatch: Callable) -> dict[str, Callable]:
+def transfer_primitives(dispatch: Callable[..., Any]) -> dict[str, Any]:
     """Dispatch-relayed primitives shared by the transfer generics (cp/mv).
 
     Args:
@@ -120,9 +105,9 @@ def transfer_primitives(dispatch: Callable) -> dict[str, Callable]:
     """
     p = functools.partial
     return dict(
-        stat=p(relay, dispatch, "stat", None),
-        read_bytes=p(relay, dispatch, "read", None),
-        write=p(relay, dispatch, "write", None),
-        mkdir=p(relay, dispatch, "mkdir", None),
-        readdir=p(relay, dispatch, "readdir", None),
+        stat=p(relay, dispatch, "stat"),
+        read_bytes=p(relay, dispatch, "read"),
+        write=p(relay, dispatch, "write"),
+        mkdir=p(relay, dispatch, "mkdir"),
+        readdir=p(relay, dispatch, "readdir"),
     )

@@ -18,13 +18,9 @@ from mirage.core.s3._client import _client_kwargs, _key, async_session
 from mirage.types import PathSpec
 
 
-async def truncate(accessor: S3Accessor, path: PathSpec, length: int) -> None:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+async def truncate(accessor: S3Accessor, path_spec: PathSpec,
+                   length: int) -> None:
+    path = path_spec.mount_path
     config = accessor.config
     session = async_session(config)
     async with session.client(**_client_kwargs(config)) as client:
@@ -42,4 +38,4 @@ async def truncate(accessor: S3Accessor, path: PathSpec, length: int) -> None:
         await client.put_object(Bucket=config.bucket,
                                 Key=_key(path, config),
                                 Body=result)
-    await invalidate_after_write(path)
+    await invalidate_after_write(path_spec)

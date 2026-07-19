@@ -12,52 +12,26 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.commands.builtin.generic_bind import (CommandIO,
+from mirage.commands.builtin.filetype_factory import make_filetype_commands
+from mirage.commands.builtin.generic_bind import (make_file_read_provision,
                                                   make_generic_commands)
 from mirage.commands.builtin.hf_buckets.du import du
-from mirage.commands.builtin.hf_buckets.sed import sed
-from mirage.core.hf_buckets.create import create as _create
-from mirage.core.hf_buckets.du import du as _du
-from mirage.core.hf_buckets.du import du_all as _du_all
-from mirage.core.hf_buckets.exists import exists as _exists
-from mirage.core.hf_buckets.find import find as _find
-from mirage.core.hf_buckets.mkdir import mkdir as _mkdir
+from mirage.commands.builtin.hf_buckets.io import IO as _IO
 from mirage.core.hf_buckets.read import read_bytes as _read
-from mirage.core.hf_buckets.readdir import readdir as _readdir
 from mirage.core.hf_buckets.stat import stat as _stat
-from mirage.core.hf_buckets.stream import read_stream as _read_stream
-from mirage.core.hf_buckets.unlink import unlink as _unlink
-from mirage.core.hf_buckets.write import write_bytes as _write
 
-# Hugging Face bucket files are read and written through the generic factory;
-# du keeps a wrapper because its du_all returns a flat list (du_multi contract)
-# rather than the generic (list, total) tuple, and sed has no generic builder.
-# cp and mv are skipped because HF buckets have no server-side copy/rename op.
-_HF_BUCKETS_CMD_OPS = CommandIO(
-    readdir=_readdir,
-    read_bytes=_read,
-    read_stream=_read_stream,
-    stat=_stat,
-    is_mounted=lambda a: True,
-    local=False,
-    write=_write,
-    exists=_exists,
-    mkdir=_mkdir,
-    unlink=_unlink,
-    create=_create,
-    find=_find,
-    du_total=_du,
-    du_all=_du_all,
-)
-
-_HF_BUCKETS_OVERRIDES = {"cp", "du", "mv", "sed"}
+_HF_BUCKETS_OVERRIDES = {"cp", "du", "mv"}
 
 COMMANDS = [
+    *make_filetype_commands("hf_buckets",
+                            _IO.resolve_glob,
+                            _read,
+                            read_takes_index=True,
+                            provision=make_file_read_provision(_stat)),
     *make_generic_commands(
         "hf_buckets",
-        _HF_BUCKETS_CMD_OPS,
+        _IO,
         overrides=_HF_BUCKETS_OVERRIDES,
     ),
     du,
-    sed,
 ]

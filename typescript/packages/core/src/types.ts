@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { IndexCacheStore } from './cache/index/store.ts'
+import type { FindOptions } from './resource/base.ts'
 import { rstripSlash, stripSlash } from './utils/slash.ts'
 
 export const MountMode = Object.freeze({
@@ -21,6 +23,37 @@ export const MountMode = Object.freeze({
 } as const)
 
 export type MountMode = (typeof MountMode)[keyof typeof MountMode]
+
+const MOUNT_MODE_RANK: Readonly<Record<MountMode, number>> = Object.freeze({
+  [MountMode.READ]: 1,
+  [MountMode.WRITE]: 2,
+  [MountMode.EXEC]: 3,
+})
+
+/** The weaker of two mount modes on the READ < WRITE < EXEC lattice. */
+export function weakerMode(a: MountMode, b: MountMode): MountMode {
+  return MOUNT_MODE_RANK[a] <= MOUNT_MODE_RANK[b] ? a : b
+}
+
+const MOUNT_MODE_ALIASES: Readonly<Record<string, MountMode>> = Object.freeze({
+  r: MountMode.READ,
+  rw: MountMode.WRITE,
+  rwx: MountMode.EXEC,
+})
+
+/**
+ * Coerce a mount mode, accepting cumulative filesystem aliases.
+ *
+ * The mode ladder is cumulative (exec implies write implies read), so
+ * only the cumulative spellings `r`, `rw`, `rwx` alias the modes;
+ * bit-style forms like `w` or `x` are rejected.
+ */
+export function parseMountMode(value: string): MountMode {
+  const alias = MOUNT_MODE_ALIASES[value]
+  if (alias !== undefined) return alias
+  if ((Object.values(MountMode) as string[]).includes(value)) return value as MountMode
+  throw new Error(`invalid mount mode: '${value}'`)
+}
 
 export const ConsistencyPolicy = Object.freeze({
   LAZY: 'lazy',
@@ -124,6 +157,7 @@ export const ResourceName = Object.freeze({
   GMAIL: 'gmail',
   TRELLO: 'trello',
   MONGODB: 'mongodb',
+  GRIDFS: 'gridfs',
   NOTION: 'notion',
   LANGFUSE: 'langfuse',
   SSH: 'ssh',
@@ -159,9 +193,6 @@ export const ResourceName = Object.freeze({
 
 export type ResourceName = (typeof ResourceName)[keyof typeof ResourceName]
 
-export const DEFAULT_SESSION_ID = 'default'
-export const DEFAULT_AGENT_ID = 'default'
-
 export const FileType = Object.freeze({
   DIRECTORY: 'directory',
   TEXT: 'text',
@@ -189,6 +220,10 @@ export interface FileStatInit {
   fingerprint?: string | null
   revision?: string | null
   type?: FileType | null
+  mode?: number | null
+  uid?: number | string | null
+  gid?: number | string | null
+  atime?: string | null
   extra?: Record<string, unknown>
 }
 
@@ -199,6 +234,10 @@ export class FileStat {
   readonly fingerprint: string | null
   readonly revision: string | null
   readonly type: FileType | null
+  readonly mode: number | null
+  readonly uid: number | string | null
+  readonly gid: number | string | null
+  readonly atime: string | null
   readonly extra: Record<string, unknown>
 
   constructor(init: FileStatInit) {
@@ -208,10 +247,81 @@ export class FileStat {
     this.fingerprint = init.fingerprint ?? null
     this.revision = init.revision ?? null
     this.type = init.type ?? null
+    this.mode = init.mode ?? null
+    this.uid = init.uid ?? null
+    this.gid = init.gid ?? null
+    this.atime = init.atime ?? null
     this.extra = init.extra ?? {}
     Object.freeze(this)
   }
 }
+
+export type ReadBytesFn<Args extends unknown[] = [path: PathSpec]> = (
+  ...args: Args
+) => Promise<Uint8Array>
+
+export type ReadStreamFn<Args extends unknown[] = [path: PathSpec]> = (
+  ...args: Args
+) => AsyncIterable<Uint8Array>
+
+export type PolymorphicReadResult =
+  | Uint8Array
+  | AsyncIterable<Uint8Array>
+  | Promise<Uint8Array | AsyncIterable<Uint8Array>>
+
+export type PolymorphicReadFn<Args extends unknown[] = [path: PathSpec]> = (
+  ...args: Args
+) => PolymorphicReadResult
+
+export type CopyFn<Args extends unknown[] = [src: PathSpec, target: PathSpec]> = (
+  ...args: Args
+) => Promise<void>
+
+export type MoveFn<Args extends unknown[] = [src: PathSpec, target: PathSpec]> = (
+  ...args: Args
+) => Promise<void>
+
+export type FindFn<Args extends unknown[] = [src: PathSpec, options: FindOptions]> = (
+  ...args: Args
+) => Promise<string[]>
+
+export type ReaddirFn<Args extends unknown[] = [path: PathSpec]> = (
+  ...args: Args
+) => Promise<string[]>
+
+export type StatFn<Args extends unknown[] = [path: PathSpec, index?: IndexCacheStore]> = (
+  ...args: Args
+) => Promise<FileStat>
+
+export interface NativeCopy {
+  copy: CopyFn
+  find: FindFn
+  dirCopy?: CopyFn
+}
+
+export interface PrimitiveCopy {
+  readBytes: ReadBytesFn
+  write: CopyFn<[target: PathSpec, data: Uint8Array]>
+  mkdir: CopyFn<[path: PathSpec]>
+  readdir: ReaddirFn
+}
+
+export type CopyStrategy = NativeCopy | PrimitiveCopy
+
+export interface NativeMove {
+  rename: MoveFn
+}
+
+export interface PrimitiveMove {
+  readBytes: ReadBytesFn
+  write: MoveFn<[target: PathSpec, data: Uint8Array]>
+  mkdir: MoveFn<[path: PathSpec]>
+  readdir: ReaddirFn
+  unlink: MoveFn<[path: PathSpec]>
+  rmdir: MoveFn<[path: PathSpec]>
+}
+
+export type MoveStrategy = NativeMove | PrimitiveMove
 
 export interface PathSpecInit {
   virtual: string

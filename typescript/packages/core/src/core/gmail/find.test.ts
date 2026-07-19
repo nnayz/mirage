@@ -29,9 +29,30 @@ vi.mock('./stat.ts', async () => {
 import { GmailAccessor } from '../../accessor/gmail.ts'
 import { PathSpec } from '../../types.ts'
 import type { TokenManager } from '../google/_client.ts'
-import { find } from './find.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
+import type { FindOptions } from '../../resource/base.ts'
+import { walkFind } from '../generic/find.ts'
+import { isDirName } from './readdir.ts'
 import * as readdirMod from './readdir.ts'
 import * as statMod from './stat.ts'
+
+async function find(
+  accessor: GmailAccessor,
+  path: PathSpec,
+  options: FindOptions = {},
+  index?: IndexCacheStore,
+): Promise<string[]> {
+  return walkFind(
+    path,
+    {
+      readdir: (spec, idx) => readdirMod.readdir(accessor, spec, idx),
+      stat: (spec, idx) => statMod.stat(accessor, spec, idx),
+      isDirName: (child) => isDirName(child),
+    },
+    options,
+    index,
+  )
+}
 
 const STUB_TM = {} as TokenManager
 
@@ -65,6 +86,11 @@ describe('gmail core find', () => {
   beforeEach(() => {
     vi.mocked(readdirMod.readdir).mockReset()
     vi.mocked(statMod.stat).mockReset()
+    // walkFind stats the start path to decide whether to emit it; no
+    // fixture entry for '/' keeps these walks root-less.
+    vi.mocked(statMod.stat).mockImplementation((_accessor, spec) =>
+      Promise.reject(enoent(spec.virtual)),
+    )
     mockTree(TREE)
   })
 
@@ -73,7 +99,8 @@ describe('gmail core find', () => {
     expect(files).toEqual(['/INBOX/2026-06-01/Hello__m1.gmail.json'])
     const dirs = await find(makeAccessor(), ROOT, { type: 'd' })
     expect(dirs).toEqual(['/INBOX', '/INBOX/2026-06-01'])
-    expect(vi.mocked(statMod.stat)).not.toHaveBeenCalled()
+    const statted = vi.mocked(statMod.stat).mock.calls.map((c) => c[1].virtual)
+    expect([...new Set(statted)]).toEqual(['/'])
   })
 
   it('matches message names with globs', async () => {

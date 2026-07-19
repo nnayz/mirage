@@ -12,13 +12,13 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
+from functools import partial
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.tar import tar as generic_tar
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          with_index)
+                                                          Operation, bound_op)
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -28,7 +28,7 @@ async def tar(
     accessor: Accessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     c: bool = False,
     x: bool = False,
     t: bool = False,
@@ -40,17 +40,19 @@ async def tar(
     C: PathSpec | None = None,
     strip_components: str | None = None,
     exclude: str | None = None,
-    index: IndexCacheStore | None = None,
+    index: IndexCacheStore = NULL_INDEX,
     **flags,
 ) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("tar: missing operand")
     paths = await ops.resolve_glob(accessor, paths, index)
     return await generic_tar(paths,
-                             read_bytes=with_index(ops.read_bytes, index),
-                             write_bytes=ops.write,
-                             mkdir_fn=ops.mkdir,
-                             accessor=accessor,
+                             read_bytes=bound_op(ops.read_bytes, accessor,
+                                                 index),
+                             write_bytes=partial(ops.require(Operation.WRITE),
+                                                 accessor),
+                             mkdir_fn=partial(ops.require(Operation.MKDIR),
+                                              accessor),
                              c=c,
                              x=x,
                              t=t,
@@ -64,4 +66,7 @@ async def tar(
                              exclude=exclude)
 
 
-BUILDER = Builder('tar', tar, None, True, None)
+BUILDER = Builder('tar',
+                  tar,
+                  write=True,
+                  requirements=frozenset({Operation.WRITE, Operation.MKDIR}))

@@ -13,14 +13,33 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_SESSION_ID } from '../../types.ts'
+import { MountMode } from '../../types.ts'
 import { SessionManager } from './manager.ts'
+import { RAMSessionStore } from './ram.ts'
 
 describe('SessionManager', () => {
   it('seeds the default session on construction', () => {
-    const m = new SessionManager(DEFAULT_SESSION_ID)
-    expect(m.defaultId).toBe(DEFAULT_SESSION_ID)
-    expect(m.get(DEFAULT_SESSION_ID).sessionId).toBe(DEFAULT_SESSION_ID)
+    const m = new SessionManager('def')
+    expect(m.defaultId).toBe('def')
+    expect(m.get('def').sessionId).toBe('def')
+    expect(m.list()).toHaveLength(1)
+  })
+
+  it('adoptDefault re-keys the placeholder before hydration', () => {
+    const m = new SessionManager('minted')
+    m.get('minted').cwd = '/kept'
+    m.adoptDefault('stored')
+    expect(m.defaultId).toBe('stored')
+    expect(m.get('stored').cwd).toBe('/kept')
+    expect(m.list()).toHaveLength(1)
+    expect(() => m.get('minted')).toThrow()
+  })
+
+  it('adoptDefault switches to an existing session of that id', () => {
+    const m = new SessionManager('minted')
+    m.create('stored')
+    m.adoptDefault('stored')
+    expect(m.defaultId).toBe('stored')
     expect(m.list()).toHaveLength(1)
   })
 
@@ -74,5 +93,143 @@ describe('SessionManager', () => {
     m.create('b')
     await m.closeAll()
     expect(m.list().map((x) => x.sessionId)).toEqual(['def'])
+  })
+})
+
+describe('SessionManager with a SessionStore', () => {
+  it('hydrates stored sessions on ensureLoaded', async () => {
+    const store = new RAMSessionStore()
+    await store.set('restored', {
+      session_id: 'restored',
+      cwd: '/w',
+      env: { K: 'v' },
+      created_at: 1.0,
+      mount_modes: { '/data': 'read' },
+    })
+    const m = new SessionManager('def', store)
+    await m.ensureLoaded()
+    const s = m.get('restored')
+    expect(s.cwd).toBe('/w')
+    expect(s.env).toEqual({ K: 'v' })
+    expect(s.mountModes?.get('/data')).toBe(MountMode.READ)
+  })
+
+  it('locally created sessions win a hydration conflict', async () => {
+    const store = new RAMSessionStore()
+    await store.set('s1', { session_id: 's1', cwd: '/stale' })
+    const m = new SessionManager('def', store)
+    const local = m.create('s1')
+    local.cwd = '/fresh'
+    await m.ensureLoaded()
+    expect(m.get('s1').cwd).toBe('/fresh')
+  })
+
+  it('default session adopts stored durable fields', async () => {
+    const store = new RAMSessionStore()
+    await store.set('def', { session_id: 'def', cwd: '/w', env: { A: '1' } })
+    const m = new SessionManager('def', store)
+    await m.ensureLoaded()
+    expect(m.cwd).toBe('/w')
+    expect(m.env).toEqual({ A: '1' })
+  })
+
+  it('flush writes every session through', async () => {
+    const store = new RAMSessionStore()
+    const m = new SessionManager('def', store)
+    m.create('agent', { mountModes: new Map([['/s3', MountMode.READ]]) })
+    m.cwd = '/moved'
+    await m.flush()
+    const entries = await store.load()
+    expect(entries.get('def')?.cwd).toBe('/moved')
+    expect(entries.get('agent')?.mount_modes).toEqual({ '/s3': 'read' })
+  })
+
+  it('close deletes the session from the store', async () => {
+    const store = new RAMSessionStore()
+    const m = new SessionManager('def', store)
+    m.create('gone')
+    await m.flush()
+    await m.close('gone')
+    expect((await store.load()).has('gone')).toBe(false)
+  })
+})
+
+class CountingStore extends RAMSessionStore {
+  casCalls = 0
+
+  override casSet(
+    sessionId: string,
+    fields: Parameters<RAMSessionStore['casSet']>[1],
+    expectedGeneration: number,
+  ): Promise<boolean> {
+    this.casCalls += 1
+    return super.casSet(sessionId, fields, expectedGeneration)
+  }
+}
+
+describe('SessionManager dirty flush + CAS', () => {
+  it('flush skips clean sessions', async () => {
+    const store = new CountingStore()
+    const m = new SessionManager('default', store)
+    await m.flush()
+    expect(store.casCalls).toBe(1)
+    await m.flush()
+    expect(store.casCalls).toBe(1)
+    m.get('default').env.K = 'v'
+    await m.flush()
+    expect(store.casCalls).toBe(2)
+  })
+
+  it('flush bumps the generation', async () => {
+    const store = new RAMSessionStore()
+    const m = new SessionManager('default', store)
+    await m.flush()
+    expect(m.get('default').generation).toBe(1)
+    m.get('default').cwd = '/data'
+    await m.flush()
+    expect(m.get('default').generation).toBe(2)
+    expect((await store.load()).get('default')?.generation).toBe(2)
+  })
+
+  it('a conflict adopts the stored generation and retries', async () => {
+    const store = new RAMSessionStore()
+    const m = new SessionManager('default', store)
+    await store.set('default', {
+      session_id: 'default',
+      cwd: '/theirs',
+      env: {},
+      generation: 5,
+    })
+    m.get('default').cwd = '/ours'
+    await m.flush()
+    const entries = await store.load()
+    expect(entries.get('default')?.cwd).toBe('/ours')
+    expect(entries.get('default')?.generation).toBe(6)
+    expect(m.get('default').generation).toBe(6)
+  })
+
+  it('exhausted retries raise', async () => {
+    class AlwaysConflict extends RAMSessionStore {
+      override casSet(): Promise<boolean> {
+        return Promise.resolve(false)
+      }
+    }
+    const m = new SessionManager('default', new AlwaysConflict())
+    m.get('default').cwd = '/data'
+    await expect(m.flush()).rejects.toThrow(/conflict/)
+  })
+
+  it('hydrated sessions start clean', async () => {
+    const store = new CountingStore()
+    await store.set('s2', { session_id: 's2', cwd: '/data', env: {}, generation: 3 })
+    const m = new SessionManager('default', store)
+    await m.ensureLoaded()
+    expect(m.get('s2').generation).toBe(3)
+    const before = store.casCalls
+    await m.flush()
+    expect(store.casCalls).toBe(before + 1)
+    m.get('s2').env.K = 'v'
+    await m.flush()
+    expect((await store.load()).get('s2')?.generation).toBe(4)
   })
 })

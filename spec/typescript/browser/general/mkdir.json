@@ -5,7 +5,10 @@
     "has_provision": true,
     "has_write": true,
     "resources": [
+      "box",
       "databricks_volume",
+      "dropbox",
+      "gdrive",
       "opfs",
       "ram",
       "s3"

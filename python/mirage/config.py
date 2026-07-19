@@ -20,10 +20,28 @@ from typing import Annotated, Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from mirage.accessor.s3 import S3Config
 from mirage.cache.file.config import CacheConfig, RedisCacheConfig
 from mirage.cache.index.config import IndexConfig, RedisIndexConfig
 from mirage.resource.registry import build_resource
+from mirage.runtime.base import Runtime, ScriptSource
+from mirage.runtime.table import build_runtime
 from mirage.types import CommandSafeguard, ConsistencyPolicy, MountMode
+from mirage.workspace.mount.spec import Mount
+from mirage.workspace.store import (DEFAULT_STATE_ROOT,
+                                    DiskWorkspaceStateStore,
+                                    RAMWorkspaceStateStore,
+                                    WorkspaceStateStore)
+
+try:
+    from mirage.workspace.store import RedisWorkspaceStateStore
+except ImportError:
+    RedisWorkspaceStateStore = None
+
+try:
+    from mirage.workspace.store import S3WorkspaceStateStore
+except ImportError:
+    S3WorkspaceStateStore = None
 
 
 def _coerce_mount_mode(value):
@@ -51,7 +69,7 @@ class _EnvInterpolator:
         self.env = env
         self.missing = missing
 
-    def _sub(self, m: re.Match) -> str:
+    def _sub(self, m: re.Match[str]) -> str:
         name = m.group(1)
         if name not in self.env:
             self.missing.append(name)
@@ -136,6 +154,72 @@ IndexBlock = Annotated[
 ]
 
 
+class RamStoreBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["ram"] = "ram"
+
+
+class DiskStoreBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["disk"]
+    root: str = DEFAULT_STATE_ROOT
+
+
+class RedisStoreBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["redis"]
+    url: str = "redis://localhost:6379/0"
+    key_prefix: str = "mirage:"
+
+
+class S3StoreBlock(S3Config):
+    """An ``S3Config`` plus the union discriminator: the block IS the
+    backend config, so new S3Config fields flow into the store block
+    without re-declaring them here."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["s3"]
+    key_prefix: str | None = "mirage/"
+
+
+StoreGroupBlock = Annotated[
+    RamStoreBlock | DiskStoreBlock | RedisStoreBlock | S3StoreBlock,
+    Field(discriminator="type"),
+]
+
+
+class StoreBlock(BaseModel):
+    """The workspace state store: one block, four planes.
+
+    The top-level type/url/key_prefix pick the default backend for
+    every control-plane group (namespace nodes, observer events,
+    sessions + workspace metadata). The optional per-group overrides
+    redirect one group to a different backend, e.g. large observer
+    logs to a separate server. Sessions and workspace metadata move
+    together by design (the default-session pointer must live beside
+    the session table it points into), so there is one `workspace`
+    override, not two. An ``s3`` group hosts only the sessions+meta
+    group (conditional-PUT CAS), so it is valid as the ``workspace``
+    override, never as the top-level default. A ``disk`` store hosts
+    all planes under ``root`` (lockfile CAS, machine-local); ``root``
+    is only read when a disk store is selected.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["ram", "disk", "redis"] = "ram"
+    url: str = "redis://localhost:6379/0"
+    key_prefix: str = "mirage:"
+    root: str = DEFAULT_STATE_ROOT
+    namespace: StoreGroupBlock | None = None
+    observer: StoreGroupBlock | None = None
+    workspace: StoreGroupBlock | None = None
+
+
 class MountBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -154,16 +238,117 @@ class MountBlock(BaseModel):
         return _coerce_mount_mode(v)
 
 
+def _is_script_path(value: str) -> bool:
+    """True for the docker-style single-line ``.py`` path form.
+
+    Args:
+        value (str): a yaml ``script``/``route`` value.
+    """
+    return "\n" not in value and value.strip().endswith(".py")
+
+
+def _load_script_source(value: str) -> ScriptSource:
+    """Embed the referenced ``.py`` file as script source.
+
+    Config carries a reference, the wire carries content (the docker
+    build-context model): the value must be a path to a ``.py`` file,
+    read at load time. In code, scripts are callables; config is the
+    only door for script source.
+
+    Args:
+        value (str): the yaml ``script``/``route`` value.
+
+    Raises:
+        ValueError: the value is not a ``.py`` path.
+        FileNotFoundError: the referenced file does not exist.
+    """
+    if not _is_script_path(value):
+        raise ValueError("a config script must reference a .py file "
+                         f"(e.g. script: guard.py), got {value!r}")
+    return ScriptSource(Path(value.strip()).read_text())
+
+
+def _absolutize_scripts(raw: dict[str, Any], base: Path) -> None:
+    """Resolve relative script paths against the config file's dir.
+
+    A path-form ``script``/``route`` in a config file means "next to
+    the file" (the docker build-context model), never "wherever the
+    server happens to run". Mutates the parsed mapping in place;
+    in-memory dict configs are untouched by the loader.
+
+    Args:
+        raw (dict[str, Any]): the parsed config mapping.
+        base (Path): directory containing the config file.
+    """
+    route = raw.get("route")
+    if isinstance(route, str) and _is_script_path(route) \
+            and not Path(route.strip()).is_absolute():
+        raw["route"] = str(base / route.strip())
+    runtimes = raw.get("runtimes")
+    if not isinstance(runtimes, list):
+        return
+    for entry in runtimes:
+        if not isinstance(entry, dict):
+            continue
+        script = entry.get("script")
+        if isinstance(script, str) and _is_script_path(script) \
+                and not Path(script.strip()).is_absolute():
+            entry["script"] = str(base / script.strip())
+
+
+def _build_runtime_entries(
+        entries: list[str | dict[str, Any]]) -> list["Runtime | str"]:
+    """Turn config runtime entries into workspace runtime entries.
+
+    Args:
+        entries (list[str | dict[str, Any]]): name strings, or maps
+            carrying a name plus a ``script`` and constructor options
+            flat on the entry.
+
+    Raises:
+        ValueError: a map entry without a name, or non-script options
+            on vfs.
+    """
+    out: list[Runtime | str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            out.append(entry)
+            continue
+        options = dict(entry)
+        name = options.pop("name", None)
+        if not isinstance(name, str) or not name:
+            raise ValueError("runtime entry needs a non-empty 'name'")
+        script = options.pop("script", None)
+        if script is not None and not isinstance(script, str):
+            raise ValueError(
+                "a runtime entry script must be a .py path string")
+        built = build_runtime(name, **options)
+        if script is not None:
+            built.script = _load_script_source(script)
+        out.append(built)
+    return out
+
+
 class WorkspaceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mounts: dict[str, MountBlock]
+    # The workspace's ordered runtime world: name strings or maps
+    # with a name plus constructor options flat on the entry
+    # ({name: wasi, home: /opt/...}). Unset = the default world.
+    runtimes: list[str | dict[str, Any]] | None = None
+    # Global route script: a .py path whose content is embedded at
+    # load. Its last expression names the runtime for the line, or
+    # None to fall to entry scripts.
+    route: str | None = None
     mode: MountMode = MountMode.WRITE
     consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY
-    default_session_id: str = "default"
-    default_agent_id: str = "default"
+    default_session_id: str | None = None
+    default_agent_id: str | None = None
+    workspace_id: str | None = None
     cache: CacheBlock | None = None
     index: IndexBlock | None = None
+    store: StoreBlock | None = None
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -183,14 +368,15 @@ class WorkspaceConfig(BaseModel):
                 workspace-level settings, in the shape the
                 ``Workspace`` constructor expects.
         """
-        resources: dict[str, Any] = {}
+        resources: dict[str, Mount] = {}
         for prefix, block in self.mounts.items():
             prov = build_resource(block.resource, block.config)
             mode = block.mode if block.mode is not None else self.mode
-            if block.command_safeguards:
-                resources[prefix] = (prov, mode, block.command_safeguards)
-            else:
-                resources[prefix] = (prov, mode)
+            resources[prefix] = Mount(
+                resource=prov,
+                mode=mode,
+                command_safeguards=block.command_safeguards,
+            )
         kwargs: dict[str, Any] = {
             "resources": resources,
             "mode": self.mode,
@@ -202,6 +388,15 @@ class WorkspaceConfig(BaseModel):
             kwargs["cache"] = _build_cache_config(self.cache)
         if self.index is not None:
             kwargs["index"] = _build_index_config(self.index)
+        if self.workspace_id is not None:
+            kwargs["workspace_id"] = self.workspace_id
+        if self.store is not None:
+            kwargs["store"] = _build_state_store(self.store)
+            kwargs["owns_store"] = True
+        if self.runtimes is not None:
+            kwargs["runtimes"] = _build_runtime_entries(self.runtimes)
+        if self.route is not None:
+            kwargs["route"] = _load_script_source(self.route)
         return kwargs
 
     def fuse_mounts(self) -> dict[str, bool | str]:
@@ -241,7 +436,52 @@ def _build_index_config(block: RamIndexBlock | RedisIndexBlock) -> IndexConfig:
     return IndexConfig(ttl=block.ttl)
 
 
-def load_config(source: str | Path | dict,
+def _build_store_group(
+    block: RamStoreBlock | DiskStoreBlock | RedisStoreBlock | S3StoreBlock
+) -> WorkspaceStateStore:
+    if isinstance(block, DiskStoreBlock):
+        return DiskWorkspaceStateStore(root=block.root)
+    if isinstance(block, RedisStoreBlock):
+        if RedisWorkspaceStateStore is None:
+            raise ImportError("A redis store requires the 'redis' extra. "
+                              "Install with: pip install mirage-ai[redis]")
+        return RedisWorkspaceStateStore(url=block.url,
+                                        key_prefix=block.key_prefix)
+    if isinstance(block, S3StoreBlock):
+        if S3WorkspaceStateStore is None:
+            raise ImportError("An s3 store requires the 's3' extra. "
+                              "Install with: pip install mirage-ai[s3]")
+        return S3WorkspaceStateStore(block)
+    return RAMWorkspaceStateStore()
+
+
+def _build_state_store(block: StoreBlock) -> WorkspaceStateStore:
+    namespace = _build_store_group(
+        block.namespace) if block.namespace is not None else None
+    observer = _build_store_group(
+        block.observer) if block.observer is not None else None
+    workspace = _build_store_group(
+        block.workspace) if block.workspace is not None else None
+    if block.type == "redis":
+        if RedisWorkspaceStateStore is None:
+            raise ImportError("A redis store requires the 'redis' extra. "
+                              "Install with: pip install mirage-ai[redis]")
+        return RedisWorkspaceStateStore(url=block.url,
+                                        key_prefix=block.key_prefix,
+                                        namespace=namespace,
+                                        observer=observer,
+                                        workspace=workspace)
+    if block.type == "disk":
+        return DiskWorkspaceStateStore(root=block.root,
+                                       namespace=namespace,
+                                       observer=observer,
+                                       workspace=workspace)
+    return RAMWorkspaceStateStore(namespace=namespace,
+                                  observer=observer,
+                                  workspace=workspace)
+
+
+def load_config(source: str | Path | dict[str, Any],
                 env: dict[str, str] | None = None) -> WorkspaceConfig:
     """Load a workspace config from a YAML / JSON file or a raw dict.
 
@@ -258,9 +498,11 @@ def load_config(source: str | Path | dict,
     Returns:
         WorkspaceConfig: validated config object.
     """
+    base: Path | None = None
     if isinstance(source, (str, Path)):
         text = Path(source).read_text(encoding="utf-8")
         raw = yaml.safe_load(text)
+        base = Path(source).resolve().parent
     else:
         raw = dict(source)
     if not isinstance(raw, dict):
@@ -268,4 +510,6 @@ def load_config(source: str | Path | dict,
             f"config source must be a mapping, got {type(raw).__name__}")
     use_env = env if env is not None else dict(os.environ)
     interpolated = _interpolate_env(raw, use_env)
+    if base is not None:
+        _absolutize_scripts(interpolated, base)
     return WorkspaceConfig.model_validate(interpolated)

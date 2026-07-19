@@ -12,23 +12,22 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-
 from mirage.accessor.langfuse import LangfuseAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.rg import rg as generic_rg
+from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import compile_pattern, pattern_arg
 from mirage.commands.builtin.langfuse.grep import (_filter_traces,
                                                    _format_dataset_results,
                                                    _format_prompt_results,
                                                    _format_session_results)
+from mirage.commands.builtin.langfuse.io import resolve_glob
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.core.langfuse._client import (fetch_datasets, fetch_prompts,
                                           fetch_sessions, fetch_traces)
-from mirage.core.langfuse.glob import resolve_glob
 from mirage.core.langfuse.read import read as langfuse_read
 from mirage.core.langfuse.readdir import readdir as _readdir
 from mirage.core.langfuse.scope import detect_scope
@@ -42,18 +41,18 @@ async def rg(
     accessor: LangfuseAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     prefix: str = "",
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
         raise UsageError("rg: usage: rg [flags] pattern [path]")
-    i = fl.bool("i")
-    w = fl.bool("w")
-    F = fl.bool("F")
+    i = fl.as_bool("i")
+    w = fl.as_bool("w")
+    F = fl.as_bool("F")
     pat = compile_pattern(pattern_str, i, F, w)
 
     config = accessor.config
@@ -90,11 +89,9 @@ async def rg(
         resolved,
         texts,
         flags,
-        readdir=_readdir,
-        stat=_stat,
-        read_bytes=langfuse_read,
+        readdir=bound_op(_readdir, accessor, index),
+        stat=bound_op(_stat, accessor, index),
+        read_bytes=bound_op(langfuse_read, accessor, index),
         read_stream=None,
-        accessor=accessor,
         stdin=stdin,
-        index=index,
     )

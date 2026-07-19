@@ -20,7 +20,7 @@ from mirage.commands.spec.types import FlagView
 from mirage.types import PathSpec
 
 
-def strategy_for(cmd_name: str, flag_kwargs: dict) -> Strategy:
+def strategy_for(cmd_name: str, flag_kwargs: dict[str, object]) -> Strategy:
     """Pick the combine strategy for one cross-mount command invocation.
 
     Flags can flip the strategy: ``sed -i`` edits each operand in place
@@ -33,7 +33,7 @@ def strategy_for(cmd_name: str, flag_kwargs: dict) -> Strategy:
     if cmd_name in RELAY_COMMANDS:
         return Strategy.RELAY
     if cmd_name == Cmd.SED and FlagView(flag_kwargs,
-                                        spec=SPECS[Cmd.SED]).bool("i"):
+                                        spec=SPECS[Cmd.SED]).as_bool("i"):
         return Strategy.FANOUT
     if cmd_name in STREAM_COMMANDS:
         return Strategy.STREAM
@@ -48,5 +48,6 @@ def is_cross_mount(cmd_name: str, scopes: list[PathSpec], registry) -> bool:
         try:
             mounts.add(registry.mount_for(s.virtual).prefix)
         except ValueError:
+            # a scope outside any mount cannot make the command cross-mount
             pass
     return len(mounts) > 1

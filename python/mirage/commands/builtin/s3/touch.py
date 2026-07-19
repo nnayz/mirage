@@ -16,10 +16,10 @@ from mirage.accessor.s3 import S3Accessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic_bind.provision import \
     write_metadata_provision
+from mirage.commands.builtin.s3.io import resolve_glob
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.s3.exists import exists
-from mirage.core.s3.glob import resolve_glob
 from mirage.core.s3.write import write_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
@@ -38,13 +38,13 @@ async def touch(
     c: bool = False,
     r: str | None = None,
     d: str | None = None,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
     if not paths:
         raise ValueError("touch: missing operand")
     paths = await resolve_glob(accessor, paths, index)
-    writes: dict[str, bytes] = {}
+    writes: dict[str, ByteSource] = {}
     for p in paths:
         if c:
             continue

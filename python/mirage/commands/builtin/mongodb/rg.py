@@ -12,28 +12,31 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-
 from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.rg import rg as generic_rg
+from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg
+from mirage.commands.builtin.mongodb.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.core.mongodb._client import list_databases
-from mirage.core.mongodb.glob import resolve_glob
 from mirage.core.mongodb.read import read as mongodb_read
 from mirage.core.mongodb.readdir import readdir as _readdir
-from mirage.core.mongodb.scope import detect_scope
+from mirage.core.mongodb.scope import (MongoDBDatabaseScope,
+                                       MongoDBEntityScope, MongoDBRootScope,
+                                       detect_scope)
 from mirage.core.mongodb.search import (format_grep_results, search_collection,
                                         search_database)
 from mirage.core.mongodb.stat import stat as _stat
-from mirage.core.mongodb.types import ScopeLevel
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+
+SEARCHABLE_SCOPE_TYPES = (MongoDBEntityScope, MongoDBDatabaseScope,
+                          MongoDBRootScope)
 
 
 @command("rg", resource="mongodb", spec=SPECS["rg"])
@@ -41,9 +44,9 @@ async def rg(
     accessor: MongoDBAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     prefix: str = "",
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["rg"])
@@ -57,11 +60,8 @@ async def rg(
     if paths and "\n" not in pattern_str:
         scope = detect_scope(paths[0])
 
-        if scope.level in (ScopeLevel.ENTITY, ScopeLevel.DATABASE,
-                           ScopeLevel.ROOT):
-            entity_match = (scope.level == ScopeLevel.ENTITY and scope.database
-                            and scope.name)
-            if entity_match:
+        if isinstance(scope, SEARCHABLE_SCOPE_TYPES):
+            if isinstance(scope, MongoDBEntityScope):
                 docs = await search_collection(
                     accessor.client,
                     scope.database,
@@ -70,7 +70,7 @@ async def rg(
                     limit=limit,
                 )
                 results = [(scope.database, scope.name, docs)] if docs else []
-            elif scope.level == ScopeLevel.DATABASE and scope.database:
+            elif isinstance(scope, MongoDBDatabaseScope):
                 results = await search_database(
                     accessor.client,
                     scope.database,
@@ -99,11 +99,9 @@ async def rg(
         resolved,
         texts,
         flags,
-        readdir=_readdir,
-        stat=_stat,
-        read_bytes=mongodb_read,
+        readdir=bound_op(_readdir, accessor, index),
+        stat=bound_op(_stat, accessor, index),
+        read_bytes=bound_op(mongodb_read, accessor, index),
         read_stream=None,
-        accessor=accessor,
         stdin=stdin,
-        index=index,
     )

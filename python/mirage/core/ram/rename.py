@@ -20,35 +20,32 @@ from mirage.types import PathSpec
 from mirage.utils.path import norm
 
 
-async def rename(accessor: RAMAccessor, src: PathSpec, dst: PathSpec) -> None:
-    if isinstance(src, str):
-        src = PathSpec(virtual=src,
-                       directory=src,
-                       resource_path=src.strip("/"))
-    if isinstance(src, PathSpec):
-        src = src.mount_path
-    if isinstance(dst, str):
-        dst = PathSpec(virtual=dst,
-                       directory=dst,
-                       resource_path=dst.strip("/"))
-    if isinstance(dst, PathSpec):
-        dst = dst.mount_path
+async def rename(accessor: RAMAccessor, src_spec: PathSpec,
+                 dst_spec: PathSpec) -> None:
+    src = src_spec.mount_path
+    dst = dst_spec.mount_path
     store = accessor.store
     s, d = norm(src), norm(dst)
     now = now_iso()
     if s in store.files:
         store.files[d] = store.files.pop(s)
         store.modified[d] = store.modified.pop(s, now)
+        if s in store.attrs:
+            store.attrs[d] = store.attrs.pop(s)
     elif s in store.dirs:
         store.dirs.discard(s)
         store.dirs.add(d)
         store.modified[d] = store.modified.pop(s, now)
+        if s in store.attrs:
+            store.attrs[d] = store.attrs.pop(s)
         prefix = s.rstrip("/") + "/"
         for key in list(store.files):
             if key.startswith(prefix):
                 new_key = d.rstrip("/") + "/" + key[len(prefix):]
                 store.files[new_key] = store.files.pop(key)
+                if key in store.attrs:
+                    store.attrs[new_key] = store.attrs.pop(key)
     else:
         raise FileNotFoundError(s)
-    await invalidate_after_write(dst)
-    await invalidate_after_unlink(src)
+    await invalidate_after_write(dst_spec)
+    await invalidate_after_unlink(src_spec)

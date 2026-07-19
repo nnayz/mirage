@@ -12,8 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import fnmatch
 from collections.abc import Callable
+from typing import Any
 
 import tree_sitter
 
@@ -25,6 +25,7 @@ from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.call_stack import CallStack
 from mirage.shell.types import ERREXIT_EXEMPT_TYPES
 from mirage.types import PathSpec, word_text
+from mirage.utils.fnmatch import fnmatch
 from mirage.workspace.session import Session
 from mirage.workspace.types import ExecutionNode
 
@@ -43,7 +44,7 @@ def _line_buffer(stdin: ByteSource) -> AsyncLineIterator:
 
 
 async def _execute_body(
-    execute_node: Callable,
+    execute_node: Callable[..., Any],
     body: list[tree_sitter.Node],
     session: Session,
     stdin: ByteSource | None,
@@ -90,14 +91,14 @@ class BreakSignal(Exception):
 
     def __init__(self, stdout=None, io=None):
         self.stdout = stdout
-        self.io = io or IOResult()
+        self.io = io if io is not None else IOResult()
 
 
 class ContinueSignal(Exception):
 
     def __init__(self, stdout=None, io=None):
         self.stdout = stdout
-        self.io = io or IOResult()
+        self.io = io if io is not None else IOResult()
 
 
 class ReturnSignal(Exception):
@@ -120,7 +121,7 @@ def _collect_loop_result(
 
 
 async def handle_if(
-    execute_node: Callable,
+    execute_node: Callable[..., Any],
     branches: list[tuple[tree_sitter.Node, list[tree_sitter.Node]]],
     else_body: list[tree_sitter.Node] | None,
     session: Session,
@@ -142,7 +143,7 @@ async def handle_if(
 
 
 async def handle_for(
-    execute_node: Callable,
+    execute_node: Callable[..., Any],
     variable: str,
     values: list[str | PathSpec],
     body: list[tree_sitter.Node],
@@ -190,7 +191,7 @@ async def handle_for(
 
 
 async def _condition_loop(
-    execute_node: Callable,
+    execute_node: Callable[..., Any],
     condition: tree_sitter.Node,
     body: list[tree_sitter.Node],
     session: Session,
@@ -248,7 +249,7 @@ async def _condition_loop(
 
 
 async def handle_while(
-    execute_node: Callable,
+    execute_node: Callable[..., Any],
     condition: tree_sitter.Node,
     body: list[tree_sitter.Node],
     session: Session,
@@ -266,7 +267,7 @@ async def handle_while(
 
 
 async def handle_until(
-    execute_node: Callable,
+    execute_node: Callable[..., Any],
     condition: tree_sitter.Node,
     body: list[tree_sitter.Node],
     session: Session,
@@ -284,7 +285,7 @@ async def handle_until(
 
 
 async def handle_case(
-    execute_node: Callable,
+    execute_node: Callable[..., Any],
     word: str,
     items: list[tuple[list[str], list[tree_sitter.Node]]],
     session: Session,
@@ -292,7 +293,7 @@ async def handle_case(
     call_stack: CallStack | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     for patterns, body in items:
-        if any(fnmatch.fnmatch(word, p.strip()) for p in patterns):
+        if any(fnmatch(word, p.strip()) for p in patterns):
             all_stdout: list[ByteSource] = []
             merged_io = IOResult()
             last_exec = ExecutionNode(command="case", exit_code=0)
@@ -311,7 +312,7 @@ async def handle_case(
 
 
 async def handle_select(
-    execute_node: Callable,
+    execute_node: Callable[..., Any],
     variable: str,
     values: list[str | PathSpec],
     body: list[tree_sitter.Node],

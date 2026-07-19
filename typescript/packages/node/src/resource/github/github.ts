@@ -15,7 +15,7 @@
 import {
   BaseResource,
   GITHUB_COMMANDS,
-  GITHUB_VFS_OPS,
+  GITHUB_OPS,
   GitHubAccessor,
   HttpGitHubTransport,
   PathSpec,
@@ -27,7 +27,7 @@ import {
   githubPopulateIndex,
   githubRead,
   githubReaddir,
-  githubResolveGlob,
+  makeResolveGlob,
   githubStat,
   mountKey,
   mountPrefixOf,
@@ -39,6 +39,8 @@ import {
 } from '@struktoai/mirage-core'
 import { redactGitHubConfig, type GitHubConfig, type GitHubConfigRedacted } from './config.ts'
 
+const githubResolveGlob = makeResolveGlob(githubReaddir)
+
 export interface GitHubResourceState {
   type: string
   config: GitHubConfigRedacted
@@ -49,6 +51,9 @@ export interface GitHubResourceState {
 export class GitHubResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GITHUB
   readonly cachesReads: boolean = true
+  // Blob shas are stable per-path markers, so cached reads can be
+  // probe-verified under ALWAYS and snapshots carry drift fingerprints.
+  readonly supportsSnapshot: boolean = true
   override readonly indexTtl: number = 86_400
   readonly config: GitHubConfig
   readonly accessor: GitHubAccessor
@@ -95,7 +100,7 @@ export class GitHubResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return GITHUB_VFS_OPS
+    return GITHUB_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -108,11 +113,6 @@ export class GitHubResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return githubStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.id ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

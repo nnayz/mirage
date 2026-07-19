@@ -16,7 +16,7 @@ import {
   BaseResource,
   GDOCS_COMMANDS,
   GDOCS_PROMPT,
-  GDOCS_VFS_OPS,
+  GDOCS_OPS,
   GDOCS_WRITE_PROMPT,
   GDocsAccessor,
   PathSpec,
@@ -24,7 +24,7 @@ import {
   TokenManager,
   gdocsRead,
   gdocsReaddir,
-  gdocsResolveGlob,
+  makeResolveGlob,
   gdocsStat,
   mountKey,
   mountPrefixOf,
@@ -34,6 +34,8 @@ import {
   type Resource,
 } from '@struktoai/mirage-core'
 import { redactGDocsConfig, type GDocsConfig, type GDocsConfigRedacted } from './config.ts'
+
+const gdocsResolveGlob = makeResolveGlob(gdocsReaddir)
 
 export interface GDocsResourceState {
   type: string
@@ -56,6 +58,8 @@ export class GDocsResource extends BaseResource implements Resource {
       clientId: config.clientId,
       clientSecret: config.clientSecret,
       refreshToken: config.refreshToken,
+      ...(config.refreshFn !== undefined ? { refreshFn: config.refreshFn } : {}),
+      ...(config.apiBase !== undefined ? { apiBase: config.apiBase } : {}),
     })
     this.accessor = new GDocsAccessor({ tokenManager: tm })
   }
@@ -73,7 +77,7 @@ export class GDocsResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return GDOCS_VFS_OPS
+    return GDOCS_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -86,11 +90,6 @@ export class GDocsResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return gdocsStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

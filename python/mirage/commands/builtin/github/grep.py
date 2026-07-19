@@ -12,11 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.grep import grep as generic_grep
+from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github.narrow import (files_only_shortcircuit,
                                                    narrow_scope)
 from mirage.commands.builtin.grep_helper import pattern_arg
@@ -53,10 +52,10 @@ async def grep_provision(
     *texts: str,
     r: bool = False,
     R: bool = False,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> ProvisionResult:
-    if not paths or index is None:
+    if not paths:
         return ProvisionResult(command="grep " + " ".join(texts))
     recursive = r or R
     total = 0
@@ -94,22 +93,22 @@ async def grep(
     accessor: GitHubAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
-    index: IndexCacheStore = None,
+    stdin: ByteSource | None = None,
+    index: IndexCacheStore,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
-    recursive = fl.bool("r") or fl.bool("R")
+    recursive = fl.as_bool("r") or fl.as_bool("R")
 
     resolved: list[PathSpec] = []
-    if paths and index is not None:
+    if paths:
         resolved, file_count, used_search = await narrow_scope(
             accessor,
             index,
             paths,
             pattern,
-            fixed_string=fl.bool("F"),
+            fixed_string=fl.as_bool("F"),
             recursive=recursive,
         )
         if file_count > SCOPE_ERROR:
@@ -124,11 +123,9 @@ async def grep(
         resolved,
         texts,
         flags,
-        readdir=github_readdir,
-        stat=github_stat,
-        read_bytes=github_read,
+        readdir=bound_op(github_readdir, accessor, index),
+        stat=bound_op(github_stat, accessor, index),
+        read_bytes=bound_op(github_read, accessor, index),
         read_stream=None,
-        accessor=accessor,
         stdin=stdin,
-        index=index,
     )

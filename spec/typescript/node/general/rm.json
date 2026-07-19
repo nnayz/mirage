@@ -5,9 +5,12 @@
     "has_provision": true,
     "has_write": true,
     "resources": [
+      "box",
       "databricks_volume",
       "disk",
+      "dropbox",
       "gdocs",
+      "gdrive",
       "gsheets",
       "gslides",
       "hf_buckets",

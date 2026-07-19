@@ -14,7 +14,8 @@
 
 import logging
 
-from mirage.cache.index import IndexCacheStore, IndexEntry, LookupStatus
+from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
+                                LookupStatus)
 from mirage.core.github.tree import fetch_dir_tree
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
@@ -23,16 +24,12 @@ from mirage.utils.key_prefix import mount_prefix_of
 log = logging.getLogger(__name__)
 
 
-async def readdir(accessor, path: PathSpec,
-                  index: IndexCacheStore) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    if isinstance(path, PathSpec):
-        prefix = mount_prefix_of(path.virtual, path.resource_path)
-        path = path.directory if path.pattern else path.virtual
+async def readdir(accessor,
+                  path_spec: PathSpec,
+                  index: IndexCacheStore = NULL_INDEX) -> list[str]:
+    virtual = path_spec.virtual
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    path = path_spec.directory if path_spec.pattern else path_spec.virtual
     if prefix and path.startswith(prefix):
         rest = path[len(prefix):]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
@@ -67,6 +64,7 @@ async def _fallback_readdir(
                                    accessor.repo, parent_sha)
     norm = "/" + path.strip("/")
     child_keys: list[str] = []
+    dir_entries: list[tuple[str, IndexEntry]] = []
     for entry in entries:
         child_path = norm + "/" + entry.path
         resource_type = "folder" if entry.type == "tree" else "file"
@@ -76,9 +74,9 @@ async def _fallback_readdir(
             resource_type=resource_type,
             size=entry.size,
         )
-        index._entries[child_path] = idx_entry
+        dir_entries.append((entry.path, idx_entry))
         child_keys.append(child_path)
-    index._children[norm] = sorted(child_keys)
+    await index.set_dir(norm, dir_entries)
     log.debug("fallback readdir populated %d entries for %s", len(entries),
               path)
     virtual_keys = sorted((prefix + k if prefix else k) for k in child_keys)
@@ -112,7 +110,7 @@ async def _resolve_dir_sha(accessor, path: str,
                     resource_type="folder" if entry.type == "tree" else "file",
                     size=entry.size,
                 )
-                index._entries[current_path] = idx_entry
+                await index.put(current_path, idx_entry)
                 found = True
                 break
         if not found:

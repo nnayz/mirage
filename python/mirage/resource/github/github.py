@@ -14,21 +14,26 @@
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from mirage.accessor.github import GitHubAccessor
-from mirage.cache.index import IndexEntry
+from mirage.cache.index import IndexConfig, IndexEntry
 from mirage.core.github.config import GitHubConfig
-from mirage.core.github.glob import resolve_glob as _resolve_glob
+from mirage.core.github.readdir import readdir
 from mirage.core.github.repo import fetch_default_branch_sync
 from mirage.core.github.tree import fetch_tree_sync
 from mirage.core.github.tree_entry import TreeEntry
 from mirage.resource.base import BaseResource
 from mirage.resource.github.prompt import PROMPT
 from mirage.types import ResourceName
+from mirage.utils.glob_walk import make_resolve_glob
+
+_resolve_glob = make_resolve_glob(readdir)
 
 
 class GitHubResource(BaseResource):
 
+    accessor: GitHubAccessor
     name: str = ResourceName.GITHUB
     caches_reads: bool = True
     PROMPT: str = PROMPT
@@ -81,18 +86,30 @@ class GitHubResource(BaseResource):
                 size=entry.size,
             )
             dirs[parent].append((name, idx_entry))
-        for parent, entries in dirs.items():
-            self._index._entries.update({
-                ("/" + parent.strip("/") + "/" + name).replace("//", "/"):
-                e
-                for name, e in entries
-            })
-            child_keys = sorted(
-                ("/" + parent.strip("/") + "/" + name).replace("//", "/")
-                for name, _ in entries)
-            self._index._children[parent] = child_keys
-            self._index._expiry[parent] = (datetime.now(timezone.utc) +
-                                           timedelta(days=365))
+        self._github_index_entries = {
+            ("/" + parent.strip("/") + "/" + name).replace("//", "/"): entry
+            for parent, entries in dirs.items()
+            for name, entry in entries
+        }
+        self._github_index_children = {
+            parent:
+            sorted(("/" + parent.strip("/") + "/" + name).replace("//", "/")
+                   for name, _ in entries)
+            for parent, entries in dirs.items()
+        }
+        self._github_index_expiry = (datetime.now(timezone.utc) +
+                                     timedelta(days=365))
+        self._seed_github_index()
+
+    def _seed_github_index(self) -> None:
+        self._index.seed(self._github_index_entries,
+                         self._github_index_children,
+                         self._github_index_expiry)
+
+    def set_index(self, config: IndexConfig | None = None) -> None:
+        super().set_index(config)
+        if hasattr(self, "_github_index_entries"):
+            self._seed_github_index()
 
     async def resolve_glob(self, paths, prefix: str = ""):
         return await _resolve_glob(self.accessor, paths, self._index)
@@ -101,11 +118,7 @@ class GitHubResource(BaseResource):
     def is_default_branch(self) -> bool:
         return self.accessor.ref == self.accessor.default_branch
 
-    async def fingerprint(self, path: str) -> str | None:
-        result = await self._index.get("/" + path.strip("/"))
-        return result.entry.id if result.entry else None
-
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         return self.config_state(
             self.accessor.config,
             owner=self.accessor.owner,
@@ -115,5 +128,5 @@ class GitHubResource(BaseResource):
             truncated=self.accessor.truncated,
         )
 
-    def load_state(self, state: dict) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         pass

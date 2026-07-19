@@ -19,22 +19,32 @@ import {
   type IndexCacheStore,
   LINEAR_COMMANDS,
   LINEAR_PROMPT,
-  LINEAR_VFS_OPS,
+  LINEAR_OPS,
   LINEAR_WRITE_PROMPT,
   LinearAccessor,
   type LinearReaddirFilter,
   linearRead,
   linearReaddir,
   linearStat,
+  makeResolveGlob,
   PathSpec,
   RAMIndexCacheStore,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
   ResourceName,
-  resolveLinearGlob,
 } from '@struktoai/mirage-core'
 import { redactLinearConfig, type LinearConfig, type LinearConfigRedacted } from './config.ts'
+
+const resolveLinearGlob = (
+  accessor: LinearAccessor,
+  paths: readonly PathSpec[],
+  index: IndexCacheStore | undefined,
+  filter: LinearReaddirFilter,
+): Promise<PathSpec[]> =>
+  makeResolveGlob((a: LinearAccessor, p: PathSpec, i?: IndexCacheStore) =>
+    linearReaddir(a, p, i, filter),
+  )(accessor, paths, index)
 
 export interface LinearResourceState {
   type: string
@@ -72,7 +82,7 @@ export class LinearResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return LINEAR_VFS_OPS
+    return LINEAR_OPS
   }
 
   private filter(): LinearReaddirFilter {
@@ -91,11 +101,6 @@ export class LinearResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return linearStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

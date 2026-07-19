@@ -87,14 +87,6 @@ describe('MirageFS — getattr', () => {
     const [code] = await callOp<[number]>(mfs, 'getattr', '/data/.DS_Store')
     expect(code).toBe(ENOENT)
   })
-
-  it('serves /.mirage/whoami as a file', async () => {
-    const ws = await mkWs()
-    const mfs = new MirageFS(ws)
-    const [code, attr] = await callOp<[number, FuseAttr]>(mfs, 'getattr', '/.mirage/whoami')
-    expect(code).toBe(0)
-    expect(attr.size).toBeGreaterThan(0)
-  })
 })
 
 describe('MirageFS — readdir', () => {
@@ -106,15 +98,6 @@ describe('MirageFS — readdir', () => {
     expect(names.slice(0, 2)).toEqual(['.', '..'])
     expect(names).toContain('data')
     expect(names).toContain('extra')
-    expect(names).toContain('.mirage')
-  })
-
-  it('lists /.mirage as a single-entry virtual dir with "." and ".."', async () => {
-    const ws = await mkWs()
-    const mfs = new MirageFS(ws)
-    const [code, names] = await callOp<[number, string[]]>(mfs, 'readdir', '/.mirage')
-    expect(code).toBe(0)
-    expect(names).toEqual(['.', '..', 'whoami'])
   })
 
   it('lists contents of a mount directory', async () => {
@@ -125,21 +108,6 @@ describe('MirageFS — readdir', () => {
     expect(names.slice(0, 2)).toEqual(['.', '..'])
     expect(names).toContain('greeting.txt')
     expect(names).toContain('sub')
-  })
-})
-
-describe('MirageFS — whoami pseudo-file', () => {
-  it('emits agent/cwd/mounts via read', async () => {
-    const ws = await mkWs()
-    const mfs = new MirageFS(ws, { agentId: 'test-agent-42' })
-    const [code, fh] = await callOp<[number, number]>(mfs, 'open', '/.mirage/whoami', 0)
-    expect(code).toBe(0)
-    const buf = Buffer.alloc(256)
-    const [bytesRead] = await callOp<[number]>(mfs, 'read', '/.mirage/whoami', fh, buf, 256, 0)
-    const text = buf.subarray(0, bytesRead).toString('utf-8')
-    expect(text).toContain('agent: test-agent-42')
-    expect(text).toContain('cwd: /')
-    expect(text).toContain('/data/')
   })
 })
 
@@ -237,17 +205,17 @@ describe('MirageFS — ops() registers access', () => {
 
 describe('MirageFS — size=null resources (API-backed)', () => {
   // Simulates Trello/Linear/Slack: stat() returns size=null because the bytes
-  // aren't known until the API is called. Without libfuse's `direct_io` flag
-  // (which @zkochan/fuse-native doesn't expose), getattr must report a
-  // non-zero size or the kernel short-circuits read(). We can't prefetch on
-  // getattr — that makes `ls` issue an API call per directory entry — so we
-  // report a sentinel size and let read() return EOF naturally.
+  // aren't known until the API is called. getattr reports 0 pre-open (never a
+  // fake size); the mount's direct_io makes the kernel read to EOF anyway,
+  // and attrTimeout '0' routes the post-open fstat to fgetattr, which serves
+  // the real hydrated size. We can't prefetch on getattr — that would make
+  // `ls` issue an API call per directory entry.
 
   function mkSizeNullWs(): Workspace {
     return new Workspace({ '/data/': new RAMResource() }, { mode: MountMode.WRITE })
   }
 
-  it('getattr reports the sentinel size (no API fetch) when stat returns size=null', async () => {
+  it('getattr reports size 0 (no API fetch) when stat returns size=null', async () => {
     const ws = mkSizeNullWs()
     await ws.fs.writeFile('/data/api.json', new TextEncoder().encode('content'))
     vi.spyOn(ws.fs, 'stat').mockResolvedValue(
@@ -257,8 +225,8 @@ describe('MirageFS — size=null resources (API-backed)', () => {
     const mfs = new MirageFS(ws)
     const [code, attr] = await callOp<[number, FuseAttr]>(mfs, 'getattr', '/data/api.json')
     expect(code).toBe(0)
-    expect(attr.size).toBeGreaterThan(0)
-    // The point of the sentinel: getattr stays cheap.
+    expect(attr.size).toBe(0)
+    // The point of reporting 0: getattr stays cheap.
     expect(readSpy).not.toHaveBeenCalled()
   })
 
@@ -279,7 +247,7 @@ describe('MirageFS — size=null resources (API-backed)', () => {
     expect(buf.subarray(0, n).toString('utf-8')).toBe('payload from API')
   })
 
-  it('read returns 0 past the actual data length (sentinel-driven read past EOF)', async () => {
+  it('read returns 0 past the actual data length (direct_io read past EOF)', async () => {
     const ws = mkSizeNullWs()
     const bytes = new TextEncoder().encode('short')
     await ws.fs.writeFile('/data/api.json', bytes)
@@ -311,6 +279,20 @@ describe('MirageFS — size=null resources (API-backed)', () => {
     const mfs = new MirageFS(ws)
     await callOp<[number, number]>(mfs, 'open', '/data/api.json', 0)
     const [, attr] = await callOp<[number, FuseAttr]>(mfs, 'getattr', '/data/api.json')
+    expect(attr.size).toBe(bytes.byteLength)
+  })
+
+  it('fgetattr serves the real size from the open-hydrated handle', async () => {
+    const ws = mkSizeNullWs()
+    const bytes = new TextEncoder().encode('hydrated bytes')
+    await ws.fs.writeFile('/data/api.json', bytes)
+    vi.spyOn(ws.fs, 'stat').mockResolvedValue(
+      new FileStat({ name: 'api.json', type: FileType.JSON }),
+    )
+    const mfs = new MirageFS(ws)
+    const [, fh] = await callOp<[number, number]>(mfs, 'open', '/data/api.json', 0)
+    const [code, attr] = await callOp<[number, FuseAttr]>(mfs, 'fgetattr', '/data/api.json', fh)
+    expect(code).toBe(0)
     expect(attr.size).toBe(bytes.byteLength)
   })
 })
@@ -417,5 +399,142 @@ describe('MirageFS — xattr', () => {
     await ws.execute("echo 'new' > /data/renamed.txt")
     const [, list] = await callOp<[number, string[]]>(mfs, 'listxattr', '/data/renamed.txt')
     expect(list).toEqual([])
+  })
+})
+
+describe('MirageFS — namespace links', () => {
+  it('getattr reports a link with S_IFLNK and target length', async () => {
+    const ws = await mkWs()
+    await ws.execute('ln -s /data/greeting.txt /data/lnk')
+    const mfs = new MirageFS(ws)
+    const [code, attr] = await callOp<[number, FuseAttr]>(mfs, 'getattr', '/data/lnk')
+    expect(code).toBe(0)
+    expect(attr.mode & 0o170000).toBe(0o120000)
+    expect(attr.size).toBe('greeting.txt'.length)
+  })
+
+  it('readlink rewrites an absolute target relative to the link dir', async () => {
+    const ws = await mkWs()
+    await ws.execute('ln -s /data/sub/inner.txt /data/lnk')
+    const mfs = new MirageFS(ws)
+    const [code, target] = await callOp<[number, string]>(mfs, 'readlink', '/data/lnk')
+    expect(code).toBe(0)
+    expect(target).toBe('sub/inner.txt')
+  })
+
+  it('readlink on a non-link returns EINVAL', async () => {
+    const ws = await mkWs()
+    const mfs = new MirageFS(ws)
+    const [code] = await callOp<[number]>(mfs, 'readlink', '/data/greeting.txt')
+    expect(code).toBe(-22)
+  })
+
+  it('readdir lists link entries', async () => {
+    const ws = await mkWs()
+    await ws.execute('ln -s /data/greeting.txt /data/lnk')
+    const mfs = new MirageFS(ws)
+    const [code, entries] = await callOp<[number, string[]]>(mfs, 'readdir', '/data')
+    expect(code).toBe(0)
+    expect(entries).toContain('lnk')
+  })
+
+  it('read follows the link to the target content', async () => {
+    const ws = await mkWs()
+    await ws.execute('ln -s /data/greeting.txt /data/lnk')
+    const mfs = new MirageFS(ws)
+    const buf = Buffer.alloc(256)
+    const [n] = await callOp<[number]>(mfs, 'read', '/data/lnk', 0, buf, 256, 0)
+    expect(n).toBe('hello world\n'.length)
+    expect(buf.subarray(0, n).toString()).toBe('hello world\n')
+  })
+
+  it('symlink creates a namespace link readable through FUSE', async () => {
+    const ws = await mkWs()
+    const mfs = new MirageFS(ws)
+    const [code] = await callOp<[number]>(mfs, 'symlink', '/data/greeting.txt', '/data/lnk')
+    expect(code).toBe(0)
+    const [rlCode, target] = await callOp<[number, string]>(mfs, 'readlink', '/data/lnk')
+    expect(rlCode).toBe(0)
+    expect(target).toBe('greeting.txt')
+  })
+
+  it('unlink removes the link entry but keeps the target', async () => {
+    const ws = await mkWs()
+    await ws.execute('ln -s /data/greeting.txt /data/lnk')
+    const mfs = new MirageFS(ws)
+    const [code] = await callOp<[number]>(mfs, 'unlink', '/data/lnk')
+    expect(code).toBe(0)
+    const [lnkCode] = await callOp<[number]>(mfs, 'getattr', '/data/lnk')
+    expect(lnkCode).toBe(ENOENT)
+    const [fileCode] = await callOp<[number]>(mfs, 'getattr', '/data/greeting.txt')
+    expect(fileCode).toBe(0)
+  })
+
+  it('scoped root displays link targets in mount-relative form', async () => {
+    const ws = await mkWs()
+    await ws.execute('ln -s /data/sub/inner.txt /data/sub/lnk')
+    const mfs = new MirageFS(ws, { rootPrefix: '/data/sub' })
+    const [code, target] = await callOp<[number, string]>(mfs, 'readlink', '/lnk')
+    expect(code).toBe(0)
+    expect(target).toBe('inner.txt')
+  })
+})
+
+describe('MirageFS — stat attr overlay', () => {
+  it('getattr honors chmod overlay bits', async () => {
+    const ws = await mkWs()
+    await ws.execute('chmod 640 /data/greeting.txt')
+    const mfs = new MirageFS(ws)
+    const [code, attr] = await callOp<[number, FuseAttr]>(mfs, 'getattr', '/data/greeting.txt')
+    expect(code).toBe(0)
+    expect(attr.mode & 0o170000).toBe(0o100000)
+    expect(attr.mode & 0o7777).toBe(0o640)
+  })
+
+  it('getattr honors touched mtime', async () => {
+    const ws = await mkWs()
+    await ws.execute('touch -t 202603041200 /data/greeting.txt')
+    const mfs = new MirageFS(ws)
+    const [code, attr] = await callOp<[number, FuseAttr]>(mfs, 'getattr', '/data/greeting.txt')
+    expect(code).toBe(0)
+    expect(attr.mtime.getTime()).toBe(Date.UTC(2026, 2, 4, 12, 0, 0))
+  })
+})
+
+describe('MirageFS — session binding', () => {
+  it('a bound tree enforces the session mount grants', async () => {
+    const ws = await mkWs()
+    await ws.execute("echo 'hidden' > /extra/secret.txt")
+    const session = ws.createSession('narrow', { mounts: ['/data'] })
+
+    const bound = new MirageFS(ws, { session })
+    const [okCode, attr] = await callOp<[number, FuseAttr]>(bound, 'getattr', '/data/greeting.txt')
+    expect(okCode).toBe(0)
+    expect(attr.mode & 0o170000).toBe(0o100000)
+    const [deniedCode] = await callOp<[number]>(bound, 'getattr', '/extra/secret.txt')
+    expect(deniedCode).toBeLessThan(0)
+
+    const unbound = new MirageFS(ws)
+    const [plainCode] = await callOp<[number, FuseAttr]>(unbound, 'getattr', '/extra/secret.txt')
+    expect(plainCode).toBe(0)
+  })
+
+  it('a read-narrowed session reads through the bound tree but cannot create', async () => {
+    const ws = await mkWs()
+    const session = ws.createSession('ro', { mounts: { '/data': 'read' } })
+    const bound = new MirageFS(ws, { session })
+
+    const [openCode, fd] = await callOp<[number, number]>(bound, 'open', '/data/greeting.txt', 0)
+    expect(openCode).toBe(0)
+    const buf = Buffer.alloc(64)
+    const readLen = await new Promise<number>((resolve) => {
+      const fn = (bound.ops() as Record<string, (...a: unknown[]) => void>).read
+      if (fn === undefined) throw new Error('read op missing')
+      fn('/data/greeting.txt', fd, buf, 64, 0, resolve)
+    })
+    expect(buf.subarray(0, readLen).toString()).toContain('hello world')
+
+    const [createCode] = await callOp<[number]>(bound, 'create', '/data/new.txt', 0o644)
+    expect(createCode).toBeLessThan(0)
   })
 })

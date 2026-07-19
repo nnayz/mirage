@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { AsyncLineIterator } from '../../io/async_line_iterator.ts'
+import type { MountMode } from '../../types.ts'
 
 export interface SessionInit {
   sessionId: string
@@ -26,22 +27,25 @@ export interface SessionInit {
   readonlyVars?: Set<string>
   arrays?: Record<string, string[]>
   /**
-   * Mount prefixes this session is allowed to touch. `null` (the default)
-   * means no restriction — every mount in the workspace is reachable.
-   * When provided, dispatch / handle_command / Ops all reject paths that
-   * resolve to mounts outside this set with a capability error. The
-   * workspace always implicitly grants access to its own infrastructure
-   * mounts (cache root, observer, /dev) regardless of this allowlist.
+   * Per-mount mode caps for this session. `null` (the default) means
+   * no restriction: every mount in the workspace is reachable at its own
+   * mode. When provided, a mount absent from the map is invisible
+   * (dispatch / handle_command / Ops reject it with a capability error)
+   * and a present mount is narrowed to the weaker of its own mode and
+   * the session's mode. The workspace always implicitly grants its own
+   * infrastructure mounts (implicit scratch root, observer, /dev).
    */
-  allowedMounts?: ReadonlySet<string> | null
+  mountModes?: ReadonlyMap<string, MountMode> | null
+  generation?: number
   pipelineTimeoutSeconds?: number | null
+  lastBgJobId?: number | null
 }
 
 export class Session {
-  readonly sessionId: string
+  sessionId: string
   cwd: string
   env: Record<string, string>
-  readonly createdAt: number
+  createdAt: number
   functions: Record<string, unknown>
   lastExitCode: number
   positionalArgs: string[]
@@ -50,8 +54,10 @@ export class Session {
   arrays: Record<string, string[]>
   stdinBuffer: AsyncLineIterator | null = null
   localVars: Map<string, string | null> | null = null
-  readonly allowedMounts: ReadonlySet<string> | null
+  mountModes: ReadonlyMap<string, MountMode> | null
+  generation: number
   pipelineTimeoutSeconds: number | null
+  lastBgJobId: number | null
 
   constructor(init: SessionInit) {
     this.sessionId = init.sessionId
@@ -64,8 +70,10 @@ export class Session {
     this.shellOptions = init.shellOptions ?? {}
     this.readonlyVars = init.readonlyVars ?? new Set()
     this.arrays = init.arrays ?? {}
-    this.allowedMounts = init.allowedMounts ?? null
+    this.mountModes = init.mountModes ?? null
+    this.generation = init.generation ?? 0
     this.pipelineTimeoutSeconds = init.pipelineTimeoutSeconds ?? null
+    this.lastBgJobId = init.lastBgJobId ?? null
   }
 
   /**
@@ -73,7 +81,7 @@ export class Session {
    * containers (env, functions, readonlyVars, arrays, positionalArgs)
    * are shallow-copied so mutations on the fork do not leak back into
    * the source. Every field — including capability fields like
-   * `allowedMounts` — is propagated, so callers cannot accidentally
+   * `mountModes` — is propagated, so callers cannot accidentally
    * forget one when adding new fields.
    */
   fork(overrides: Partial<SessionInit> = {}): Session {
@@ -90,26 +98,48 @@ export class Session {
       arrays:
         overrides.arrays ??
         Object.fromEntries(Object.entries(this.arrays).map(([k, v]) => [k, [...v]])),
-      allowedMounts: overrides.allowedMounts ?? this.allowedMounts,
+      mountModes: overrides.mountModes ?? this.mountModes,
+      generation: overrides.generation ?? this.generation,
       pipelineTimeoutSeconds: overrides.pipelineTimeoutSeconds ?? this.pipelineTimeoutSeconds,
+      lastBgJobId: overrides.lastBgJobId ?? this.lastBgJobId,
     })
   }
 
+  /**
+   * The durable-field payload persisted by SessionStore and snapshots.
+   * Keys are snake_case, byte-identical to Python's `Session.to_dict`,
+   * so both languages can share one store (a py daemon creates the
+   * session, a node kernel tier binds it).
+   */
   toJSON(): Record<string, unknown> {
-    return {
-      sessionId: this.sessionId,
+    const data: Record<string, unknown> = {
+      session_id: this.sessionId,
       cwd: this.cwd,
       env: this.env,
-      createdAt: this.createdAt,
+      created_at: this.createdAt,
+      generation: this.generation,
     }
+    if (this.mountModes !== null) {
+      data.mount_modes = Object.fromEntries(this.mountModes)
+    }
+    return data
   }
 
   static fromJSON(data: {
-    sessionId: string
+    session_id: string
     cwd?: string
     env?: Record<string, string>
-    createdAt?: number
+    created_at?: number
+    mount_modes?: Record<string, MountMode> | null
+    generation?: number
   }): Session {
-    return new Session(data)
+    return new Session({
+      sessionId: data.session_id,
+      ...(data.cwd !== undefined ? { cwd: data.cwd } : {}),
+      ...(data.env !== undefined ? { env: data.env } : {}),
+      ...(data.created_at !== undefined ? { createdAt: data.created_at } : {}),
+      ...(data.generation !== undefined ? { generation: data.generation } : {}),
+      mountModes: data.mount_modes != null ? new Map(Object.entries(data.mount_modes)) : null,
+    })
   }
 }

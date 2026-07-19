@@ -1,6 +1,7 @@
+from typing import Any
+
 from mirage.accessor.chroma import ChromaAccessor
 from mirage.commands.builtin.chroma import COMMANDS
-from mirage.core.chroma.glob import resolve_glob as _resolve_glob
 from mirage.core.chroma.read import read_bytes, read_stream
 from mirage.core.chroma.readdir import readdir
 from mirage.core.chroma.stat import stat
@@ -9,6 +10,9 @@ from mirage.resource.base import BaseResource
 from mirage.resource.chroma.config import ChromaConfig
 from mirage.resource.chroma.prompt import PROMPT
 from mirage.types import ResourceName
+from mirage.utils.glob_walk import make_resolve_glob
+
+_resolve_glob = make_resolve_glob(readdir)
 
 _CHROMA_OPS = {
     "read_bytes": read_bytes,
@@ -20,6 +24,7 @@ _CHROMA_OPS = {
 
 class ChromaResource(BaseResource):
 
+    accessor: ChromaAccessor
     name: str = ResourceName.CHROMA
     caches_reads: bool = False
     _ops = _CHROMA_OPS
@@ -39,10 +44,7 @@ class ChromaResource(BaseResource):
     async def resolve_glob(self, paths, prefix: str = ""):
         return await _resolve_glob(self.accessor, paths, index=self._index)
 
-    async def fingerprint(self, path: str) -> str | None:
-        return None
-
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         return {
             "type": self.name,
             "needs_override": True,
@@ -50,5 +52,5 @@ class ChromaResource(BaseResource):
             "config": self.config.model_dump(),
         }
 
-    def load_state(self, state: dict) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         pass

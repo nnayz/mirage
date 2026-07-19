@@ -21,6 +21,7 @@ import type {
   RegisteredCommand,
 } from '../../commands/config.ts'
 import type { OpKwargs } from '../../ops/registry.ts'
+import type { StatOverlay } from '../../ops/config.ts'
 
 const NOOP_ACCESSOR = new NOOPAccessor()
 import { getExtension } from '../../commands/resolve.ts'
@@ -35,8 +36,9 @@ import { runWithRevisions, setVirtualPrefix } from '../../observe/context.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
 import type { Resource } from '../../resource/base.ts'
 import { type CommandSafeguard, ConsistencyPolicy, MountMode, PathSpec } from '../../types.ts'
-import type { PyodideRuntime } from '../executor/python/runtime.ts'
+import type { Runtime } from '../executor/runtime.ts'
 import { rstripSlash } from '../../utils/slash.ts'
+import { effectiveMountMode } from '../../context/session_context.ts'
 
 type CmdKey = string
 type OpKey = string
@@ -88,6 +90,10 @@ export class MountEntry {
   private readonly ops = new Map<OpKey, RegisteredOp>()
   private readonly generalOps = new Map<string, RegisteredOp>()
   private readonly crossCmds = new Map<string, RegisteredCommand>()
+  // first token -> descending token counts of multi-word command names
+  // (e.g. "gws docs documents get"); backs longest-prefix command
+  // resolution. null until first built; invalidated on register.
+  private prefixIndex: Map<string, number[]> | null = null
 
   constructor(init: MountInit) {
     const prefix = init.prefix
@@ -106,16 +112,26 @@ export class MountEntry {
     this.consistency = init.consistency ?? ConsistencyPolicy.LAZY
   }
 
+  /**
+   * This mount's mode narrowed by the current session's cap. The
+   * configured mode is the ceiling; a session's mode can only weaken it.
+   */
+  effectiveMode(): MountMode {
+    return effectiveMountMode(this.prefix, this.mode)
+  }
+
   // ── command registration ──────────────────────────
 
   register(cmd: RegisteredCommand): void {
     this.cmds.set(cmdKey(cmd.name, cmd.filetype), cmd)
     this.cmdSpecs.set(cmd.name, cmd.spec)
+    this.prefixIndex = null
   }
 
   registerGeneral(cmd: RegisteredCommand): void {
     this.generalCmds.set(cmd.name, cmd)
     this.cmdSpecs.set(cmd.name, cmd.spec)
+    this.prefixIndex = null
   }
 
   resolveCommand(cmdName: string, extension: string | null = null): RegisteredCommand | null {
@@ -133,6 +149,45 @@ export class MountEntry {
       if (rc.name === cmdName) return rc
     }
     return null
+  }
+
+  /**
+   * How many leading words form a registered command name here. Command
+   * names may span several words ("gws docs documents get"), git-style.
+   * Returns the length of the longest registered name that is a prefix of
+   * `words`, or 1 (the bare first token) if no multi-word name matches; 0
+   * for no words.
+   */
+  longestCommandMatch(words: string[]): number {
+    if (words.length === 0) return 0
+    if (this.prefixIndex === null) {
+      const index = new Map<string, Set<number>>()
+      const names = new Set<string>([
+        ...this.cmdSpecs.keys(),
+        ...[...this.cmds.values()].map((rc) => rc.name),
+        ...this.generalCmds.keys(),
+      ])
+      for (const name of names) {
+        const tokens = name.split(' ')
+        const [first] = tokens
+        if (first === undefined || tokens.length <= 1) continue
+        const lengths = index.get(first) ?? new Set<number>()
+        lengths.add(tokens.length)
+        index.set(first, lengths)
+      }
+      this.prefixIndex = new Map([...index].map(([k, v]) => [k, [...v].sort((a, b) => b - a)]))
+    }
+    const [first] = words
+    if (first === undefined) return 1
+    for (const length of this.prefixIndex.get(first) ?? []) {
+      if (
+        length <= words.length &&
+        this.resolveCommand(words.slice(0, length).join(' ')) !== null
+      ) {
+        return length
+      }
+    }
+    return 1
   }
 
   isGeneralCommand(cmdName: string): boolean {
@@ -328,7 +383,8 @@ export class MountEntry {
       sessionId?: string
       env?: Record<string, string>
       execAllowed?: boolean
-      pythonRuntime?: PyodideRuntime
+      runtime?: Runtime
+      statOverlay?: StatOverlay
       safeguardOverride?: CommandSafeguard | null
     } = {},
   ): Promise<[ByteSource | null, IOResult]> {
@@ -379,7 +435,8 @@ export class MountEntry {
       ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
       ...(opts.env !== undefined ? { env: opts.env } : {}),
       ...(opts.execAllowed !== undefined ? { execAllowed: opts.execAllowed } : {}),
-      ...(opts.pythonRuntime !== undefined ? { pythonRuntime: opts.pythonRuntime } : {}),
+      ...(opts.runtime !== undefined ? { runtime: opts.runtime } : {}),
+      ...(opts.statOverlay !== undefined ? { statOverlay: opts.statOverlay } : {}),
     }
 
     setVirtualPrefix(mountPrefix)
@@ -389,7 +446,7 @@ export class MountEntry {
           this.revisions.size > 0 ? this.revisions : null,
           async (): Promise<[ByteSource | null, IOResult]> => {
             for (const cmd of handlers) {
-              if (cmd.write && this.mode === MountMode.READ) {
+              if (cmd.write && this.effectiveMode() === MountMode.READ) {
                 return [
                   null,
                   new IOResult({
@@ -400,17 +457,29 @@ export class MountEntry {
                   }),
                 ]
               }
-              const result = await cmd.fn(accessor, expandedPaths, texts, cmdOpts)
+              // The dispatch-level guard only sees default safeguards
+              // (the mount is unknown before routing), so the
+              // mount-resolved timeout must also bound the command
+              // body: eager commands do their work inside cmd.fn,
+              // where the stream-consumption guard never runs.
+              const resolvedSafeguard = resolveSafeguard(
+                cmdName,
+                cmd.safeguard,
+                opts.safeguardOverride !== undefined
+                  ? opts.safeguardOverride
+                  : (this.commandSafeguards.get(cmdName) ?? null),
+              )
+              const cmdTimeout =
+                resolvedSafeguard !== null ? resolvedSafeguard.timeoutSeconds : null
+              const result = await runWithTimeout(
+                Promise.resolve(cmd.fn(accessor, expandedPaths, texts, cmdOpts)),
+                cmdTimeout,
+                cmdName,
+              )
               if (result !== null) {
                 // TODO: hand back a finalization context separately
                 // instead of stamping policy onto io.safeguard.
-                result[1].safeguard = resolveSafeguard(
-                  cmdName,
-                  cmd.safeguard,
-                  opts.safeguardOverride !== undefined
-                    ? opts.safeguardOverride
-                    : (this.commandSafeguards.get(cmdName) ?? null),
-                )
+                result[1].safeguard = resolvedSafeguard
                 return result
               }
             }
@@ -434,7 +503,7 @@ export class MountEntry {
     if (levels.length === 0) {
       throw new Error(`${this.resource.kind}: no op ${opName}`)
     }
-    if (this.mode === MountMode.READ && levels.some((o) => o.write)) {
+    if (this.effectiveMode() === MountMode.READ && levels.some((o) => o.write)) {
       throw new Error(`mount ${this.prefix} is read-only`)
     }
     const mountPrefix = rstripSlash(this.prefix)

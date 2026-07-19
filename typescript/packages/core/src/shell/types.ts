@@ -45,6 +45,7 @@ export const NodeType = Object.freeze({
   COMMAND_SUBSTITUTION: 'command_substitution',
   ARITHMETIC_EXPANSION: 'arithmetic_expansion',
   CONCATENATION: 'concatenation',
+  BRACE_EXPRESSION: 'brace_expression',
   STRING: 'string',
   STRING_CONTENT: 'string_content',
   RAW_STRING: 'raw_string',
@@ -199,11 +200,14 @@ export const ShellBuiltin = Object.freeze({
   SH: 'sh',
   PYTHON: 'python',
   PYTHON3: 'python3',
+  NODE: 'node',
+  JS: 'js',
   XARGS: 'xargs',
   TIMEOUT: 'timeout',
   BREAK: 'break',
   CONTINUE: 'continue',
   RETURN: 'return',
+  EXIT: 'exit',
 } as const)
 
 export type ShellBuiltin = (typeof ShellBuiltin)[keyof typeof ShellBuiltin]

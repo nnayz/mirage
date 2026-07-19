@@ -21,7 +21,7 @@ from mirage.utils.path import norm
 
 async def create(accessor: RAMAccessor, path: PathSpec) -> None:
     store = accessor.store
-    p = norm(path)
+    p = norm(path.mount_path)
     store.files[p] = b""
     store.modified[p] = now_iso()
     await invalidate_after_write(path)

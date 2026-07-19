@@ -12,8 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Any
+
 from mirage.server.version.errors import NoSuchBranchError
-from mirage.server.version.state_tree import (CACHE_PREFIX, META_PATH,
+from mirage.server.version.state_tree import (CONTROL_PREFIX, META_PATH,
                                               blob_to_meta, meta_to_blob,
                                               to_state, tree_inputs_from_state)
 from mirage.server.version.store import VersionStore
@@ -22,11 +24,8 @@ from mirage.workspace.snapshot import (apply_state_dict, install_fingerprints,
                                        to_state_dict)
 
 
-async def snapshot_tree(store: VersionStore, ws) -> bytes:
-    return await snapshot_tree_from_state(store, await to_state_dict(ws))
-
-
-async def snapshot_tree_from_state(store: VersionStore, state: dict) -> bytes:
+async def snapshot_tree_from_state(store: VersionStore,
+                                   state: dict[str, Any]) -> bytes:
     entries, meta = tree_inputs_from_state(state)
     tree_entries: dict[str, bytes] = {}
     for path, data in entries.items():
@@ -43,7 +42,7 @@ async def commit(store: VersionStore,
 
 
 async def commit_state(store: VersionStore,
-                       state: dict,
+                       state: dict[str, Any],
                        branch: str = "main",
                        message: str = "") -> bytes:
     tree = await snapshot_tree_from_state(store, state)
@@ -63,8 +62,9 @@ async def branch(store: VersionStore,
     await store.set_branch(name, head)
 
 
-async def read_version(store: VersionStore,
-                       version: bytes) -> tuple[dict[str, bytes], dict]:
+async def read_version(
+        store: VersionStore,
+        version: bytes) -> tuple[dict[str, bytes], dict[str, Any]]:
     tree = (await store.read_commit(version)).tree
     contents = await store.read_tree(tree)
     meta_oid = contents.pop(META_PATH, None)
@@ -100,17 +100,18 @@ async def checkout(store: VersionStore,
 
 
 def _strip_meta(changes: dict[str, list[str]]) -> dict[str, list[str]]:
+    # File-level diff/status stay content-only: the control-plane
+    # subtree changes on every command (history) and is surfaced by the
+    # structured state_diff instead.
     return {
-        kind: [
-            p for p in paths
-            if p != META_PATH and not p.startswith(CACHE_PREFIX)
-        ]
+        kind: [p for p in paths if not p.startswith(CONTROL_PREFIX)]
         for kind, paths in changes.items()
     }
 
 
-async def version_log(store: VersionStore, branch: str) -> list[dict]:
-    out: list[dict] = []
+async def version_log(store: VersionStore,
+                      branch: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for oid in await store.log(branch):
         commit_obj = await store.read_commit(oid)
         out.append({
@@ -127,7 +128,7 @@ async def version_diff(store: VersionStore, version_a: bytes,
     return _strip_meta(await store.diff(tree_a, tree_b))
 
 
-async def diff_live_vs_ref(store: VersionStore, state: dict,
+async def diff_live_vs_ref(store: VersionStore, state: dict[str, Any],
                            ref) -> dict[str, list[str]]:
     live_tree = await snapshot_tree_from_state(store, state)
     version = await resolve_ref(store, ref)
@@ -135,14 +136,8 @@ async def diff_live_vs_ref(store: VersionStore, state: dict,
     return _strip_meta(await store.diff(ref_tree, live_tree))
 
 
-async def status(store: VersionStore,
-                 ws,
-                 branch: str = "main") -> dict[str, list[str]]:
-    return await status_state(store, await to_state_dict(ws), branch)
-
-
 async def status_state(store: VersionStore,
-                       state: dict,
+                       state: dict[str, Any],
                        branch: str = "main") -> dict[str, list[str]]:
     live_tree = await snapshot_tree_from_state(store, state)
     if branch in await store.branches():

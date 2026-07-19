@@ -15,8 +15,8 @@ fail=0
 
 export CROSS_DISK_ROOT="${CROSS_DISK_ROOT:-/tmp/mirage-cross-disk}"
 export CROSS_REDIS_PREFIX="${CROSS_REDIS_PREFIX:-mirage-cross/}"
-export CROSS_SNAPSHOT_ROOT="${CROSS_SNAPSHOT_ROOT:-/tmp/mirage-cross-snap}"
-export MIRAGE_SNAPSHOT_ROOT="$CROSS_SNAPSHOT_ROOT"
+export MIRAGE_HOME="${MIRAGE_HOME:-/tmp/mirage-cross-home}"
+export CROSS_SNAPSHOT_ROOT="$MIRAGE_HOME/snapshots"
 mkdir -p "$CROSS_DISK_ROOT" "$CROSS_SNAPSHOT_ROOT"
 
 FINGERPRINTS=(
@@ -26,6 +26,9 @@ FINGERPRINTS=(
   "cat /minio/data/x.txt"
   "cat /ram/f.txt /disk/g.txt | wc -l"
   "grep -v '^#' /.bash_history | head -n 1"
+  "readlink /ram/l.txt"
+  "cat /ram/l.txt"
+  "ls -l /ram"
 )
 
 freeport() { lsof -ti:8765 2>/dev/null | xargs kill -9 2>/dev/null; sleep 1; }
@@ -39,6 +42,9 @@ seed() {
   $cli execute -w "$id" -c "printf 'redis-x\nredis-y\n' > /redis/h.txt" >/dev/null
   $cli execute -w "$id" -c "printf 'minio-1\nminio-2\n' > /minio/data/x.txt" >/dev/null
   $cli execute -w "$id" -c "printf '1\n2\n3\n4\n5\n' > /guard/big.txt" >/dev/null
+  $cli execute -w "$id" -c "ln -s /ram/f.txt /ram/l.txt" >/dev/null
+  $cli execute -w "$id" -c "chmod 640 /ram/f.txt && chown 500:dev /ram/f.txt" >/dev/null
+  $cli execute -w "$id" -c "touch -t 202601021530 /ram/f.txt" >/dev/null
   $cli execute -w "$id" -c "echo cross-history-marker" >/dev/null
 }
 

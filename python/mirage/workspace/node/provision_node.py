@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from mirage.provision import Precision, ProvisionResult
 from mirage.shell.node_kind import NodeKind, node_kind
+from mirage.shell.types import FunctionBody
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import RedirectKind
 from mirage.shell.types import ShellBuiltin as SB
@@ -84,17 +85,17 @@ class PlanScope:
     on the session: planning must not mutate shell state), and
     `planning` guards recursive functions from looping the planner.
     """
-    functions: dict[str, list] = field(default_factory=dict)
+    functions: dict[str, FunctionBody] = field(default_factory=dict)
     planning: set[str] = field(default_factory=set)
 
 
 async def _provision_redirected(
-    recurse: Callable,
+    recurse: Callable[..., Any],
     registry: MountRegistry,
     namespace: Namespace | None,
-    execute_fn: Callable,
+    execute_fn: Callable[..., Any],
     command: Any,
-    redirects: list,
+    redirects: list[Any],
     session: Session,
 ) -> ProvisionResult:
     """Plan one redirected command: expand targets, cost, degrade.
@@ -113,7 +114,7 @@ async def _provision_redirected(
     # A cmdsub target expands empty under provision, so its
     # classification is garbage; the precision degrade below keeps
     # the plan honest without costing a phantom write (mirrors TS).
-    targets = [
+    targets: list[tuple[RedirectKind, PathSpec]] = [
         (r.kind, r.target) for r in expanded
         if r.kind in (RedirectKind.STDIN, RedirectKind.STDOUT) and isinstance(
             r.target, PathSpec) and not r.target.virtual.startswith("/dev/")
@@ -132,11 +133,11 @@ async def _provision_redirected(
 
 
 async def _provision_reassociated(
-    recurse: Callable,
+    recurse: Callable[..., Any],
     registry: MountRegistry,
     namespace: Namespace | None,
-    execute_fn: Callable,
-    redirects: list,
+    execute_fn: Callable[..., Any],
+    redirects: list[Any],
     right: Any,
     node: Any,
     session: Session,
@@ -164,8 +165,8 @@ async def _provision_reassociated(
 
 async def provision_node(
     registry: MountRegistry,
-    dispatch: Callable,
-    execute_fn: Callable,
+    dispatch: Callable[..., Any],
+    execute_fn: Callable[..., Any],
     namespace: Namespace | None,
     node: Any,
     session: Session,
@@ -299,9 +300,9 @@ async def provision_node(
 
     if kind == NodeKind.FUNCTION_DEF:
         name = get_function_name(node)
-        body = get_function_body(node)
-        if name and body is not None:
-            plan_scope.functions[name] = body
+        fn_body = get_function_body(node)
+        if name:
+            plan_scope.functions[name] = fn_body
         return await handle_builtin_provision()
 
     if kind in (NodeKind.DECLARATION, NodeKind.UNSET, NodeKind.TEST,

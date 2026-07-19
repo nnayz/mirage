@@ -16,6 +16,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from mirage.io import IOResult
+from mirage.io.stream import materialize
 from mirage.shell import parse
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.job_table import JobTable
@@ -382,26 +383,22 @@ def test_printenv_all():
 # ── whoami ──────────────────────────────────────
 
 
-def test_whoami_set():
-    stdout, io, _, _, _, _ = _exec("whoami", env={"USER": "alice"})
-    assert io.exit_code == 0
-    assert stdout == b"alice\n"
-    assert io.stderr in (None, b"")
-
-
-def test_whoami_unset():
+def test_whoami_errors_without_identity():
+    # No agent ever claimed this workspace: GNU errors for a uid with
+    # no passwd entry, and so do we.
     stdout, io, _, _, _, _ = _exec("whoami", env={})
     assert io.exit_code == 1
-    assert io.stderr == b"whoami: USER not set\n"
+    assert io.stderr == b"whoami: cannot find name for user ID\n"
 
 
-def test_whoami_empty():
-    stdout, io, _, _, _, _ = _exec("whoami", env={"USER": ""})
-    assert io.exit_code == 0
-    assert stdout == b"\n"
+def test_whoami_ignores_env_user():
+    # GNU whoami reports the effective user, never $USER.
+    stdout, io, _, _, _, _ = _exec("whoami", env={"USER": "alice"})
+    assert io.exit_code == 1
+    assert stdout != b"alice\n"
 
 
-# ── unsupported node raises ─────────────────────
+# ── unsupported node errors gracefully ──────────
 
 
 def test_unsupported_node_raises():
@@ -413,14 +410,15 @@ def test_unsupported_node_raises():
 
     fake_node = MagicMock()
     fake_node.type = "some_unknown_type_xyz"
+    fake_node.text = b"some_unknown_type_xyz"
 
-    try:
-        _run(
-            execute_node(dispatch, reg, job_table, execute_fn, "agent-1",
-                         fake_node, session))
-        assert False, "should have raised"
-    except TypeError as e:
-        assert "unsupported" in str(e)
+    stdout, io, _ = _run(
+        execute_node(dispatch, reg, job_table, execute_fn, "agent-1",
+                     fake_node, session))
+    assert stdout is None
+    assert io.exit_code == 2
+    assert (_run(materialize(io.stderr)) ==
+            b"mirage: unsupported shell construct: some_unknown_type_xyz\n")
 
 
 # ── read ────────────────────────────────────────

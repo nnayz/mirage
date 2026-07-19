@@ -14,6 +14,7 @@
 
 import type { EventDict } from '../../observe/observer.ts'
 import type { RAMResourceState } from '../../resource/ram/ram.ts'
+import type { MountMode } from '../../types.ts'
 
 interface ResourceStateBase {
   type: string
@@ -69,6 +70,8 @@ export interface SessionSnapshot {
   session_id: string
   cwd: string
   env: Record<string, string>
+  created_at?: number
+  mount_modes?: Record<string, MountMode>
 }
 
 export interface JobSnapshot {
@@ -90,6 +93,15 @@ export interface JobSnapshot {
  * bytes the agent actually saw, populated at read time from the GET
  * response. At least one of `fingerprint` and `revision` is non-null.
  */
+export interface NodeMetaSnapshot {
+  target?: string
+  mtime?: number
+  mode?: number
+  uid?: number | string
+  gid?: number | string
+  atime?: string
+}
+
 export interface FingerprintEntrySnapshot {
   path: string
   mount_prefix: string
@@ -100,9 +112,11 @@ export interface FingerprintEntrySnapshot {
 export interface WorkspaceStateDict {
   version: number
   mirage_version: string
-  default_session_id: string
-  default_agent_id: string
-  current_agent_id: string
+  // Undefined when the state came from an older commit meta that
+  // predates the pointer; the live default is kept in that case.
+  default_session_id: string | undefined
+  default_agent_id: string | null
+  current_agent_id: string | null
   sessions: SessionSnapshot[]
   mounts: MountSnapshot[]
   cache: CacheSnapshot
@@ -120,8 +134,9 @@ export interface WorkspaceStateDict {
    */
   live_only_mounts?: string[]
   /**
-   * Namespace symlink table: link path -> {target, mtime}. Optional for
-   * backwards compatibility with snapshots that predate symlinks.
+   * Namespace node table: path -> per-path metadata (symlink target and
+   * attribute overlay). Only non-null fields are serialized. Optional for
+   * backwards compatibility with snapshots that predate the table.
    */
-  symlinks?: Record<string, { target: string; mtime: number }>
+  nodes?: Record<string, NodeMetaSnapshot>
 }

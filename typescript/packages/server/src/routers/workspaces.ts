@@ -15,9 +15,10 @@
 import { mkdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, resolve, sep } from 'node:path'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import type { CommandSafeguard, MountMode } from '@struktoai/mirage-node'
-import { Workspace, type Resource } from '@struktoai/mirage-node'
-import type { WorkspaceRegistry } from '../registry.ts'
+import type { CommandSafeguard, MountSpec } from '@struktoai/mirage-node'
+import { DiskWorkspaceStateStore, Workspace, type Resource } from '@struktoai/mirage-node'
+import { newWorkspaceId } from '@struktoai/mirage-node'
+import { type WorkspaceRegistry } from '../registry.ts'
 import { buildOverrideResources, cloneWorkspaceWithOverride, type OverrideShape } from '../clone.ts'
 import {
   configToWorkspaceArgs,
@@ -30,6 +31,7 @@ import { makeBrief, makeDetail } from '../summary.ts'
 export interface WorkspaceRoutesDeps {
   registry: WorkspaceRegistry
   snapshotRoot: string
+  stateRoot: string
 }
 
 const WRITE_RATE_LIMIT = {
@@ -88,31 +90,44 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       } catch (e) {
         return reply.status(502).send({ detail: `resource build failed: ${(e as Error).message}` })
       }
-      const resourceMap: Record<string, Resource> = {}
-      const modeOverrides: Record<string, MountMode> = {}
+      const resourceMap: Record<string, MountSpec> = {}
       const commandSafeguards: Record<string, Record<string, CommandSafeguard>> = {}
       for (const [prefix, [resource, mode, safeguards]] of Object.entries(args.resources)) {
-        resourceMap[prefix] = resource
-        modeOverrides[prefix] = mode
+        resourceMap[prefix] = [resource, mode]
         if (Object.keys(safeguards).length > 0) commandSafeguards[prefix] = safeguards
       }
-      const ws = new Workspace(resourceMap, {
-        mode: args.options.mode,
-        consistency: args.options.consistency,
-        modeOverrides,
-        sessionId: args.options.sessionId,
-        agentId: args.options.agentId,
-        ...(Object.keys(commandSafeguards).length > 0 ? { commandSafeguards } : {}),
-        ...(args.options.cache !== undefined ? { cache: args.options.cache } : {}),
-        ...(args.options.index !== undefined ? { index: args.options.index } : {}),
-      })
+      // The registry id and the state-store scope must be the same identity,
+      // so resolve it before construction: explicit REST id, then the
+      // config's workspaceId, then a fresh mint.
+      const wid = body.id ?? args.options.workspaceId ?? newWorkspaceId()
+      let ws: Workspace
+      try {
+        ws = new Workspace(resourceMap, {
+          mode: args.options.mode,
+          consistency: args.options.consistency,
+          ...(args.options.sessionId !== undefined ? { sessionId: args.options.sessionId } : {}),
+          ...(args.options.agentId !== undefined ? { agentId: args.options.agentId } : {}),
+          workspaceId: wid,
+          // Daemon default is disk (a created workspace survives restart
+          // with zero infrastructure, like git init); the library default
+          // stays ram. An explicit store always wins.
+          store: args.options.store ?? new DiskWorkspaceStateStore({ root: deps.stateRoot }),
+          ...(Object.keys(commandSafeguards).length > 0 ? { commandSafeguards } : {}),
+          ...(args.options.cache !== undefined ? { cache: args.options.cache } : {}),
+          ...(args.options.index !== undefined ? { index: args.options.index } : {}),
+          ...(args.options.runtimes !== undefined ? { runtimes: args.options.runtimes } : {}),
+          ...(args.options.route !== undefined ? { route: args.options.route } : {}),
+        })
+      } catch (e) {
+        return reply.status(400).send({ detail: (e as Error).message })
+      }
       let entry
       try {
         for (const [prefix, target] of Object.entries(args.fuseMounts)) {
           const mountpoint = typeof target === 'string' ? target : undefined
           await ws.addFuseMount(prefix, mountpoint)
         }
-        entry = deps.registry.add(ws, body.id)
+        entry = deps.registry.add(ws, wid)
       } catch (e) {
         await ws.close()
         return reply.status(409).send({ detail: (e as Error).message })

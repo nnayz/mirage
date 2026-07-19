@@ -12,14 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
-
 from mirage.accessor.s3 import S3Accessor
 from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.s3.io import resolve_glob
 from mirage.commands.builtin.utils.stream import _read_stdin_async
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.core.s3.glob import resolve_glob
 from mirage.core.s3.stream import read_stream
 from mirage.core.s3.write import write_bytes
 from mirage.io.types import ByteSource, IOResult
@@ -31,9 +29,9 @@ async def tee(
     accessor: S3Accessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     a: bool = False,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
     if not paths:
@@ -46,10 +44,11 @@ async def tee(
     if a:
         try:
             existing = b""
-            async for chunk in read_stream(accessor, paths[0]):
+            async for chunk in read_stream(accessor, paths[0], index=index):
                 existing += chunk
             write_data = existing + raw
         except FileNotFoundError:
+            # appending to a missing object starts from empty
             pass
     await write_bytes(accessor, paths[0], write_data)
     return raw, IOResult(writes={paths[0].mount_path: write_data},

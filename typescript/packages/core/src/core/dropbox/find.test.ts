@@ -30,9 +30,30 @@ vi.mock('./stat.ts', async () => {
 import { DropboxAccessor } from '../../accessor/dropbox.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import type { DropboxTokenManager } from './_client.ts'
-import { find } from './find.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
+import type { FindOptions } from '../../resource/base.ts'
+import { walkFind } from '../generic/find.ts'
+import { isDirName } from './readdir.ts'
 import * as readdirMod from './readdir.ts'
 import * as statMod from './stat.ts'
+
+async function find(
+  accessor: DropboxAccessor,
+  path: PathSpec,
+  options: FindOptions = {},
+  index?: IndexCacheStore,
+): Promise<string[]> {
+  return walkFind(
+    path,
+    {
+      readdir: (spec, idx) => readdirMod.readdir(accessor, spec, idx),
+      stat: (spec, idx) => statMod.stat(accessor, spec, idx),
+      isDirName: (child) => isDirName(child),
+    },
+    options,
+    index,
+  )
+}
 
 const STUB_TM = {} as DropboxTokenManager
 
@@ -149,11 +170,11 @@ describe('dropbox core find', () => {
     expect(statted).not.toContain('/docs/inner')
   })
 
-  it('filters files by minSize letting directories pass', async () => {
+  it('filters by minSize with directories contributing size 0', async () => {
     mockTree(TREE)
     mockStats(SIZES)
     const out = await find(makeAccessor(), ROOT, { minSize: 1024 })
-    expect(out).toEqual(['/docs', '/docs/inner', '/docs/inner/deep.md', '/docs/readme.md'])
+    expect(out).toEqual(['/docs/inner/deep.md', '/docs/readme.md'])
   })
 
   it('filters files by maxSize', async () => {
@@ -163,11 +184,12 @@ describe('dropbox core find', () => {
     expect(out).toEqual(['/notes.txt'])
   })
 
-  it('stats files for type detection and size filtering only', async () => {
+  it('stats the start path plus files for type detection and size filtering only', async () => {
     mockTree(TREE)
     await find(makeAccessor(), ROOT, { name: '*.md', minSize: 1024 })
     const statted = [...new Set(vi.mocked(statMod.stat).mock.calls.map((c) => c[1].virtual))]
-    expect(statted.sort()).toEqual(['/docs/inner/deep.md', '/docs/readme.md', '/notes.txt'])
+    // '/' is the start-point stat that emits the search root itself.
+    expect(statted.sort()).toEqual(['/', '/docs/inner/deep.md', '/docs/readme.md', '/notes.txt'])
   })
 
   it('filters by mtimeMin and mtimeMax on files and dirs', async () => {
@@ -193,7 +215,7 @@ describe('dropbox core find', () => {
     expect(out).toEqual(['/docs/inner/deep.md'])
   })
 
-  it('matches pathPattern against prefix-stripped paths', async () => {
+  it('matches pathPattern against the display path', async () => {
     mockTree({
       '/mnt/dbx': ['/mnt/dbx/docs/', '/mnt/dbx/notes.txt'],
       '/mnt/dbx/docs': ['/mnt/dbx/docs/readme.md'],
@@ -203,7 +225,7 @@ describe('dropbox core find', () => {
       directory: '/mnt/dbx',
       resourcePath: mountKey('/mnt/dbx', '/mnt/dbx'),
     })
-    const out = await find(makeAccessor(), root, { pathPattern: '/docs/*' })
+    const out = await find(makeAccessor(), root, { pathPattern: '/mnt/dbx/docs/*' })
     expect(out).toEqual(['/docs/readme.md'])
   })
 

@@ -12,12 +12,18 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { FileType, type OpRecord, type Workspace, rstripSlash } from '@struktoai/mirage-core'
+import { posix } from 'node:path'
+import {
+  type FileStat,
+  FileType,
+  type OpRecord,
+  PathSpec,
+  runWithSession,
+  type Session,
+  type Workspace,
+  rstripSlash,
+} from '@struktoai/mirage-core'
 import { isMacosMetadata } from './platform/macos.ts'
-
-const ENV_AGENT_ID = 'MIRAGE_AGENT_ID'
-const MIRAGE_DIR = '/.mirage'
-const MIRAGE_WHOAMI = '/.mirage/whoami'
 
 // FUSE errno values (negative for fuse-native callbacks; positive for errors thrown).
 const ENOENT = -2
@@ -26,6 +32,8 @@ const ENOTDIR = -20
 const EEXIST = -17
 const ENOTEMPTY = -66 // macOS; Linux is -39 — fuse-native normalizes.
 const EIO = -5
+const EINVAL = -22
+const EROFS = -30
 
 export interface FuseAttr {
   mtime: Date
@@ -51,28 +59,6 @@ interface PrefetchEntry {
 
 const PREFETCH_TTL_MS = 30_000
 
-/**
- * Sentinel size reported by getattr for API-backed files where the resource
- * returns size=null up front (Trello, Linear, Slack…). Python uses libfuse's
- * `direct_io` flag to make the kernel ignore reported size and issue read()
- * regardless; @zkochan/fuse-native doesn't expose direct_io, so we instead
- * report a deliberately-large size. The read handler returns 0 once the
- * actual bytes are exhausted, which surfaces as EOF to userspace.
- *
- * Reporting a real size requires fetching the bytes — fine for `cat`, but
- * disastrous for `ls`/`ls -l` because macOS's FUSE layer calls getattr per
- * directory entry. Using a sentinel keeps `ls` cheap (no API calls) while
- * still letting `cat` work. Once a file has been opened (and its bytes
- * cached), subsequent getattrs return the real size via cachedSize().
- *
- * The cap is bounded by Node's `fs/promises` readFile path: it allocates a
- * buffer of the reported size and converts it to a utf-8 string at the end,
- * which fails with `RangeError: Invalid string length` past V8's ~512 MiB
- * string limit. 100 MiB sits well under that, covers very busy Slack
- * channels' daily history, and bounds Buffer allocation per stat.
- */
-const UNKNOWN_SIZE_SENTINEL = 100 * 1024 * 1024 // 100 MiB
-
 type Cb<T> = (code: number, result?: T) => void
 
 function classifyError(err: unknown): number {
@@ -85,6 +71,9 @@ function classifyError(err: unknown): number {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase()
   if (msg.includes('not empty') || msg.includes('enotempty')) return ENOTEMPTY
   if (msg.includes('not a directory') || msg.includes('enotdir')) return ENOTDIR
+  // A session capability rejection (MountNotAllowedError) is a permission
+  // failure, mirroring Python's PermissionError -> EACCES.
+  if (msg.includes('not allowed to access mount')) return EACCES
   if (msg.includes('permission') || msg.includes('eacces') || msg.includes('read-only'))
     return EACCES
   if (msg.includes('file exists') || msg.includes('eexist')) return EEXIST
@@ -99,13 +88,18 @@ function classifyError(err: unknown): number {
 }
 
 export interface MirageFSOptions {
-  agentId?: string
   rootPrefix?: string
+  /**
+   * Bind every FUSE op to this session's mount grants. The kernel-tier
+   * primitive: bind-mount the tree into a container and the narrowing
+   * travels with it. Enforcement happens inside dispatch/Ops via the
+   * session context, so binding at the op entry point is sufficient.
+   */
+  session?: Session
 }
 
 export class MirageFS {
   private readonly ws: Workspace
-  readonly agentId: string
   private readonly now: Date
   private readonly root: string
   private readonly prefixes: string[]
@@ -118,13 +112,10 @@ export class MirageFS {
   private nextFh = 1
   private readonly uid: number
   private readonly gid: number
+  private readonly session: Session | null
 
   constructor(ws: Workspace, options: MirageFSOptions = {}) {
     this.ws = ws
-    this.agentId =
-      options.agentId ??
-      process.env[ENV_AGENT_ID] ??
-      `agent-${Math.random().toString(36).slice(2, 10)}`
     this.now = new Date()
     this.root = options.rootPrefix !== undefined ? rstripSlash(options.rootPrefix) : ''
     // When scoped to a single mount, the FUSE root maps onto that mount and
@@ -132,6 +123,7 @@ export class MirageFS {
     this.prefixes = this.root === '' ? ws.mounts().map((m) => m.prefix) : []
     this.uid = typeof process.getuid === 'function' ? process.getuid() : 0
     this.gid = typeof process.getgid === 'function' ? process.getgid() : 0
+    this.session = options.session ?? null
   }
 
   // ── helpers ──────────────────────────────────────────────────────
@@ -139,11 +131,6 @@ export class MirageFS {
   private resolve(path: string): string {
     if (this.root === '') return path
     return path === '/' ? this.root : this.root + path
-  }
-
-  private whoamiContent(): Uint8Array {
-    const lines = [`agent: ${this.agentId}`, 'cwd: /', `mounts: ${this.prefixes.join(', ')}`]
-    return new TextEncoder().encode(lines.join('\n') + '\n')
   }
 
   private dirStat(): FuseAttr {
@@ -170,6 +157,65 @@ export class MirageFS {
       uid: this.uid,
       gid: this.gid,
     }
+  }
+
+  /**
+   * Fold merged stat attributes into a FUSE attr. The workspace stat
+   * already carries the namespace overlay (chmod bits, chown ids, touched
+   * mtime), so honoring these fields here is what makes metadata ops
+   * visible over FUSE. String uid/gid (names) are skipped: FUSE wants
+   * numeric ids and there is no user db to map against.
+   */
+  private applyStatAttrs(entry: FuseAttr, s: FileStat): FuseAttr {
+    if (s.mode !== null) {
+      entry.mode = (entry.mode & ~0o7777) | (s.mode & 0o7777)
+    }
+    if (typeof s.uid === 'number') entry.uid = s.uid
+    if (typeof s.gid === 'number') entry.gid = s.gid
+    if (s.modified !== null) {
+      const ts = new Date(s.modified)
+      if (!Number.isNaN(ts.getTime())) {
+        entry.mtime = ts
+        entry.ctime = ts
+      }
+    }
+    return entry
+  }
+
+  /**
+   * The target to present for a namespace link at a FUSE path, or null
+   * when not a link. Relative targets are stored verbatim and returned
+   * as-is. Absolute targets name virtual paths, so they are rewritten
+   * relative to the link's directory: returned raw, the kernel would
+   * resolve them against the host root and escape the mountpoint.
+   */
+  private linkTarget(path: string): string | null {
+    const links = this.ws.fs.links
+    if (links === null) return null
+    const target = links.readlink(this.resolve(path))
+    if (target === null) return null
+    if (!target.startsWith('/')) return target
+    let fuseTarget = target
+    if (this.root !== '') {
+      if (target === this.root) {
+        fuseTarget = '/'
+      } else if (target.startsWith(this.root + '/')) {
+        fuseTarget = target.slice(this.root.length)
+      } else {
+        // points outside the scoped root: unreachable through this
+        // mount, keep the stored form (a dangling link is legal)
+        return target
+      }
+    }
+    const slash = path.lastIndexOf('/')
+    const parent = slash <= 0 ? '/' : path.slice(0, slash)
+    return posix.relative(parent, fuseTarget)
+  }
+
+  private linkStat(target: string): FuseAttr {
+    const entry = this.fileStat(new TextEncoder().encode(target).byteLength)
+    entry.mode = 0o120777
+    return entry
   }
 
   private isVirtualDir(path: string): boolean {
@@ -215,11 +261,11 @@ export class MirageFS {
   }
 
   /**
-   * Fetch bytes for a size-unknown file and cache them so the immediate
-   * getattr → open → read burst (and subsequent stats within the TTL) reuse
-   * the same fetch. Required because @zkochan/fuse-native doesn't expose
-   * libfuse's `direct_io` flag — without a real size from getattr, the kernel
-   * decides the file is empty and never issues read().
+   * Fetch bytes for a size-unknown file and cache them so the open → read →
+   * fstat burst (and subsequent stats within the TTL) reuse the same fetch.
+   * With getattr reporting 0 pre-open, this hydration is what lets fgetattr
+   * answer with the real byte length after open (mirrors Python's
+   * `_prefetch_read`).
    */
   private async prefetch(path: string): Promise<Uint8Array | null> {
     const cached = this.cachedData(path)
@@ -260,7 +306,7 @@ export class MirageFS {
   // ── FUSE op surface (mirrors mfusepy Operations) ─────────────────
 
   ops(): Record<string, unknown> {
-    return {
+    const table: Record<string, (...args: never[]) => void> = {
       readdir: this.readdir.bind(this),
       getattr: this.getattr.bind(this),
       fgetattr: this.fgetattr.bind(this),
@@ -268,6 +314,8 @@ export class MirageFS {
       read: this.read.bind(this),
       write: this.write.bind(this),
       create: this.create.bind(this),
+      readlink: this.readlink.bind(this),
+      symlink: this.symlink.bind(this),
       unlink: this.unlink.bind(this),
       mkdir: this.mkdir.bind(this),
       rmdir: this.rmdir.bind(this),
@@ -286,16 +334,28 @@ export class MirageFS {
       removexattr: this.removexattr.bind(this),
       statfs: this.statfs.bind(this),
     }
+    const session = this.session
+    if (session === null) return table
+    // A session-bound tree enters the session context before every op,
+    // mirroring Python's MirageFS._bind_session: the async work each
+    // callback starts inherits the context, so dispatch/Ops enforce the
+    // session's mount grants for kernel-originated I/O too.
+    const bound: Record<string, unknown> = {}
+    for (const [name, fn] of Object.entries(table)) {
+      bound[name] = (...args: never[]) => {
+        void runWithSession(session, () => {
+          fn(...args)
+          return Promise.resolve()
+        })
+      }
+    }
+    return bound
   }
 
   private getattr(path: string, cb: Cb<FuseAttr>): void {
     void (async () => {
-      if (path === '/' || path === MIRAGE_DIR) {
+      if (path === '/') {
         cb(0, this.dirStat())
-        return
-      }
-      if (path === MIRAGE_WHOAMI) {
-        cb(0, this.fileStat(this.whoamiContent().byteLength))
         return
       }
       // macOS Finder/Spotlight probes .DS_Store, ._*, .Spotlight-V100, etc.
@@ -305,6 +365,13 @@ export class MirageFS {
         cb(ENOENT)
         return
       }
+      // Link check must precede the workspace stat: the fs facade follows
+      // namespace links, so stat on a link path reports the target.
+      const target = this.linkTarget(path)
+      if (target !== null) {
+        cb(0, this.linkStat(target))
+        return
+      }
       if (this.isVirtualDir(path)) {
         cb(0, this.dirStat())
         return
@@ -312,12 +379,17 @@ export class MirageFS {
       try {
         const s = await this.ws.fs.stat(this.resolve(path))
         if (s.type === FileType.DIRECTORY) {
-          cb(0, this.dirStat())
+          cb(0, this.applyStatAttrs(this.dirStat(), s))
           return
         }
+        // Size-unknown API files stat as 0 before open (never a fake size):
+        // the mount's direct_io makes the kernel read to EOF regardless, and
+        // attrTimeout '0' routes the post-open fstat to fgetattr, which
+        // serves the real hydrated size. Mirrors Python's fs.py; see the
+        // CLAUDE.md FUSE section.
         let size = s.size
-        size ??= this.cachedSize(path) ?? UNKNOWN_SIZE_SENTINEL
-        cb(0, this.fileStat(size))
+        size ??= this.cachedSize(path) ?? 0
+        cb(0, this.applyStatAttrs(this.fileStat(size), s))
       } catch (err) {
         cb(classifyError(err))
       }
@@ -327,7 +399,7 @@ export class MirageFS {
   private fgetattr(path: string, fd: number, cb: Cb<FuseAttr>): void {
     // fstat(fd) after open: the open handler prefetched size-unknown files
     // into the handle, so answer with the real byte length instead of the
-    // sentinel that path-based getattr reported before open.
+    // 0 that path-based getattr reported before open.
     const ctx = this.handles.get(fd)
     if (ctx?.data !== undefined) {
       cb(0, this.fileStat(ctx.data.byteLength))
@@ -338,13 +410,13 @@ export class MirageFS {
 
   private readdir(path: string, cb: Cb<string[]>): void {
     void (async () => {
-      // `/.mirage/` virtual dir — a single pseudo file.
-      if (path === MIRAGE_DIR) {
-        cb(0, ['.', '..', 'whoami'])
-        return
-      }
       const names = new Set(this.virtualChildren(path))
-      if (path === '/') names.add('.mirage')
+      const links = this.ws.fs.links
+      if (links !== null) {
+        for (const linkName of links.linksUnder(this.resolve(path)).keys()) {
+          if (linkName !== '' && !isMacosMetadata(linkName)) names.add(linkName)
+        }
+      }
       try {
         const entries = await this.ws.fs.readdir(this.resolve(path))
         for (const e of entries) {
@@ -370,13 +442,6 @@ export class MirageFS {
     cb: (result: number) => void,
   ): void {
     void (async () => {
-      if (path === MIRAGE_WHOAMI) {
-        const data = this.whoamiContent()
-        const slice = data.subarray(pos, pos + len)
-        buf.set(slice, 0)
-        cb(slice.byteLength)
-        return
-      }
       const ctx = this.handles.get(fd)
       try {
         // Filetype-aware read: no `raw: true`, so parquet/feather/hdf5/etc.
@@ -474,7 +539,42 @@ export class MirageFS {
   private mkdir(path: string, _mode: number, cb: (code: number) => void): void {
     void (async () => {
       try {
-        await this.ws.fs.mkdir(this.resolve(path))
+        // Metadata ops route through dispatch (not ws.fs) so the file
+        // cache and readdir index are invalidated like any other write.
+        await this.ws.dispatch('mkdir', this.resolve(path))
+        cb(0)
+      } catch (err) {
+        cb(classifyError(err))
+      }
+    })()
+  }
+
+  private readlink(path: string, cb: Cb<string>): void {
+    const target = this.linkTarget(path)
+    if (target === null) {
+      cb(EINVAL)
+      return
+    }
+    cb(0, target)
+  }
+
+  /**
+   * Create namespace link `dest -> src` (ln -s src dest; libfuse passes
+   * the pointee first). Relative sources are stored verbatim (resolved
+   * at follow time, exactly like the shell `ln -s`); absolute sources
+   * are mapped into virtual space so a scoped mount stores the path it
+   * will later follow.
+   */
+  private symlink(src: string, dest: string, cb: (code: number) => void): void {
+    void (async () => {
+      const links = this.ws.fs.links
+      if (links === null) {
+        cb(EROFS)
+        return
+      }
+      const stored = src.startsWith('/') ? this.resolve(src) : src
+      try {
+        await links.symlink(this.resolve(dest), stored, Date.now() / 1000)
         cb(0)
       } catch (err) {
         cb(classifyError(err))
@@ -484,8 +584,16 @@ export class MirageFS {
 
   private unlink(path: string, cb: (code: number) => void): void {
     void (async () => {
+      const links = this.ws.fs.links
+      if (links?.isLink(this.resolve(path)) === true) {
+        await links.unlink(this.resolve(path))
+        this.xattrs.delete(path)
+        this.prefetchCache.delete(path)
+        cb(0)
+        return
+      }
       try {
-        await this.ws.fs.unlink(this.resolve(path))
+        await this.ws.dispatch('unlink', this.resolve(path))
         this.xattrs.delete(path)
         cb(0)
       } catch (err) {
@@ -497,7 +605,9 @@ export class MirageFS {
   private rename(src: string, dst: string, cb: (code: number) => void): void {
     void (async () => {
       try {
-        await this.ws.fs.rename(this.resolve(src), this.resolve(dst))
+        await this.ws.dispatch('rename', this.resolve(src), [
+          PathSpec.fromStrPath(this.resolve(dst)),
+        ])
         const moved = this.xattrs.get(src)
         if (moved !== undefined) {
           this.xattrs.delete(src)
@@ -526,7 +636,7 @@ export class MirageFS {
           // readdir failure — fall through to rmdir and let it raise the real
           // error (e.g. ENOENT for missing path).
         }
-        await this.ws.fs.rmdir(this.resolve(path))
+        await this.ws.dispatch('rmdir', this.resolve(path))
         this.xattrs.delete(path)
         cb(0)
       } catch (err) {
@@ -674,12 +784,6 @@ export class MirageFS {
 
   private open(path: string, _flags: number, cb: Cb<number>): void {
     void (async () => {
-      if (path === MIRAGE_WHOAMI) {
-        const fh = this.nextFh++
-        this.handles.set(fh, { path })
-        cb(0, fh)
-        return
-      }
       try {
         const s = await this.ws.fs.stat(this.resolve(path))
         const ctx: Handle = { path }

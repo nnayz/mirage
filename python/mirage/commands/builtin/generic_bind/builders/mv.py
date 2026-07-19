@@ -15,11 +15,12 @@
 from functools import partial
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.mv import mv as generic_mv
-from mirage.commands.builtin.generic_bind.adapter import Builder, CommandIO
+from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
+                                                          Operation, bound_op)
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import PathSpec
+from mirage.types import NativeMove, PathSpec
 
 
 async def mv(
@@ -31,18 +32,22 @@ async def mv(
     f: bool = False,
     n: bool = False,
     v: bool = False,
-    index: IndexCacheStore | None = None,
-    **kwargs,
+    index: IndexCacheStore = NULL_INDEX,
+    **kwargs: object,
 ) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor) or len(paths) < 2:
         raise ValueError("mv: requires src and dst")
     paths = await ops.resolve_glob(accessor, paths, index)
-    return await generic_mv(paths,
-                            rename=partial(ops.rename, accessor),
-                            stat=partial(ops.stat, accessor),
-                            n=n,
-                            v=v,
-                            index=index)
+    return await generic_mv(
+        paths,
+        strategy=NativeMove(
+            rename=partial(ops.require(Operation.RENAME), accessor)),
+        stat=bound_op(ops.stat, accessor, index),
+        n=n,
+        v=v)
 
 
-BUILDER = Builder('mv', mv, None, True, None)
+BUILDER = Builder('mv',
+                  mv,
+                  write=True,
+                  requirements=frozenset({Operation.RENAME}))

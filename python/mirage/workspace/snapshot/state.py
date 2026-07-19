@@ -13,33 +13,27 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import importlib
-import importlib.metadata
 import tempfile
+from typing import Any
 
 from mirage.observe.log_entry import EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE
 from mirage.resource.history import HISTORY_PREFIX
-from mirage.resource.loader import load_backend_class
-from mirage.resource.registry import REGISTRY
+from mirage.resource.registry import REGISTRY, resolve_class
 from mirage.resource.secrets import has_redacted_secret
 from mirage.shell.job_table import Job, JobStatus
 from mirage.types import (CacheKey, ConsistencyPolicy, JobKey, MountKey,
                           MountMode, ResourceName, ResourceStateKey,
                           SessionKey, StateKey)
-from mirage.workspace.mount.namespace import LinkEntry
+from mirage.version import __version__
+from mirage.workspace.mount.namespace import NodeMeta
+from mirage.workspace.session.session import Session
 from mirage.workspace.snapshot.config import MountArgs
 from mirage.workspace.snapshot.drift import (capture_fingerprints,
                                              live_only_mount_prefixes)
 from mirage.workspace.snapshot.utils import FORMAT_VERSION, norm_mount_prefix
 
 
-def _mirage_version() -> str:
-    try:
-        return importlib.metadata.version("mirage-ai")
-    except importlib.metadata.PackageNotFoundError:
-        return "unknown"
-
-
-async def to_state_dict(ws) -> dict:
+async def to_state_dict(ws) -> dict[str, Any]:
     auto_prefixes = {"/dev/", norm_mount_prefix(HISTORY_PREFIX)}
 
     mounts_state = []
@@ -80,7 +74,7 @@ async def to_state_dict(ws) -> dict:
 
     return {
         StateKey.VERSION: FORMAT_VERSION,
-        StateKey.MIRAGE_VERSION: _mirage_version(),
+        StateKey.MIRAGE_VERSION: __version__,
         StateKey.MOUNTS: mounts_state,
         StateKey.SESSIONS: [s.to_dict() for s in ws._session_mgr.list()],
         StateKey.DEFAULT_SESSION_ID: ws._session_mgr.default_id,
@@ -95,17 +89,15 @@ async def to_state_dict(ws) -> dict:
         StateKey.JOBS: finished_jobs,
         StateKey.FINGERPRINTS: fingerprints,
         StateKey.LIVE_ONLY_MOUNTS: live_only_mounts,
-        StateKey.SYMLINKS: {
-            link: {
-                "target": entry.target,
-                "mtime": entry.mtime
-            }
-            for link, entry in ws._namespace.symlinks.items()
+        StateKey.NODES: {
+            path: meta.to_fields()
+            for path, meta in ws._namespace.nodes.items()
         },
     }
 
 
-def build_mount_args(state: dict, resources: dict | None = None) -> MountArgs:
+def build_mount_args(state: dict[str, Any],
+                     resources: dict[str, Any] | None = None) -> MountArgs:
     """Translate a state dict into Workspace constructor inputs.
 
     Validates that every mount with redacted secrets has a resource
@@ -135,7 +127,7 @@ def build_mount_args(state: dict, resources: dict | None = None) -> MountArgs:
             f"{missing}. These mounts were saved with redacted creds "
             "or transient connection state and need fresh resources.")
 
-    mount_args: dict[str, tuple] = {}
+    mount_args: dict[str, tuple[Any, ...]] = {}
     for m in state[StateKey.MOUNTS]:
         prefix = norm_mount_prefix(m[MountKey.PREFIX])
         prov = (overrides[prefix]
@@ -145,12 +137,12 @@ def build_mount_args(state: dict, resources: dict | None = None) -> MountArgs:
     return MountArgs(
         mount_args=mount_args,
         consistency=ConsistencyPolicy.LAZY,
-        default_session_id=state.get(StateKey.DEFAULT_SESSION_ID, "default"),
-        default_agent_id=state.get(StateKey.DEFAULT_AGENT_ID, "default"),
+        default_session_id=state[StateKey.DEFAULT_SESSION_ID],
+        default_agent_id=state.get(StateKey.DEFAULT_AGENT_ID),
     )
 
 
-async def apply_state_dict(ws, state: dict) -> None:
+async def apply_state_dict(ws, state: dict[str, Any]) -> None:
     """Restore post-construction state into an already-built Workspace.
 
     Restores: resource load_state (content, fresh disk root, etc.),
@@ -170,26 +162,37 @@ async def apply_state_dict(ws, state: dict) -> None:
             continue
         mount.resource.load_state(m[MountKey.RESOURCE_STATE])
 
-    _restore_sessions(ws, state)
+    await _restore_sessions(ws, state)
     ws._current_agent_id = state.get(StateKey.CURRENT_AGENT_ID,
                                      ws._default_agent_id)
 
     _restore_cache(ws, state)
     await _restore_history(ws, state)
     _restore_jobs(ws, state)
-    _restore_symlinks(ws, state)
+    await _restore_nodes(ws, state)
 
 
-def _restore_symlinks(ws, state: dict) -> None:
+async def _restore_nodes(ws, state: dict[str, Any]) -> None:
     entries = {
-        link: LinkEntry(target=d["target"], mtime=d["mtime"])
-        for link, d in (state.get(StateKey.SYMLINKS) or {}).items()
+        path: NodeMeta.from_fields(d)
+        for path, d in (state.get(StateKey.NODES) or {}).items()
     }
-    ws._namespace.replace_symlinks(entries)
+    await ws._namespace.replace_nodes(entries)
 
 
-def _restore_sessions(ws, state: dict) -> None:
+async def _restore_sessions(ws, state: dict[str, Any]) -> None:
     default_sid = state.get(StateKey.DEFAULT_SESSION_ID)
+    if default_sid is not None:
+        # The snapshot's default session identity wins over the live
+        # one, and the discovery record's pointer follows it.
+        ws._session_mgr.adopt_default(default_sid)
+        ws._default_session_id = default_sid
+        await ws._state_store.replace_meta(ws._workspace_id, {
+            "workspace_id": ws._workspace_id,
+            "default_session_id": default_sid,
+        })
+        ws._meta_written = True
+    restored: list[Any] = []
     for s_data in state.get(StateKey.SESSIONS, []):
         sid = s_data[SessionKey.SESSION_ID]
         if sid == default_sid:
@@ -198,12 +201,21 @@ def _restore_sessions(ws, state: dict) -> None:
             try:
                 session = ws._session_mgr.create(sid)
             except ValueError:
-                continue
-        session.cwd = s_data.get(SessionKey.CWD, "/")
-        session.env = s_data.get(SessionKey.ENV, {})
+                # The session already exists live (checkout on a
+                # running workspace): the restored state wins, matching
+                # the replace_from_snapshot contract below.
+                session = ws._session_mgr.get(sid)
+        fields = Session.from_dict(s_data)
+        session.cwd = fields.cwd
+        session.env = fields.env
+        session.mount_modes = fields.mount_modes
+        restored.append(session)
+    # The snapshot's session table wins over prior store contents,
+    # mirroring Namespace.replace_nodes.
+    await ws._session_mgr.replace_from_snapshot(restored)
 
 
-def _restore_cache(ws, state: dict) -> None:
+def _restore_cache(ws, state: dict[str, Any]) -> None:
     cache_state = state.get(StateKey.CACHE) or {}
     if hasattr(ws._cache, "max_drain_bytes"):
         ws._cache.max_drain_bytes = cache_state.get(CacheKey.MAX_DRAIN_BYTES)
@@ -226,13 +238,13 @@ def _restore_cache(ws, state: dict) -> None:
         cache._cache_size += entry.get(CacheKey.SIZE, len(data))
 
 
-async def _restore_history(ws, state: dict) -> None:
+async def _restore_history(ws, state: dict[str, Any]) -> None:
     # Always load (load_events clears first): a snapshot with empty
     # history still rewinds the recorder, same as the cache clear.
     await ws.observer.load_events(state.get(StateKey.HISTORY) or [])
 
 
-def _restore_jobs(ws, state: dict) -> None:
+def _restore_jobs(ws, state: dict[str, Any]) -> None:
     max_id = 0
     for job_d in state.get(StateKey.JOBS, []):
         max_id = max(max_id, job_d.get(JobKey.ID, 0))
@@ -240,7 +252,7 @@ def _restore_jobs(ws, state: dict) -> None:
     ws.job_table._next_id = max_id + 1
 
 
-def _job_to_dict(job) -> dict:
+def _job_to_dict(job) -> dict[str, Any]:
     return {
         JobKey.ID: job.id,
         JobKey.COMMAND: job.command,
@@ -255,7 +267,7 @@ def _job_to_dict(job) -> dict:
     }
 
 
-def _job_from_dict(d: dict):
+def _job_from_dict(d: dict[str, Any]):
     return Job(
         id=d[JobKey.ID],
         command=d[JobKey.COMMAND],
@@ -271,7 +283,7 @@ def _job_from_dict(d: dict):
     )
 
 
-def _construct_resource(mount_state: dict):
+def _construct_resource(mount_state: dict[str, Any]):
     cls = _resource_class_for(mount_state)
     resource_state = mount_state[MountKey.RESOURCE_STATE]
     ptype = resource_state.get(ResourceStateKey.TYPE, "")
@@ -294,17 +306,17 @@ def _construct_resource(mount_state: dict):
     return cls()
 
 
-def requires_resource_override(mount_state: dict) -> bool:
+def requires_resource_override(mount_state: dict[str, Any]) -> bool:
     resource_state = mount_state[MountKey.RESOURCE_STATE]
     config = resource_state.get(ResourceStateKey.CONFIG)
     config_cls = _config_class_for(_resource_class_for(mount_state))
     return has_redacted_secret(config, config_cls)
 
 
-def _resource_class_for(mount_state: dict):
+def _resource_class_for(mount_state: dict[str, Any]):
     ptype = mount_state[MountKey.RESOURCE_STATE].get(ResourceStateKey.TYPE, "")
     if ptype in REGISTRY:
-        return load_backend_class(REGISTRY[ptype].resource_path)
+        return resolve_class(REGISTRY[ptype].resource_path)
     cls_path = mount_state[MountKey.RESOURCE_CLASS]
     mod_name, cls_name = cls_path.rsplit(".", 1)
     return getattr(importlib.import_module(mod_name), cls_name)

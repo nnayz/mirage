@@ -16,7 +16,7 @@ import {
   BaseResource,
   GSLIDES_COMMANDS,
   GSLIDES_PROMPT,
-  GSLIDES_VFS_OPS,
+  GSLIDES_OPS,
   GSLIDES_WRITE_PROMPT,
   GSlidesAccessor,
   PathSpec,
@@ -24,7 +24,7 @@ import {
   TokenManager,
   gslidesRead,
   gslidesReaddir,
-  gslidesResolveGlob,
+  makeResolveGlob,
   gslidesStat,
   mountKey,
   mountPrefixOf,
@@ -34,6 +34,8 @@ import {
   type Resource,
 } from '@struktoai/mirage-core'
 import { redactGSlidesConfig, type GSlidesConfig, type GSlidesConfigRedacted } from './config.ts'
+
+const gslidesResolveGlob = makeResolveGlob(gslidesReaddir)
 
 export interface GSlidesResourceState {
   type: string
@@ -56,6 +58,8 @@ export class GSlidesResource extends BaseResource implements Resource {
       clientId: config.clientId,
       clientSecret: config.clientSecret,
       refreshToken: config.refreshToken,
+      ...(config.refreshFn !== undefined ? { refreshFn: config.refreshFn } : {}),
+      ...(config.apiBase !== undefined ? { apiBase: config.apiBase } : {}),
     })
     this.accessor = new GSlidesAccessor({ tokenManager: tm })
   }
@@ -73,7 +77,7 @@ export class GSlidesResource extends BaseResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return GSLIDES_VFS_OPS
+    return GSLIDES_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {
@@ -86,11 +90,6 @@ export class GSlidesResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return gslidesStat(this.accessor, p, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    const lookup = await this.index.get(p.virtual)
-    return lookup.entry?.remoteTime ?? null
   }
 
   glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {

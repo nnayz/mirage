@@ -14,11 +14,11 @@
 
 import base64
 from email.mime.text import MIMEText
+from typing import Any
 
 from mirage.core.gmail.messages import (_extract_header, get_message_processed,
                                         get_message_raw)
-from mirage.core.google._client import (GMAIL_API_BASE, TokenManager,
-                                        google_post)
+from mirage.core.google._client import TokenManager, gmail_base, google_post
 
 
 async def send_message(
@@ -26,7 +26,7 @@ async def send_message(
     to: str,
     subject: str,
     body: str,
-) -> dict:
+) -> dict[str, Any]:
     """Send a new email.
 
     Args:
@@ -42,7 +42,7 @@ async def send_message(
     msg["To"] = to
     msg["Subject"] = subject
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    url = f"{GMAIL_API_BASE}/users/me/messages/send"
+    url = f"{gmail_base(token_manager)}/users/me/messages/send"
     return await google_post(token_manager, url, {"raw": raw})
 
 
@@ -50,7 +50,7 @@ async def reply_message(
     token_manager: TokenManager,
     message_id: str,
     body: str,
-) -> dict:
+) -> dict[str, Any]:
     """Reply to a message (preserves threading).
 
     Args:
@@ -78,10 +78,10 @@ async def reply_message(
         mime["References"] = msg_id_header
 
     raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
-    payload: dict = {"raw": raw}
+    payload: dict[str, Any] = {"raw": raw}
     if thread_id:
         payload["threadId"] = thread_id
-    url = f"{GMAIL_API_BASE}/users/me/messages/send"
+    url = f"{gmail_base(token_manager)}/users/me/messages/send"
     return await google_post(token_manager, url, payload)
 
 
@@ -89,7 +89,7 @@ async def reply_all_message(
     token_manager: TokenManager,
     message_id: str,
     body: str,
-) -> dict:
+) -> dict[str, Any]:
     """Reply-all to a message (preserves threading, includes all recipients).
 
     Args:
@@ -123,10 +123,10 @@ async def reply_all_message(
         mime["References"] = msg_id_header
 
     raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
-    payload: dict = {"raw": raw}
+    payload: dict[str, Any] = {"raw": raw}
     if thread_id:
         payload["threadId"] = thread_id
-    url = f"{GMAIL_API_BASE}/users/me/messages/send"
+    url = f"{gmail_base(token_manager)}/users/me/messages/send"
     return await google_post(token_manager, url, payload)
 
 
@@ -134,7 +134,7 @@ async def forward_message(
     token_manager: TokenManager,
     message_id: str,
     to: str,
-) -> dict:
+) -> dict[str, Any]:
     """Forward a message.
 
     Args:

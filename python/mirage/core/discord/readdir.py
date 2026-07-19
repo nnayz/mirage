@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 
 from mirage.accessor.discord import DiscordAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.discord.channels import list_channels
 from mirage.core.discord.entry import (DiscordResourceType, channel_entry,
                                        guild_entry, history_entry,
@@ -47,12 +47,8 @@ def _date_range(end_date: str, days: int = 30) -> list[str]:
             for i in range(days - 1, -1, -1)]
 
 
-def _normalize_path(path: PathSpec | str) -> tuple[str, str, str]:
+def _normalize_path(path: PathSpec) -> tuple[str, str, str]:
     """Reduce input to (prefix, key, virtual_key)."""
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
     prefix = mount_prefix_of(path.virtual, path.resource_path)
     raw = path.directory if path.pattern else path.virtual
     if prefix and raw.startswith(prefix):
@@ -66,12 +62,11 @@ async def _readdir_root(
     accessor: DiscordAccessor,
     prefix: str,
     virtual_key: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if index is not None:
-        listing = await index.list_dir(virtual_key)
-        if listing.entries is not None:
-            return listing.entries
+    listing = await index.list_dir(virtual_key)
+    if listing.entries is not None:
+        return listing.entries
     guilds = await list_guilds(accessor.config)
     entries = []
     names = []
@@ -79,8 +74,7 @@ async def _readdir_root(
         entry = guild_entry(g)
         entries.append((entry.vfs_name, entry))
         names.append(f"{prefix}/{entry.vfs_name}")
-    if index is not None:
-        await index.set_dir(virtual_key, entries)
+    await index.set_dir(virtual_key, entries)
     return names
 
 
@@ -88,11 +82,9 @@ async def _ensure_guild_id(
     accessor: DiscordAccessor,
     prefix: str,
     guild_part: str,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     raw_path: str,
 ) -> str:
-    if index is None:
-        raise enoent(raw_path)
     guild_virtual_key = prefix + "/" + guild_part
     lookup = await index.get(guild_virtual_key)
     if lookup.entry is None:
@@ -116,13 +108,12 @@ async def _readdir_channels(
     key: str,
     virtual_key: str,
     parts: list[str],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     raw_path: str,
 ) -> list[str]:
-    if index is not None:
-        listing = await index.list_dir(virtual_key)
-        if listing.entries is not None:
-            return listing.entries
+    listing = await index.list_dir(virtual_key)
+    if listing.entries is not None:
+        return listing.entries
     guild_id = await _ensure_guild_id(accessor, prefix, parts[0], index,
                                       raw_path)
     channels = await list_channels(accessor.config, guild_id)
@@ -132,8 +123,7 @@ async def _readdir_channels(
         entry = channel_entry(c)
         entries.append((entry.vfs_name, entry))
         names.append(f"{prefix}/{key}/{entry.vfs_name}")
-    if index is not None:
-        await index.set_dir(virtual_key, entries)
+    await index.set_dir(virtual_key, entries)
     return names
 
 
@@ -143,13 +133,12 @@ async def _readdir_members(
     key: str,
     virtual_key: str,
     parts: list[str],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     raw_path: str,
 ) -> list[str]:
-    if index is not None:
-        listing = await index.list_dir(virtual_key)
-        if listing.entries is not None:
-            return listing.entries
+    listing = await index.list_dir(virtual_key)
+    if listing.entries is not None:
+        return listing.entries
     guild_id = await _ensure_guild_id(accessor, prefix, parts[0], index,
                                       raw_path)
     members = await list_members(accessor.config, guild_id)
@@ -159,8 +148,7 @@ async def _readdir_members(
         entry = member_entry(m)
         entries.append((entry.vfs_name, entry))
         names.append(f"{prefix}/{key}/{entry.vfs_name}")
-    if index is not None:
-        await index.set_dir(virtual_key, entries)
+    await index.set_dir(virtual_key, entries)
     return names
 
 
@@ -189,18 +177,15 @@ async def _readdir_channel_dates(
     key: str,
     virtual_key: str,
     parts: list[str],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     raw_path: str,
 ) -> list[str]:
-    if index is None:
-        last_msg_id = ""
-    else:
-        listing = await index.list_dir(virtual_key)
-        if listing.entries is not None:
-            return listing.entries
-        lookup = await _ensure_channel_lookup(accessor, prefix, parts, index,
-                                              raw_path)
-        last_msg_id = lookup.entry.remote_time
+    listing = await index.list_dir(virtual_key)
+    if listing.entries is not None:
+        return listing.entries
+    lookup = await _ensure_channel_lookup(accessor, prefix, parts, index,
+                                          raw_path)
+    last_msg_id = lookup.entry.remote_time
     if last_msg_id:
         end_date = snowflake_to_date(last_msg_id)
     else:
@@ -214,8 +199,7 @@ async def _readdir_channel_dates(
         entry.vfs_name = d
         entries.append((d, entry))
         names.append(f"{prefix}/{key}/{d}")
-    if index is not None:
-        await index.set_dir(virtual_key, entries)
+    await index.set_dir(virtual_key, entries)
     return names
 
 
@@ -224,7 +208,7 @@ async def _fetch_day(
     channel_id: str,
     date_str: str,
     date_vkey: str,
-    index: IndexCacheStore,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> None:
     """Walk the day's history once, populate date dir and files dir
     entries in the index. Tolerates soft HTTP errors (403/404/429) by
@@ -296,11 +280,9 @@ async def _readdir_date_contents(
     key: str,
     virtual_key: str,
     parts: list[str],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     raw_path: str,
 ) -> list[str]:
-    if index is None:
-        raise enoent(raw_path)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
@@ -319,11 +301,9 @@ async def _readdir_files_dir(
     key: str,
     virtual_key: str,
     parts: list[str],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     raw_path: str,
 ) -> list[str]:
-    if index is None:
-        raise enoent(raw_path)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
@@ -343,17 +323,17 @@ async def _readdir_files_dir(
 async def readdir(
     accessor: DiscordAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
     """List directory contents.
 
     Args:
         accessor (DiscordAccessor): discord accessor.
-        path (PathSpec | str): resource-relative path.
-        index (IndexCacheStore | None): index cache.
+        path (PathSpec): resource-relative path.
+        index (IndexCacheStore): index cache.
     """
     prefix, key, virtual_key = _normalize_path(path)
-    raw_path = path.virtual if isinstance(path, PathSpec) else path
+    raw_path = path.virtual
 
     if not key:
         return await _readdir_root(accessor, prefix, virtual_key, index)
@@ -361,10 +341,9 @@ async def readdir(
     parts = key.split("/")
 
     if len(parts) == 1:
-        if index is not None:
-            lookup = await index.get(virtual_key)
-            if lookup.entry is None:
-                raise enoent(raw_path)
+        lookup = await index.get(virtual_key)
+        if lookup.entry is None:
+            raise enoent(raw_path)
         return await _readdir_guild_top(prefix, key)
 
     if len(parts) == 2 and parts[1] == "channels":
@@ -388,3 +367,10 @@ async def readdir(
                                         parts, index, raw_path)
 
     return []
+
+
+def is_dir_name(child: str) -> bool:
+    # Entries are recognized by extension, so classification never needs
+    # the stat fallback.
+    name = child.rsplit("/", 1)[-1]
+    return not (name.endswith(".json") or name.endswith(".jsonl"))

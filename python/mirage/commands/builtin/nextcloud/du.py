@@ -18,11 +18,11 @@ from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.du import du_multi
 from mirage.commands.builtin.generic_bind.provision import metadata_provision
+from mirage.commands.builtin.nextcloud.io import resolve_glob
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.nextcloud.du import du as du_impl
 from mirage.core.nextcloud.du import du_all as du_all_impl
-from mirage.core.nextcloud.glob import resolve_glob
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -41,7 +41,7 @@ async def du(
     a: bool = False,
     max_depth: str | None = None,
     c: bool = False,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
     paths = await resolve_glob(accessor, paths, index)

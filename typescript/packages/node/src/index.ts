@@ -24,6 +24,22 @@ export { DISK_PROMPT } from './resource/disk/prompt.ts'
 export { DISK_OPS } from './ops/disk/index.ts'
 export { DiskObserverStore } from './observe/disk_store.ts'
 export { RedisObserverStore, type RedisObserverStoreOptions } from './observe/redis_store.ts'
+export { DiskNamespaceStore } from './workspace/namespace/disk.ts'
+export {
+  RedisNamespaceStore,
+  type RedisNamespaceStoreOptions,
+} from './workspace/namespace/redis.ts'
+export { DiskRecordClient, DiskSessionStore } from './workspace/session/disk.ts'
+export { RedisSessionStore, type RedisSessionStoreOptions } from './workspace/session/redis.ts'
+export {
+  DEFAULT_STATE_ROOT,
+  DiskWorkspaceStateStore,
+  type DiskWorkspaceStateStoreOptions,
+} from './workspace/store/disk.ts'
+export {
+  RedisWorkspaceStateStore,
+  type RedisWorkspaceStateStoreOptions,
+} from './workspace/store/redis.ts'
 export { patchNodeFs } from './fs_monkey.ts'
 export {
   RedisResource,
@@ -51,6 +67,13 @@ export {
 } from './fuse/mount.ts'
 export { isMacosMetadata } from './fuse/platform/macos.ts'
 export { S3Resource, type S3ResourceState } from './resource/s3/s3.ts'
+export { GridFSResource, type GridFSResourceState } from './resource/gridfs/gridfs.ts'
+export {
+  normalizeGridFSConfig,
+  type GridFSConfig,
+  type GridFSConfigRedacted,
+} from './resource/gridfs/config.ts'
+export { GridFSAccessor } from './accessor/gridfs.ts'
 export {
   DatabricksVolumeResource,
   type DatabricksVolumeResourceState,

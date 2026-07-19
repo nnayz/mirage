@@ -13,12 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
-from collections.abc import AsyncIterator
 
 from mirage.accessor.trello import TrelloAccessor
 from mirage.commands.builtin.trello._input import resolve_text_input
 from mirage.commands.registry import command
-from mirage.commands.spec.types import CommandSpec, OperandKind, Option
+from mirage.commands.spec.types import (CommandSpec, FlagView, OperandKind,
+                                        Option)
 from mirage.core.trello._client import card_create
 from mirage.core.trello.normalize import normalize_card
 from mirage.io.stream import yield_bytes
@@ -38,9 +38,10 @@ async def trello_card_create(
     accessor: TrelloAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
+    stdin: ByteSource | None = None,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(_extra, spec=SPEC)
     config = accessor.config
     list_id = _extra.get("list_id")
     if not list_id or not isinstance(list_id, str):
@@ -52,10 +53,8 @@ async def trello_card_create(
     if (_extra.get("desc") or _extra.get("desc_file") or stdin is not None):
         desc = await resolve_text_input(
             config,
-            inline_text=_extra.get("desc") if isinstance(
-                _extra.get("desc"), str) else None,
-            file_path=_extra.get("desc_file") if isinstance(
-                _extra.get("desc_file"), str) else None,
+            inline_text=fl.as_str("desc"),
+            file_path=fl.as_str("desc_file"),
             stdin=stdin,
             error_message="desc is required",
         )

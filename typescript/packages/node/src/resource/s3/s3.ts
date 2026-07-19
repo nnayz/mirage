@@ -26,6 +26,7 @@ import {
   duAll as duAllCore,
   exists as existsCore,
   find as findCore,
+  makeResolveGlob,
   mkdir as mkdirCore,
   mountKey,
   mountPrefixOf,
@@ -34,7 +35,7 @@ import {
   read as readCore,
   readdir as readdirCore,
   rename as renameCore,
-  resolveS3Glob as globCore,
+  S3_SCOPE_ERROR,
   rmR as rmRCore,
   rmdir as rmdirCore,
   stat as statCore,
@@ -49,6 +50,8 @@ import {
   write as writeCore,
 } from '@struktoai/mirage-core'
 import { redactConfig, type S3Config, type S3ConfigRedacted } from './config.ts'
+
+const globCore = makeResolveGlob(readdirCore, S3_SCOPE_ERROR)
 
 export interface S3ResourceState {
   type: string
@@ -205,17 +208,6 @@ export class S3Resource extends BaseResource implements Resource {
         )
       : paths
     return globCore(this.accessor, effective, this.index)
-  }
-
-  async fingerprint(p: PathSpec): Promise<string | null> {
-    try {
-      const s = await statCore(this.accessor, p)
-      const etag = (s.extra as { etag?: unknown }).etag
-      return typeof etag === 'string' && etag !== '' ? etag : null
-    } catch (err) {
-      if ((err as { code?: string } | null)?.code === 'ENOENT') return null
-      throw err
-    }
   }
 
   getState(): Promise<S3ResourceState> {

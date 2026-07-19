@@ -20,7 +20,7 @@ from mirage.utils.path import norm
 
 async def mkdir_p(accessor: RedisAccessor, path: PathSpec) -> None:
     store = accessor.store
-    p = norm(path)
+    p = norm(path.mount_path)
     parts = p.strip("/").split("/")
     current = ""
     now = now_iso()

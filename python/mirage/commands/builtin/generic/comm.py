@@ -1,6 +1,5 @@
 from collections.abc import Awaitable, Callable
 
-from mirage.accessor.base import Accessor
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.spec.types import CommandName
 from mirage.commands.spec.usage import extra_operand_error
@@ -58,18 +57,18 @@ async def comm(
     paths: list[PathSpec],
     *,
     read_bytes: Callable[..., Awaitable[bytes]],
-    accessor: Accessor | None = None,
     suppress1: bool = False,
     suppress2: bool = False,
     suppress3: bool = False,
     check_order: bool = False,
 ) -> tuple[ByteSource | None, IOResult]:
     if len(paths) > 2:
-        raise extra_operand_error(CommandName.COMM, paths[2].raw_path)
+        raise extra_operand_error(CommandName.COMM, paths[2].raw_path
+                                  or paths[2].virtual)
     if len(paths) < 2:
         raise ValueError("comm: requires two paths")
-    data1 = (await read_bytes(accessor, paths[0])).decode(errors="replace")
-    data2 = (await read_bytes(accessor, paths[1])).decode(errors="replace")
+    data1 = (await read_bytes(paths[0])).decode(errors="replace")
+    data2 = (await read_bytes(paths[1])).decode(errors="replace")
     lines1 = split_lines(data1)
     lines2 = split_lines(data2)
     stderr = ""
@@ -81,7 +80,9 @@ async def comm(
     merged = _comm_merge(lines1, lines2)
     output = _format_comm(merged, suppress1, suppress2, suppress3)
     return output.encode(), IOResult(
-        stderr=stderr.encode() if stderr else None)
+        stderr=stderr.encode() if stderr else None,
+        exit_code=1 if stderr else 0,
+    )
 
 
 __all__ = ["comm"]

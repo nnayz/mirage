@@ -12,7 +12,19 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 from collections.abc import Iterable
+from typing import Any
+
+
+def validate_max_drain_bytes(cache_limit: int,
+                             max_drain_bytes: int | None) -> None:
+    if cache_limit < 0:
+        raise ValueError("cache_limit must be non-negative")
+    if max_drain_bytes is not None and max_drain_bytes < 0:
+        raise ValueError("max_drain_bytes must be non-negative")
+    if max_drain_bytes is not None and max_drain_bytes > cache_limit:
+        raise ValueError("max_drain_bytes cannot exceed cache_limit")
 
 
 class FileCacheMixin:
@@ -22,6 +34,9 @@ class FileCacheMixin:
     on top of any resource. Data lives in the resource's storage —
     subclass implements the cache methods using resource's store.
     """
+
+    _max_drain_bytes: int | None = None
+    _drain_tasks: dict[str, asyncio.Task[Any]]
 
     async def get(self, key: str) -> bytes | None:
         raise NotImplementedError
@@ -51,6 +66,9 @@ class FileCacheMixin:
 
     async def clear(self) -> None:
         raise NotImplementedError
+
+    async def close(self) -> None:
+        """Release connections held by the cache backend."""
 
     def evict_paths(self, paths: Iterable[str]) -> None:
         """Synchronously evict the given keys from the cache.
@@ -90,3 +108,24 @@ class FileCacheMixin:
     @property
     def cache_limit(self) -> int:
         raise NotImplementedError
+
+    @property
+    def max_drain_bytes(self) -> int | None:
+        return self._max_drain_bytes
+
+    @max_drain_bytes.setter
+    def max_drain_bytes(self, value: int | None) -> None:
+        validate_max_drain_bytes(self.cache_limit, value)
+        self._max_drain_bytes = value
+
+    @property
+    def drain_budget(self) -> int:
+        """Max bytes a background drain may buffer to fill this cache.
+
+        ``None`` (the default) derives the budget from ``cache_limit``.
+        An explicit value limits speculative background reads further
+        and may not exceed the cache's intended capacity.
+        """
+        if self.max_drain_bytes is None:
+            return self.cache_limit
+        return self.max_drain_bytes

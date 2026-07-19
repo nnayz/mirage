@@ -16,10 +16,10 @@ from mirage.accessor.s3 import S3Accessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic_bind.provision import \
     write_metadata_provision
+from mirage.commands.builtin.s3.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.core.s3.glob import resolve_glob
 from mirage.core.s3.readdir import readdir
 from mirage.core.s3.rm import rm_r
 from mirage.core.s3.rmdir import rmdir
@@ -31,19 +31,20 @@ from mirage.types import FileType, PathSpec
 
 async def _rm(
     accessor: S3Accessor,
-    path: PathSpec | str,
+    path: PathSpec,
     recursive: bool = False,
     force: bool = False,
     remove_dir: bool = False,
-    index: IndexCacheStore = None,
+    *,
+    index: IndexCacheStore,
 ) -> None:
     try:
-        s = await stat(accessor, path)
+        s = await stat(accessor, path, index=index)
     except (FileNotFoundError, ValueError):
         if force:
             return
         raise
-    label = path.virtual if isinstance(path, PathSpec) else path
+    label = path.virtual
     if s.type == FileType.DIRECTORY:
         if recursive:
             await rm_r(accessor, path)
@@ -74,14 +75,14 @@ async def rm(
     f: bool = False,
     v: bool = False,
     d: bool = False,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore,
     **_extra: object,
 ) -> tuple[ByteSource | None, IOResult]:
     if not paths:
         raise ValueError("rm: missing operand")
     paths = await resolve_glob(accessor, paths, index)
     verbose_parts: list[str] = []
-    removed: dict[str, bytes] = {}
+    removed: dict[str, ByteSource] = {}
     for p in paths:
         await _rm(accessor,
                   p,

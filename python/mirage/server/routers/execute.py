@@ -21,7 +21,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from mirage.server.io_serde import io_result_to_dict
-from mirage.server.jobs import JobEntry, JobStatus
+from mirage.server.jobs import JobStatus
 
 router = APIRouter(prefix="/v1/workspaces/{workspace_id}/execute")
 
@@ -46,7 +46,8 @@ def _require_entry(request: Request, workspace_id: str):
     return registry.get(workspace_id)
 
 
-def _build_execute_kwargs(req: ExecuteRequest, stdin: bytes | None) -> dict:
+def _build_execute_kwargs(req: ExecuteRequest,
+                          stdin: bytes | None) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "command": req.command,
         "provision": req.provision,
@@ -60,31 +61,16 @@ def _build_execute_kwargs(req: ExecuteRequest, stdin: bytes | None) -> dict:
     return kwargs
 
 
-def _make_coro_factory(runner, kwargs: dict):
+def _make_coro_factory(runner, kwargs: dict[str, Any]):
     return functools.partial(_invoke_execute, runner, kwargs)
 
 
-async def _invoke_execute(runner, kwargs: dict):
+async def _invoke_execute(runner, kwargs: dict[str, Any]):
     return await runner.ws.execute(**kwargs)
 
 
 def _schedule_on_runner(runner, coro):
     return asyncio.run_coroutine_threadsafe(coro, runner.loop)
-
-
-def _job_to_dict(entry: JobEntry,
-                 result_dict: dict | None = None) -> dict[str, Any]:
-    return {
-        "job_id": entry.id,
-        "workspace_id": entry.workspace_id,
-        "command": entry.command,
-        "status": entry.status.value,
-        "submitted_at": entry.submitted_at,
-        "started_at": entry.started_at,
-        "finished_at": entry.finished_at,
-        "result": result_dict,
-        "error": entry.error,
-    }
 
 
 @router.post("")

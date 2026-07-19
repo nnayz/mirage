@@ -37,7 +37,7 @@ SPEC = CommandSpec(
 )
 
 
-@command("gws-gmail-triage", resource="gmail", spec=SPEC)
+@command("gws gmail +triage", resource="gmail", spec=SPEC)
 async def gws_gmail_triage(
     accessor: GmailAccessor,
     paths: list[PathSpec],
@@ -47,7 +47,8 @@ async def gws_gmail_triage(
     query = _extra.get("query", "is:unread")
     if not isinstance(query, str):
         query = "is:unread"
-    max_results = int(_extra.get("max", 20))
+    raw_max = _extra.get("max", 20)
+    max_results = int(raw_max) if isinstance(raw_max, (int, str)) else 20
     msgs = await list_messages(accessor.token_manager,
                                query=query,
                                max_results=max_results)

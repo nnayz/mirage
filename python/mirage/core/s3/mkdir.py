@@ -19,19 +19,14 @@ from mirage.types import PathSpec
 
 
 async def mkdir(accessor: S3Accessor,
-                path: PathSpec,
+                path_spec: PathSpec,
                 parents: bool = False) -> None:
     # Object stores have no real directories; parents is implicit.
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    if isinstance(path, PathSpec):
-        path = path.mount_path
+    path = path_spec.mount_path
     config = accessor.config
     pfx = _prefix(path, config)
     if pfx:
         session = async_session(config)
         async with session.client(**_client_kwargs(config)) as client:
             await client.put_object(Bucket=config.bucket, Key=pfx, Body=b"")
-        await invalidate_after_write(path)
+        await invalidate_after_write(path_spec)

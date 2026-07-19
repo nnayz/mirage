@@ -12,12 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import AsyncIterator
 from functools import partial
 
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.rg import rg as generic_rg
+from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github.narrow import (files_only_shortcircuit,
                                                    narrow_scope)
 from mirage.commands.builtin.grep_helper import pattern_arg
@@ -39,8 +39,8 @@ async def rg(
     accessor: GitHubAccessor,
     paths: list[PathSpec],
     *texts: str,
-    stdin: AsyncIterator[bytes] | bytes | None = None,
-    index: IndexCacheStore = None,
+    stdin: ByteSource | None = None,
+    index: IndexCacheStore,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(flags, spec=SPECS["rg"])
@@ -48,8 +48,6 @@ async def rg(
     if pattern_str is None:
         raise UsageError("rg: usage: rg [flags] pattern [path]")
 
-    if paths and index is None:
-        return b"", IOResult(exit_code=1)
     if paths:
         scope = paths[0]
         paths, file_count, used_search = await narrow_scope(
@@ -57,7 +55,7 @@ async def rg(
             index,
             paths,
             pattern_str,
-            fixed_string=fl.bool("F"),
+            fixed_string=fl.as_bool("F"),
             recursive=True,
         )
         if file_count > SCOPE_ERROR:
@@ -65,9 +63,9 @@ async def rg(
             return b"", IOResult(exit_code=1, stderr=msg.encode())
         if used_search:
             predicate = partial(rg_matches_filter,
-                                file_type=fl.str("type"),
-                                glob_pattern=fl.str("glob"),
-                                hidden=fl.bool("hidden"))
+                                file_type=fl.as_str("type"),
+                                glob_pattern=fl.as_str("glob"),
+                                hidden=fl.as_bool("hidden"))
             short = files_only_shortcircuit(fl,
                                             pattern_str,
                                             paths,
@@ -80,11 +78,9 @@ async def rg(
         paths,
         texts,
         flags,
-        readdir=_readdir,
-        stat=_stat,
-        read_bytes=github_read,
+        readdir=bound_op(_readdir, accessor, index),
+        stat=bound_op(_stat, accessor, index),
+        read_bytes=bound_op(github_read, accessor, index),
         read_stream=None,
-        accessor=accessor,
         stdin=stdin,
-        index=index,
     )

@@ -13,18 +13,58 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
+from typing import Any
 
 from mirage.types import CacheKey, MountKey, ResourceStateKey, StateKey
-from mirage.workspace.snapshot.state import to_state_dict
 from mirage.workspace.snapshot.tar_io import _json_default
 from mirage.workspace.snapshot.utils import FORMAT_VERSION
 
-META_PATH = ".mirage-meta.json"
-CACHE_PREFIX = ".mirage-cache/"
+# The control-plane subtree: everything about the workspace that is
+# not file content lives under one reserved directory, so a commit is
+# the WHOLE world (files + sessions + namespace + history) while file
+# paths stay clean. Cache stays out: it is derived and rebuildable.
+CONTROL_PREFIX = ".mirage/"
+META_PATH = ".mirage/meta.json"
+SESSIONS_PATH = ".mirage/sessions.json"
+NAMESPACE_PATH = ".mirage/namespace.json"
+# History mirrors the live ObserverStore layout: one append-only jsonl
+# per session, merged on read by stable timestamp sort (the events()
+# contract). A session that ran nothing since the last commit keeps an
+# identical blob, so it dedups in the content-addressed store.
+HISTORY_PREFIX = ".mirage/history/"
+
+# The four restorable categories of a whole-world version.
+CATEGORIES = ("files", "sessions", "namespace", "history")
 
 
 def _is_reserved(tree_path: str) -> bool:
-    return tree_path == META_PATH or tree_path.startswith(CACHE_PREFIX)
+    return tree_path.startswith(CONTROL_PREFIX)
+
+
+def _history_entries(events: list[dict[str, Any]]) -> dict[str, bytes]:
+    by_session: dict[str, list[str]] = {}
+    for e in events:
+        session = e.get("session") or "default"
+        by_session.setdefault(session,
+                              []).append(json.dumps(e, default=_json_default))
+    return {
+        f"{HISTORY_PREFIX}{session}.jsonl":
+        ("\n".join(lines) + "\n").encode("utf-8")
+        for session, lines in by_session.items()
+    }
+
+
+def _history_from_entries(entries: dict[str, bytes]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for tree_path in sorted(entries):
+        if not tree_path.startswith(HISTORY_PREFIX):
+            continue
+        events.extend(
+            json.loads(line)
+            for line in entries[tree_path].decode("utf-8").splitlines()
+            if line)
+    events.sort(key=lambda e: e.get("timestamp", 0))
+    return events
 
 
 def _tree_path(prefix: str, rel: str) -> str:
@@ -45,21 +85,18 @@ def _belongs(tree_prefix: str, tree_path: str) -> bool:
     return tree_path == tree_prefix or tree_path.startswith(tree_prefix + "/")
 
 
-def meta_to_blob(meta: dict) -> bytes:
+def meta_to_blob(meta: dict[str, Any]) -> bytes:
     return json.dumps(meta, default=_json_default).encode("utf-8")
 
 
-def blob_to_meta(data: bytes) -> dict:
+def blob_to_meta(data: bytes) -> dict[str, Any]:
     return json.loads(data.decode("utf-8"))
 
 
-async def to_tree_inputs(ws) -> tuple[dict[str, bytes], dict]:
-    return tree_inputs_from_state(await to_state_dict(ws))
-
-
-def tree_inputs_from_state(state: dict) -> tuple[dict[str, bytes], dict]:
+def tree_inputs_from_state(
+        state: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any]]:
     entries: dict[str, bytes] = {}
-    mounts_meta: list[dict] = []
+    mounts_meta: list[dict[str, Any]] = []
     for mount in state[StateKey.MOUNTS]:
         prefix = mount[MountKey.PREFIX]
         resource_state = dict(mount[MountKey.RESOURCE_STATE])
@@ -89,30 +126,25 @@ def tree_inputs_from_state(state: dict) -> tuple[dict[str, bytes], dict]:
         CacheKey.LIMIT: cache[CacheKey.LIMIT],
         CacheKey.MAX_DRAIN_BYTES: cache[CacheKey.MAX_DRAIN_BYTES],
     }
-    cache_meta: list[dict] = []
-    for i, entry in enumerate(cache[CacheKey.ENTRIES]):
-        ref = f"{CACHE_PREFIX}{i}"
-        entries[ref] = entry[CacheKey.DATA]
-        cache_meta.append({
-            CacheKey.KEY: entry[CacheKey.KEY],
-            CacheKey.FINGERPRINT: entry.get(CacheKey.FINGERPRINT),
-            CacheKey.TTL: entry.get(CacheKey.TTL),
-            CacheKey.CACHED_AT: entry.get(CacheKey.CACHED_AT),
-            CacheKey.SIZE: entry.get(CacheKey.SIZE),
-            "ref": ref,
-        })
+    entries[SESSIONS_PATH] = meta_to_blob({
+        "sessions":
+        state.get(StateKey.SESSIONS) or [],
+    })
+    entries[NAMESPACE_PATH] = meta_to_blob({
+        "nodes": state.get(StateKey.NODES) or {},
+    })
+    entries.update(_history_entries(state.get(StateKey.HISTORY) or []))
     meta = {
         "mounts": mounts_meta,
         "config": config,
-        "cache": cache_meta,
         "fingerprints": state.get(StateKey.FINGERPRINTS) or [],
-        "sessions": state.get(StateKey.SESSIONS) or [],
     }
     return entries, meta
 
 
-def to_state(entries: dict[str, bytes], meta: dict) -> dict:
-    mounts: list[dict] = []
+def to_state(entries: dict[str, bytes], meta: dict[str,
+                                                   Any]) -> dict[str, Any]:
+    mounts: list[dict[str, Any]] = []
     for mount in meta["mounts"]:
         prefix = mount[MountKey.PREFIX]
         tree_prefix = prefix.strip("/")
@@ -133,40 +165,30 @@ def to_state(entries: dict[str, bytes], meta: dict) -> dict:
             MountKey.RESOURCE_STATE: resource_state,
         })
     config = meta.get("config", {})
-    cache_entries: list[dict] = []
-    for c in meta.get("cache", []):
-        cache_entries.append({
-            CacheKey.KEY: c[CacheKey.KEY],
-            CacheKey.DATA: entries[c["ref"]],
-            CacheKey.FINGERPRINT: c.get(CacheKey.FINGERPRINT),
-            CacheKey.TTL: c.get(CacheKey.TTL),
-            CacheKey.CACHED_AT: c.get(CacheKey.CACHED_AT),
-            CacheKey.SIZE: c.get(CacheKey.SIZE),
-        })
+    sessions_blob = entries.get(SESSIONS_PATH)
+    sessions = (blob_to_meta(sessions_blob).get("sessions", [])
+                if sessions_blob is not None else [])
+    namespace_blob = entries.get(NAMESPACE_PATH)
+    nodes = (blob_to_meta(namespace_blob).get("nodes", {})
+             if namespace_blob is not None else {})
+    history = _history_from_entries(entries)
     return {
-        StateKey.VERSION:
-        FORMAT_VERSION,
-        StateKey.MIRAGE_VERSION:
-        config.get(StateKey.MIRAGE_VERSION, "unknown"),
-        StateKey.MOUNTS:
-        mounts,
-        StateKey.SESSIONS:
-        meta.get("sessions", []),
-        StateKey.DEFAULT_SESSION_ID:
-        config.get(StateKey.DEFAULT_SESSION_ID, "default"),
-        StateKey.DEFAULT_AGENT_ID:
-        config.get(StateKey.DEFAULT_AGENT_ID, "default"),
-        StateKey.CURRENT_AGENT_ID:
-        config.get(StateKey.CURRENT_AGENT_ID, "default"),
+        StateKey.VERSION: FORMAT_VERSION,
+        StateKey.MIRAGE_VERSION: config.get(StateKey.MIRAGE_VERSION,
+                                            "unknown"),
+        StateKey.MOUNTS: mounts,
+        StateKey.SESSIONS: sessions,
+        StateKey.DEFAULT_SESSION_ID: config.get(StateKey.DEFAULT_SESSION_ID),
+        StateKey.DEFAULT_AGENT_ID: config.get(StateKey.DEFAULT_AGENT_ID),
+        StateKey.CURRENT_AGENT_ID: config.get(StateKey.CURRENT_AGENT_ID),
         StateKey.CACHE: {
             CacheKey.LIMIT: config.get(CacheKey.LIMIT, "512MB"),
             CacheKey.MAX_DRAIN_BYTES: config.get(CacheKey.MAX_DRAIN_BYTES),
-            CacheKey.ENTRIES: cache_entries,
+            CacheKey.ENTRIES: [],
         },
-        StateKey.HISTORY:
-        None,
+        StateKey.HISTORY: history,
         StateKey.JOBS: [],
-        StateKey.FINGERPRINTS:
-        meta.get("fingerprints", []),
+        StateKey.FINGERPRINTS: meta.get("fingerprints", []),
+        StateKey.NODES: nodes,
         StateKey.LIVE_ONLY_MOUNTS: [],
     }

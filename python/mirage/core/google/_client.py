@@ -14,7 +14,7 @@
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from typing import Any
 
 import aiohttp
 
@@ -27,7 +27,42 @@ DOCS_API_BASE = "https://docs.googleapis.com/v1"
 SLIDES_API_BASE = "https://slides.googleapis.com/v1"
 SHEETS_API_BASE = "https://sheets.googleapis.com/v4"
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
+DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3"
 TOKEN_BUFFER_SECONDS = 300
+
+
+def token_url(config: GoogleConfig) -> str:
+    return f"{config.api_base}/token" if config.api_base else TOKEN_URL
+
+
+def drive_base(token_manager: "TokenManager") -> str:
+    base = token_manager.config.api_base
+    return f"{base}/drive/v3" if base else DRIVE_API_BASE
+
+
+def drive_upload_base(token_manager: "TokenManager") -> str:
+    base = token_manager.config.api_base
+    return f"{base}/upload/drive/v3" if base else DRIVE_UPLOAD_BASE
+
+
+def docs_base(token_manager: "TokenManager") -> str:
+    base = token_manager.config.api_base
+    return f"{base}/v1" if base else DOCS_API_BASE
+
+
+def slides_base(token_manager: "TokenManager") -> str:
+    base = token_manager.config.api_base
+    return f"{base}/v1" if base else SLIDES_API_BASE
+
+
+def sheets_base(token_manager: "TokenManager") -> str:
+    base = token_manager.config.api_base
+    return f"{base}/v4" if base else SHEETS_API_BASE
+
+
+def gmail_base(token_manager: "TokenManager") -> str:
+    base = token_manager.config.api_base
+    return f"{base}/gmail/v1" if base else GMAIL_API_BASE
 
 
 async def refresh_access_token(config: GoogleConfig, ) -> tuple[str, int]:
@@ -48,7 +83,7 @@ async def refresh_access_token(config: GoogleConfig, ) -> tuple[str, int]:
     if client_secret:
         data["client_secret"] = client_secret
     async with aiohttp.ClientSession() as session:
-        async with session.post(TOKEN_URL, data=data) as resp:
+        async with session.post(token_url(config), data=data) as resp:
             resp.raise_for_status()
             body = await resp.json()
             return body["access_token"], body["expires_in"]
@@ -58,7 +93,7 @@ class TokenManager:
     """Manages OAuth2 access token lifecycle."""
 
     def __init__(self, config: GoogleConfig) -> None:
-        self._config = config
+        self.config = config
         self._access_token: str | None = None
         self._expires_at: float = 0
         self._lock = asyncio.Lock()
@@ -67,7 +102,7 @@ class TokenManager:
         async with self._lock:
             if self._access_token and time.time() < self._expires_at:
                 return self._access_token
-            token, expires_in = await refresh_access_token(self._config)
+            token, expires_in = await refresh_access_token(self.config)
             self._access_token = token
             self._expires_at = (time.time() + expires_in -
                                 TOKEN_BUFFER_SECONDS)
@@ -82,8 +117,8 @@ async def google_headers(token_manager: TokenManager, ) -> dict[str, str]:
 async def google_get(
     token_manager: TokenManager,
     url: str,
-    params: dict | None = None,
-) -> dict:
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     headers = await google_headers(token_manager)
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, params=params) as resp:
@@ -94,8 +129,8 @@ async def google_get(
 async def google_post(
     token_manager: TokenManager,
     url: str,
-    json: dict,
-) -> dict:
+    json: dict[str, Any],
+) -> dict[str, Any]:
     headers = await google_headers(token_manager)
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=json) as resp:
@@ -106,11 +141,57 @@ async def google_post(
 async def google_put(
     token_manager: TokenManager,
     url: str,
-    json: dict,
-) -> dict:
+    json: dict[str, Any],
+) -> dict[str, Any]:
     headers = await google_headers(token_manager)
     async with aiohttp.ClientSession() as session:
         async with session.put(url, headers=headers, json=json) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+
+async def google_patch(
+    token_manager: TokenManager,
+    url: str,
+    json: dict[str, Any],
+    params: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    headers = await google_headers(token_manager)
+    async with aiohttp.ClientSession() as session:
+        async with session.patch(url,
+                                 headers=headers,
+                                 json=json,
+                                 params=params) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+
+async def google_send_bytes(
+    token_manager: TokenManager,
+    method: str,
+    url: str,
+    data: bytes,
+    content_type: str,
+    params: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Send a raw byte payload (upload endpoints) and return the JSON reply.
+
+    Args:
+        token_manager (TokenManager): OAuth2 token manager.
+        method (str): HTTP method ("POST" or "PATCH").
+        url (str): API URL.
+        data (bytes): request body.
+        content_type (str): Content-Type header for the body.
+        params (dict | None): query parameters.
+    """
+    headers = await google_headers(token_manager)
+    headers["Content-Type"] = content_type
+    async with aiohttp.ClientSession() as session:
+        async with session.request(method,
+                                   url,
+                                   headers=headers,
+                                   data=data,
+                                   params=params) as resp:
             resp.raise_for_status()
             return await resp.json()
 
@@ -134,23 +215,3 @@ async def google_get_bytes(
         async with session.get(url, headers=headers) as resp:
             resp.raise_for_status()
             return await resp.read()
-
-
-async def google_get_stream(
-    token_manager: TokenManager,
-    url: str,
-    chunk_size: int = 8192,
-) -> AsyncIterator[bytes]:
-    """Stream bytes from a Google API endpoint.
-
-    Args:
-        token_manager (TokenManager): OAuth2 token manager.
-        url (str): API URL.
-        chunk_size (int): chunk size in bytes.
-    """
-    headers = await google_headers(token_manager)
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as resp:
-            resp.raise_for_status()
-            async for chunk in resp.content.iter_chunked(chunk_size):
-                yield chunk

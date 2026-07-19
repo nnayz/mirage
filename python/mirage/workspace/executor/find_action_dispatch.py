@@ -20,7 +20,7 @@ from mirage.workspace.mount import MountRegistry
 
 async def _apply_find_actions(
     stdout: ByteSource | None,
-    flag_kwargs: dict,
+    flag_kwargs: dict[str, object],
     registry: MountRegistry,
     cwd: str,
 ) -> tuple[ByteSource | None, bytes]:
@@ -71,7 +71,9 @@ async def _apply_find_actions(
                 resolved=True,
             )
             try:
-                _, rm_io = await mount.execute_cmd("rm", [ps], [], {},
+                # -d so directories emptied by the deepest-first pass are
+                # removable, matching GNU -delete's rmdir behavior.
+                _, rm_io = await mount.execute_cmd("rm", [ps], [], {"d": True},
                                                    stdin=None,
                                                    cwd=cwd)
             except (FileNotFoundError, NotADirectoryError, PermissionError,

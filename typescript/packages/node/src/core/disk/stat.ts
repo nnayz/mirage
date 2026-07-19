@@ -32,12 +32,19 @@ export async function stat(accessor: DiskAccessor, p: PathSpec): Promise<FileSta
   }
   const modified = st.mtime.toISOString()
   const name = path.basename(full)
+  // Fields setattr applies natively (mode, times) read from the real
+  // inode, so external chmod/utime stays visible. Ownership can never be
+  // applied natively (chown needs privileges), so it lives wholly in the
+  // namespace overlay, merged at the stat-merge layer; host uid/gid
+  // numbers would also be machine-dependent noise.
   if (st.isDirectory()) {
     return new FileStat({
       name,
       size: null,
       modified,
       type: FileType.DIRECTORY,
+      mode: st.mode & 0o7777,
+      atime: st.atime.toISOString(),
     })
   }
   return new FileStat({
@@ -46,5 +53,7 @@ export async function stat(accessor: DiskAccessor, p: PathSpec): Promise<FileSta
     modified,
     fingerprint: modified,
     type: guessType(name),
+    mode: st.mode & 0o7777,
+    atime: st.atime.toISOString(),
   })
 }

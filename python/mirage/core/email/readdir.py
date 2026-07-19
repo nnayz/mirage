@@ -14,9 +14,10 @@
 
 import re
 from email.utils import parsedate_to_datetime
+from typing import Any
 
 from mirage.accessor.email import EmailAccessor
-from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.email._client import fetch_headers, list_message_uids
 from mirage.core.email.folders import list_folders
 from mirage.types import PathSpec
@@ -52,26 +53,21 @@ def _date_from_header(date_str: str) -> str:
 
 async def readdir(
     accessor: EmailAccessor,
-    path: PathSpec,
-    index: IndexCacheStore = None,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    prefix = mount_prefix_of(path.virtual, path.resource_path)
-    path = (path.dir if path.pattern else path).mount_path
+    virtual = path_spec.virtual
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     key = path.strip("/")
     virtual_key = prefix + "/" + key if key else prefix or "/"
     parts = key.split("/") if key else []
     depth = len(parts)
 
     if depth == 0:
-        if index is not None:
-            cached = await index.list_dir(virtual_key)
-            if cached.entries is not None:
-                return cached.entries
+        cached = await index.list_dir(virtual_key)
+        if cached.entries is not None:
+            return cached.entries
         folders = await list_folders(accessor)
         entries = []
         for folder_name in folders:
@@ -82,24 +78,20 @@ async def readdir(
                 vfs_name=folder_name,
             )
             entries.append((folder_name, entry))
-        if index is not None:
-            await index.set_dir(virtual_key, entries)
+        await index.set_dir(virtual_key, entries)
         return [f"{prefix}/{name}" for name, _ in entries]
 
     if depth == 1:
         folder_name = parts[0]
-        if index is not None:
-            cached = await index.list_dir(virtual_key)
-            if cached.entries is not None:
-                return cached.entries
-        if index is None:
-            raise enoent(virtual)
+        cached = await index.list_dir(virtual_key)
+        if cached.entries is not None:
+            return cached.entries
         max_msgs = accessor.config.max_messages
         uids = await list_message_uids(accessor,
                                        folder_name,
                                        max_results=max_msgs)
         headers_list = await fetch_headers(accessor, folder_name, uids)
-        date_groups: dict[str, list[dict]] = {}
+        date_groups: dict[str, list[dict[str, Any]]] = {}
         for hdr in headers_list:
             date_str = _date_from_header(hdr.get("date", ""))
             date_groups.setdefault(date_str, []).append(hdr)
@@ -153,8 +145,6 @@ async def readdir(
         return [f"{prefix}/{key}/{name}" for name, _ in date_entries]
 
     if depth == 2:
-        if index is None:
-            raise enoent(virtual)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
@@ -170,8 +160,6 @@ async def readdir(
         raise enoent(virtual)
 
     if depth == 3:
-        if index is None:
-            raise enoent(virtual)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
@@ -187,3 +175,9 @@ async def readdir(
         raise enoent(virtual)
 
     raise enoent(virtual)
+
+
+def is_dir_name(child: str) -> bool:
+    # Entries are recognized by extension, so classification never needs
+    # the stat fallback.
+    return not child.rsplit("/", 1)[-1].endswith(".email.json")

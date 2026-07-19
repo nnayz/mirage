@@ -18,6 +18,8 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildApp } from '../app.ts'
 
+const UUID7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
 describe('workspaces router', () => {
   it('GET /v1/health returns ok', async () => {
     const app = buildApp()
@@ -38,7 +40,7 @@ describe('workspaces router', () => {
     })
     expect(res.statusCode).toBe(201)
     const body = res.json<{ id: string }>()
-    expect(body.id).toMatch(/^ws_/)
+    expect(body.id).toMatch(UUID7_RE)
     await app.close()
   })
 
@@ -112,7 +114,7 @@ describe('workspaces router', () => {
     })
     expect(res.statusCode).toBe(201)
     const body = res.json<{ id: string }>()
-    expect(body.id).toMatch(/^ws_/)
+    expect(body.id).toMatch(UUID7_RE)
     expect(body.id).not.toBe('src-w')
     await app.close()
   })
@@ -275,5 +277,30 @@ describe('workspaces router', () => {
     } finally {
       await app.close().catch(() => undefined)
     }
+  })
+})
+
+describe('daemon disk-store default', () => {
+  it('persists a store-less workspace under the state root', async () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), 'mir-stateroot-'))
+    const app = buildApp({ stateRoot })
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces',
+      payload: {
+        id: 'diskws',
+        config: { mounts: { '/': { resource: 'ram', mode: 'write' } } },
+      },
+    })
+    expect(res.statusCode).toBe(201)
+    const exec = await app.inject({
+      method: 'POST',
+      url: '/v1/workspaces/diskws/execute',
+      payload: { command: 'echo hi' },
+    })
+    expect(exec.statusCode).toBe(200)
+    expect(existsSync(join(stateRoot, 'workspaces', 'diskws', 'workspace.json'))).toBe(true)
+    await app.close()
+    rmSync(stateRoot, { recursive: true, force: true })
   })
 })

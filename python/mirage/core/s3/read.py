@@ -13,16 +13,18 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import time
+from typing import Any
 
 from mirage.accessor.s3 import S3Accessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.s3._client import _client_kwargs, _key, async_session
 from mirage.observe.context import record, revision_for
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
 
-def _fp_rev_from_response(resp: dict) -> tuple[str | None, str | None]:
+def _fp_rev_from_response(
+        resp: dict[str, Any]) -> tuple[str | None, str | None]:
     """Extract ``(fingerprint, revision)`` from a boto GET response.
 
     Args:
@@ -42,25 +44,21 @@ def _fp_rev_from_response(resp: dict) -> tuple[str | None, str | None]:
 
 
 async def read_bytes(accessor: S3Accessor,
-                     path: PathSpec,
-                     index: IndexCacheStore = None,
+                     path_spec: PathSpec,
+                     index: IndexCacheStore = NULL_INDEX,
                      offset: int = 0,
                      size: int | None = None) -> bytes:
     """Read bytes from S3, with optional range read.
 
     Args:
         accessor (S3Accessor): S3 accessor.
-        path (PathSpec | str): Object path.
+        path_spec (PathSpec): Object path.
         index: Index cache store.
         offset (int): Byte offset for range reads.
         size (int | None): Number of bytes for range reads.
     """
-    if isinstance(path, str):
-        path = PathSpec(virtual=path,
-                        directory=path,
-                        resource_path=path.strip("/"))
-    virtual = path.virtual
-    path = path.mount_path
+    virtual = path_spec.virtual
+    path = path_spec.mount_path
     config = accessor.config
     key = _key(path, config)
     kwargs = {"Bucket": config.bucket, "Key": key}

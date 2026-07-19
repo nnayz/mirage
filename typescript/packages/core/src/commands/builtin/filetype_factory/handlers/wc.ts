@@ -16,12 +16,12 @@ import type { Accessor } from '../../../../accessor/base.ts'
 import { IOResult, type ByteSource } from '../../../../io/types.ts'
 import type { PathSpec } from '../../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../../config.ts'
-import type { FiletypeEntry, ReadBytesFn, StatEntryFn } from '../extensions.ts'
+import type { FiletypeEntry, FiletypeReadBytesFn, StatEntryFn } from '../extensions.ts'
 
 const ENC = new TextEncoder()
 
 export async function ftWc<A extends Accessor>(
-  readBytes: ReadBytesFn<A>,
+  readBytes: FiletypeReadBytesFn<A>,
   _statEntry: StatEntryFn<A>,
   entry: FiletypeEntry,
   accessor: A,
@@ -37,7 +37,7 @@ export async function ftWc<A extends Accessor>(
   try {
     const raw = await readBytes(accessor, first, opts.index ?? undefined)
     const rows = await entry.module.wc(raw)
-    const out: ByteSource = ENC.encode(`${String(rows)}\t${first.virtual}\n`)
+    const out: ByteSource = ENC.encode(`${String(rows)} ${first.virtual}\n`)
     return [out, new IOResult({ cache: [first.mountPath] })]
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

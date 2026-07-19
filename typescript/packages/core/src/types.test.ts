@@ -16,8 +16,6 @@ import { mountKey, mountPrefixOf } from './utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import {
   ConsistencyPolicy,
-  DEFAULT_AGENT_ID,
-  DEFAULT_SESSION_ID,
   FileStat,
   FileType,
   MountMode,
@@ -65,6 +63,7 @@ describe('ResourceName', () => {
     expect(ResourceName.GMAIL).toBe('gmail')
     expect(ResourceName.TRELLO).toBe('trello')
     expect(ResourceName.MONGODB).toBe('mongodb')
+    expect(ResourceName.GRIDFS).toBe('gridfs')
     expect(ResourceName.NOTION).toBe('notion')
     expect(ResourceName.LANGFUSE).toBe('langfuse')
     expect(ResourceName.SSH).toBe('ssh')
@@ -87,22 +86,12 @@ describe('ResourceName', () => {
     expect(ResourceName.QINGSTOR).toBe('qingstor')
   })
 
-  it('contains exactly 47 entries', () => {
-    expect(Object.keys(ResourceName)).toHaveLength(47)
+  it('contains exactly 48 entries', () => {
+    expect(Object.keys(ResourceName)).toHaveLength(48)
   })
 
   it('is frozen at runtime', () => {
     expect(Object.isFrozen(ResourceName)).toBe(true)
-  })
-})
-
-describe('default id constants', () => {
-  it('DEFAULT_SESSION_ID is "default"', () => {
-    expect(DEFAULT_SESSION_ID).toBe('default')
-  })
-
-  it('DEFAULT_AGENT_ID is "default"', () => {
-    expect(DEFAULT_AGENT_ID).toBe('default')
   })
 })
 
