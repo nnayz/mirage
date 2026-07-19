@@ -314,6 +314,9 @@ importers:
       '@struktoai/mirage-node':
         specifier: workspace:*
         version: link:../node
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.17
       '@types/picomatch':
         specifier: ^4.0.3
         version: 4.0.3
@@ -334,7 +337,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^3.2.6
-        version: 3.2.6(@types/debug@4.1.13)(@types/node@24.12.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.0)
+        version: 3.2.6(@types/debug@4.1.13)(@types/node@22.19.17)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.0)
 
   packages/browser:
     dependencies:

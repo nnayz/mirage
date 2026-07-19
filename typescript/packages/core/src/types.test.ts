@@ -74,6 +74,7 @@ describe('ResourceName', () => {
     expect(ResourceName.OPFS).toBe('opfs')
     expect(ResourceName.SUPABASE).toBe('supabase')
     expect(ResourceName.POSTGRES).toBe('postgres')
+    expect(ResourceName.NEXTCLOUD).toBe('nextcloud')
     expect(ResourceName.MINIO).toBe('minio')
     expect(ResourceName.CEPH).toBe('ceph')
     expect(ResourceName.SEAWEEDFS).toBe('seaweedfs')
@@ -86,8 +87,8 @@ describe('ResourceName', () => {
     expect(ResourceName.QINGSTOR).toBe('qingstor')
   })
 
-  it('contains exactly 48 entries', () => {
-    expect(Object.keys(ResourceName)).toHaveLength(48)
+  it('contains exactly 49 entries', () => {
+    expect(Object.keys(ResourceName)).toHaveLength(49)
   })
 
   it('is frozen at runtime', () => {
