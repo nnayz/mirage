@@ -38,6 +38,21 @@ describe('nextcloud find', () => {
     ])
   })
 
+  it('only stats the start path at max depth zero', async () => {
+    const accessor = new NextcloudAccessor({
+      url: 'https://cloud.example/remote.php/dav/files/user/',
+    })
+    const operator = new FakeNextcloudOperator({ 'data/a.json': 'a' })
+    const list = vi.spyOn(operator, 'list')
+    installFakeOperator(accessor, operator)
+
+    await expect(find(accessor, PathSpec.fromStrPath('/data'), { maxDepth: 0 })).resolves.toEqual([
+      '/data',
+    ])
+    expect(list).not.toHaveBeenCalled()
+    expect(searchFiles).not.toHaveBeenCalled()
+  })
+
   it('uses Files Search for a supported name and type predicate', async () => {
     const accessor = accessorWith({ 'Documents/existing.txt': 'x' })
     searchFiles.mockResolvedValue([

@@ -8,7 +8,8 @@ from opendal.types import EntryMode
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
-                                               keep, start_basename)
+                                               keep, start_basename,
+                                               tree_has_empty)
 from mirage.core.nextcloud.search import (Bounds, FilesSearchQuery,
                                           SearchEntry, search_files,
                                           supports_query)
@@ -198,6 +199,12 @@ async def _find_with_search(
     scope: _FindScope,
     criteria: _FindCriteria,
 ) -> list[str] | None:
+    if criteria.max_depth == 0 and not tree_has_empty(criteria.predicate):
+        start = await _stat_candidate(accessor, scope.base_key,
+                                      scope.start_name)
+        if start is None:
+            return []
+        return _matching_keys({scope.base_key: start}, scope, criteria)
     query = criteria.search_query()
     if not supports_query(query):
         return None

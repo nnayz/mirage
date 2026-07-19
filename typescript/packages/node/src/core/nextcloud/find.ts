@@ -3,6 +3,7 @@ import {
   keep,
   optionsTree,
   startBasename,
+  treeHasEmpty,
   type FindEntry,
   type FindOptions,
   type PathSpec,
@@ -183,6 +184,11 @@ async function findWithSearch(
   scope: FindScope,
   criteria: FindCriteria,
 ): Promise<string[] | null> {
+  if (criteria.maxDepth === 0 && !treeHasEmpty(criteria.predicate)) {
+    const start = await statCandidate(accessor, scope.baseKey, scope.startName)
+    if (start === null) return []
+    return matchingKeys(new Map([[scope.baseKey, start]]), scope, criteria)
+  }
   const query = searchQuery(criteria)
   if (!supportsQuery(query)) return null
   const start = await statCandidate(accessor, scope.baseKey, scope.startName)

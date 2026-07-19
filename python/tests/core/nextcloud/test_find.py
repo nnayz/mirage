@@ -79,6 +79,19 @@ async def test_find_maxdepth(make_acc):
 
 
 @pytest.mark.asyncio
+async def test_find_maxdepth_zero_only_stats_start(make_acc,
+                                                   mock_search_files):
+    acc = make_acc({"data/a.json": b"a"})
+    acc._fake.scan = AsyncMock(
+        side_effect=AssertionError("recursive scan should not run"))
+
+    out = await find(acc, PathSpec.from_str_path("/data"), maxdepth=0)
+
+    assert out == ["/data"]
+    mock_search_files.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_find_uses_server_search_for_supported_name_and_type(
         make_acc, mock_search_files):
     acc = make_acc({"Documents/existing.txt": b"x"})
