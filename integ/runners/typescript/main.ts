@@ -98,6 +98,10 @@ async function main(): Promise<void> {
       process.stderr.write(`skip [${id}]: SSH_HOST not set\n`)
       continue
     }
+    if (target.service === 'nextcloud' && !process.env.NEXTCLOUD_URL) {
+      process.stderr.write(`skip [${id}]: NEXTCLOUD_URL not set\n`)
+      continue
+    }
     if (target.service === 'gws' && !process.env.GWS_URL) {
       process.stderr.write(`skip [${id}]: GWS_URL not set\n`)
       continue

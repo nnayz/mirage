@@ -169,6 +169,11 @@ const REGISTRY: Record<string, ResourceFactory> = {
     const { normalizeSshConfig } = await import('./ssh/config.ts')
     return new SSHResource(normalizeSshConfig(config))
   },
+  nextcloud: async (config) => {
+    const { NextcloudResource } = await import('./nextcloud/nextcloud.ts')
+    const { normalizeNextcloudConfig } = await import('./nextcloud/config.ts')
+    return new NextcloudResource(normalizeNextcloudConfig(config))
+  },
   discord: async (config) => {
     const { DiscordResource } = await import('./discord/discord.ts')
     const { normalizeDiscordConfig } = await import('./discord/config.ts')

@@ -355,7 +355,8 @@
     {
       "id": "nextcloud",
       "hosts": [
-        "python"
+        "python",
+        "typescript-node"
       ],
       "service": "nextcloud",
       "mounts": [

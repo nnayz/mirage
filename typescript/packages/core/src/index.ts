@@ -1124,6 +1124,7 @@ export {
   evalPredicate,
   type FindEntry,
   keep,
+  optionsTree,
   type PredNode,
   startBasename,
 } from './commands/builtin/findEval.ts'

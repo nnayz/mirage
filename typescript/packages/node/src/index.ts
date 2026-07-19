@@ -253,6 +253,17 @@ export { SSHAccessor } from './accessor/ssh.ts'
 export { SSH_PROMPT } from './resource/ssh/prompt.ts'
 export { SSH_COMMANDS } from './commands/builtin/ssh/index.ts'
 export { SSH_OPS } from './ops/ssh/index.ts'
+export { NextcloudAccessor } from './accessor/nextcloud.ts'
+export { NextcloudResource, type NextcloudResourceState } from './resource/nextcloud/nextcloud.ts'
+export {
+  normalizeNextcloudConfig,
+  redactNextcloudConfig,
+  type NextcloudConfig,
+  type NextcloudConfigRedacted,
+} from './resource/nextcloud/config.ts'
+export { NEXTCLOUD_PROMPT } from './resource/nextcloud/prompt.ts'
+export { NEXTCLOUD_COMMANDS } from './commands/builtin/nextcloud/index.ts'
+export { NEXTCLOUD_OPS } from './ops/nextcloud/index.ts'
 export { DiscordResource, type DiscordResourceState } from './resource/discord/discord.ts'
 export {
   normalizeDiscordConfig,

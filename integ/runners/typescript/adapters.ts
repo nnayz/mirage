@@ -36,6 +36,7 @@ import {
   GSlidesResource,
   HfBucketsResource,
   MountMode,
+  NextcloudResource,
   RAMResource,
   RedisResource,
   S3Resource,
@@ -59,6 +60,9 @@ const S3_ENDPOINT = process.env.S3_ENDPOINT
 const S3_REGION = process.env.S3_REGION ?? 'us-east-1'
 const S3_ACCESS = process.env.AWS_ACCESS_KEY_ID ?? 'testing'
 const S3_SECRET = process.env.AWS_SECRET_ACCESS_KEY ?? 'testing'
+const NEXTCLOUD_URL = process.env.NEXTCLOUD_URL
+const NEXTCLOUD_USERNAME = process.env.NEXTCLOUD_USERNAME ?? 'admin'
+const NEXTCLOUD_PASSWORD = process.env.NEXTCLOUD_PASSWORD ?? 'admin123'
 
 function runId(): string {
   return `${String(process.pid)}-${String(Date.now())}`
@@ -189,6 +193,32 @@ async function openS3(target: Target): Promise<Open> {
     client.destroy()
   }
   return { ws: ws as unknown as ExecWorkspace, cleanup }
+}
+
+function nextcloudMountUrl(root: string | undefined): string {
+  if (NEXTCLOUD_URL === undefined || NEXTCLOUD_URL === '') {
+    throw new Error('nextcloud target requires NEXTCLOUD_URL')
+  }
+  const base = NEXTCLOUD_URL.endsWith('/') ? NEXTCLOUD_URL : `${NEXTCLOUD_URL}/`
+  const relative = (root ?? '')
+    .split('/')
+    .filter((part) => part !== '')
+    .map(encodeURIComponent)
+    .join('/')
+  return relative !== '' ? `${base}${relative}/` : base
+}
+
+async function openNextcloud(target: Target): Promise<Open> {
+  const mounts: Record<string, NextcloudResource> = {}
+  for (const mount of target.mounts) {
+    mounts[mount.path] = new NextcloudResource({
+      url: nextcloudMountUrl(mount.root),
+      username: NEXTCLOUD_USERNAME,
+      password: NEXTCLOUD_PASSWORD,
+    })
+  }
+  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
 const EMAIL_IMAP_PORT = Number(process.env.EMAIL_IMAP_PORT ?? '3143')
@@ -638,6 +668,7 @@ export const ADAPTERS: Record<string, (target: Target) => Promise<Open>> = {
   redis: openRedis,
   opfs: openOpfs,
   s3: openS3,
+  nextcloud: openNextcloud,
   gridfs: openGridfs,
   ssh: openSsh,
   gdrive: openGws,
