@@ -1,15 +1,10 @@
 import { PathSpec } from '@struktoai/mirage-core'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NextcloudAccessor } from '../../accessor/nextcloud.ts'
-import {
-  SEARCH_PAGE_SIZE,
-  globToLike,
-  relativePath,
-  requestBody,
-  searchFiles,
-  searchTarget,
-  supportsQuery,
-} from './search.ts'
+import { searchFiles, supportsQuery } from './search/index.ts'
+import { SEARCH_PAGE_SIZE } from './search/constants.ts'
+import { globToLike, requestBody } from './search/query.ts'
+import { relativePath, searchTarget } from './search/target.ts'
 
 function multistatus(paths: { href: string; directory?: boolean }[]): string {
   const responses = paths
@@ -122,10 +117,8 @@ describe('Nextcloud Files Search transport', () => {
           { op: 'type', kind: 'd' },
         ],
       },
-      minSize: 10,
-      maxSize: 100,
-      mtimeMin: 1000.75,
-      mtimeMax: 2000.25,
+      size: { lower: 10, upper: 100 },
+      modified: { lower: 1000.75, upper: 2000.25 },
     })
 
     expect(entries).toHaveLength(SEARCH_PAGE_SIZE + 1)

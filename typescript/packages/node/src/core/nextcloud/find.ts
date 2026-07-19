@@ -9,13 +9,14 @@ import {
   type PredNode,
 } from '@struktoai/mirage-core'
 import type { NextcloudAccessor } from '../../accessor/nextcloud.ts'
-import { searchFiles, supportsQuery, type FilesSearchQuery, type SearchEntry } from './search.ts'
+import {
+  searchFiles,
+  supportsQuery,
+  type Bounds,
+  type FilesSearchQuery,
+  type SearchEntry,
+} from './search/index.ts'
 import { isNotFound, rawPathOf } from './util.ts'
-
-interface Range {
-  lower: number | null
-  upper: number | null
-}
 
 interface FindScope {
   baseKey: string
@@ -34,8 +35,8 @@ interface Candidate {
 
 interface FindCriteria {
   predicate: PredNode
-  size: Range
-  modified: Range
+  size: Bounds
+  modified: Bounds
   minDepth: number | null
   maxDepth: number | null
 }
@@ -49,13 +50,13 @@ function findScope(path: PathSpec): FindScope {
   }
 }
 
-function constrained(range: Range): boolean {
-  return range.lower !== null || range.upper !== null
+function constrained(bounds: Bounds): boolean {
+  return bounds.lower !== null || bounds.upper !== null
 }
 
-function contains(range: Range, value: number): boolean {
-  if (range.lower !== null && value < range.lower) return false
-  if (range.upper !== null && value > range.upper) return false
+function contains(bounds: Bounds, value: number): boolean {
+  if (bounds.lower !== null && value < bounds.lower) return false
+  if (bounds.upper !== null && value > bounds.upper) return false
   return true
 }
 
@@ -171,10 +172,8 @@ function matchingKeys(
 function searchQuery(criteria: FindCriteria): FilesSearchQuery {
   return {
     tree: criteria.predicate,
-    minSize: criteria.size.lower,
-    maxSize: criteria.size.upper,
-    mtimeMin: criteria.modified.lower,
-    mtimeMax: criteria.modified.upper,
+    size: criteria.size,
+    modified: criteria.modified,
   }
 }
 

@@ -6,10 +6,11 @@ import pytest
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.commands.builtin.find_eval import (And, Name, Not, Or, Path,
                                                TrueNode, Type)
-from mirage.core.nextcloud.search import (_SEARCH_PAGE_SIZE, FilesSearchQuery,
-                                          _glob_to_like, _relative_path,
-                                          _request_body, _search_target,
+from mirage.core.nextcloud.search import (Bounds, FilesSearchQuery,
                                           search_files, supports_query)
+from mirage.core.nextcloud.search.constants import SEARCH_PAGE_SIZE
+from mirage.core.nextcloud.search.query import glob_to_like, request_body
+from mirage.core.nextcloud.search.target import relative_path, search_target
 from mirage.resource.nextcloud import NextcloudConfig
 from mirage.types import FindType, PathSpec
 
@@ -56,7 +57,7 @@ def _multistatus(paths: list[tuple[str, bool]]) -> bytes:
 
 
 def test_search_target_preserves_webroot_and_configured_subroot():
-    target = _search_target(
+    target = search_target(
         "https://cloud.example/nextcloud/remote.php/dav/files/alice/"
         "team%20docs/")
     assert target is not None
@@ -65,27 +66,27 @@ def test_search_target_preserves_webroot_and_configured_subroot():
 
 
 def test_search_target_rejects_non_nextcloud_url():
-    assert _search_target("https://cloud.example/webdav/") is None
+    assert search_target("https://cloud.example/webdav/") is None
 
 
 def test_relative_path_preserves_literal_percent_in_subroot():
-    target = _search_target(
+    target = search_target(
         "https://cloud.example/nextcloud/remote.php/dav/files/alice/"
         "team%2520docs/")
     assert target is not None
     assert target.resource_scope == "/files/alice/team%20docs"
-    assert _relative_path(
+    assert relative_path(
         "/nextcloud/remote.php/dav/files/alice/team%2520docs/report.pdf",
         target,
     ) == "/report.pdf"
 
 
 def test_scope_preserves_spaces_unicode_and_xml_escapes_ampersand():
-    target = _search_target(
+    target = search_target(
         "https://cloud.example/remote.php/dav/files/alice/team%20docs/")
     assert target is not None
     body = ElementTree.fromstring(
-        _request_body(
+        request_body(
             target,
             PathSpec.from_str_path("/My Documents/税 & VAT"),
             FilesSearchQuery(tree=Name("Invoices")),
@@ -97,7 +98,7 @@ def test_scope_preserves_spaces_unicode_and_xml_escapes_ampersand():
 
 
 def test_glob_to_like_broadens_sql_wildcard_and_backslash_literals():
-    assert _glob_to_like("a_b%\\c?*") == "a_b%%c_%"
+    assert glob_to_like("a_b%\\c?*") == "a_b%%c_%"
 
 
 @pytest.mark.parametrize(
@@ -117,14 +118,13 @@ def test_query_accepts_fully_representable_boolean_tree():
 
 
 def test_positive_size_query_excludes_directories():
-    target = _search_target(
-        "https://cloud.example/remote.php/dav/files/alice/")
+    target = search_target("https://cloud.example/remote.php/dav/files/alice/")
     assert target is not None
     body = ElementTree.fromstring(
-        _request_body(
+        request_body(
             target,
             PathSpec.from_str_path("/Accounting"),
-            FilesSearchQuery(tree=TrueNode(), min_size=10),
+            FilesSearchQuery(tree=TrueNode(), size=Bounds(lower=10)),
             0,
         ))
     where = body.find(".//" + _qname(_DAV_NAMESPACE, "where"))
@@ -135,7 +135,7 @@ def test_positive_size_query_excludes_directories():
 @pytest.mark.asyncio
 async def test_search_files_builds_query_and_paginates(make_acc, httpx_mock):
     first_paths = [(f"/remote.php/dav/files/user/Accounting/item-{index}.pdf",
-                    True) for index in range(_SEARCH_PAGE_SIZE)]
+                    True) for index in range(SEARCH_PAGE_SIZE)]
     second_paths = [("/files/user/Accounting/final%20invoice.pdf", True)]
     httpx_mock.add_response(method="SEARCH",
                             status_code=207,
@@ -146,17 +146,15 @@ async def test_search_files_builds_query_and_paginates(make_acc, httpx_mock):
     accessor = make_acc({})
     query = FilesSearchQuery(
         tree=And([Name("*.pdf"), Type("d")]),
-        min_size=10,
-        max_size=100,
-        mtime_min=1000.75,
-        mtime_max=2000.25,
+        size=Bounds(lower=10, upper=100),
+        modified=Bounds(lower=1000.75, upper=2000.25),
     )
 
     entries = await search_files(accessor,
                                  PathSpec.from_str_path("/Accounting"), query)
 
     assert entries is not None
-    assert len(entries) == _SEARCH_PAGE_SIZE + 1
+    assert len(entries) == SEARCH_PAGE_SIZE + 1
     assert entries[-1].key == "/Accounting/final invoice.pdf"
     assert entries[-1].kind == FindType.DIRECTORY
     assert entries[-1].size == 42
@@ -175,7 +173,7 @@ async def test_search_files_builds_query_and_paginates(make_acc, httpx_mock):
         ".//" + _qname(_SEARCHDAV_NAMESPACE, "firstresult")) == "0"
     assert second_body.findtext(
         ".//" +
-        _qname(_SEARCHDAV_NAMESPACE, "firstresult")) == str(_SEARCH_PAGE_SIZE)
+        _qname(_SEARCHDAV_NAMESPACE, "firstresult")) == str(SEARCH_PAGE_SIZE)
     assert first_body.find(".//" +
                            _qname(_DAV_NAMESPACE, "is-collection")) is not None
     literals = [
@@ -207,7 +205,7 @@ async def test_search_files_returns_none_when_search_is_unavailable(
 async def test_search_files_stops_when_pagination_makes_no_progress(
         make_acc, httpx_mock):
     paths = [(f"/files/user/Documents/item-{index}", False)
-             for index in range(_SEARCH_PAGE_SIZE)]
+             for index in range(SEARCH_PAGE_SIZE)]
     page = _multistatus(paths)
     httpx_mock.add_response(method="SEARCH", status_code=207, content=page)
     httpx_mock.add_response(method="SEARCH", status_code=207, content=page)

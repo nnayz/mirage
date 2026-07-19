@@ -151,8 +151,8 @@ async def test_find_applies_exact_name_depth_and_mtime_after_search(
     assert out == ["/Projects/a.pdf"]
     query = mock_search_files.await_args.args[2]
     assert query.tree == Name("*.pdf")
-    assert query.mtime_min == 100.0
-    assert query.mtime_max == 250.0
+    assert query.modified.lower == 100.0
+    assert query.modified.upper == 250.0
 
 
 @pytest.mark.asyncio
@@ -186,8 +186,8 @@ async def test_find_pushes_size_and_keeps_directories(make_acc,
 
     assert out == ["/Accounting/exact.txt"]
     query = mock_search_files.await_args.args[2]
-    assert query.min_size == 10
-    assert query.max_size == 10
+    assert query.size.lower == 10
+    assert query.size.upper == 10
 
 
 @pytest.mark.asyncio

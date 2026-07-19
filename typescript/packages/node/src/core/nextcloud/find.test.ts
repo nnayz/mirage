@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NextcloudAccessor } from '../../accessor/nextcloud.ts'
 import { find } from './find.ts'
 import { FakeNextcloudOperator, installFakeOperator } from './mock.ts'
-import * as search from './search.ts'
+import * as search from './search/index.ts'
 
-vi.mock('./search.ts', { spy: true })
+vi.mock('./search/index.ts', { spy: true })
 
 const searchFiles = vi.mocked(search.searchFiles)
 

@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Generic, Protocol, TypeVar
+from typing import Protocol
 
 from opendal.exceptions import NotFound
 from opendal.types import EntryMode
@@ -9,13 +9,12 @@ from opendal.types import EntryMode
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
                                                keep, start_basename)
-from mirage.core.nextcloud.search import (FilesSearchQuery, SearchEntry,
-                                          search_files, supports_query)
+from mirage.core.nextcloud.search import (Bounds, FilesSearchQuery,
+                                          SearchEntry, search_files,
+                                          supports_query)
 from mirage.types import FindType, PathSpec
 
 logger = logging.getLogger(__name__)
-
-_Bound = TypeVar("_Bound", int, float)
 
 
 class _EntryMetadata(Protocol):
@@ -31,23 +30,6 @@ class _EntryMetadata(Protocol):
     @property
     def last_modified(self) -> datetime | None:
         ...
-
-
-@dataclass(frozen=True, slots=True)
-class _Range(Generic[_Bound]):
-    lower: _Bound | None
-    upper: _Bound | None
-
-    @property
-    def constrained(self) -> bool:
-        return self.lower is not None or self.upper is not None
-
-    def contains(self, value: _Bound) -> bool:
-        if self.lower is not None and value < self.lower:
-            return False
-        if self.upper is not None and value > self.upper:
-            return False
-        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,8 +86,8 @@ class _Candidate:
 @dataclass(frozen=True, slots=True)
 class _FindCriteria:
     predicate: PredNode
-    size: _Range[int]
-    modified: _Range[float]
+    size: Bounds[int]
+    modified: Bounds[float]
     min_depth: int | None
     max_depth: int | None
 
@@ -116,10 +98,8 @@ class _FindCriteria:
     def search_query(self) -> FilesSearchQuery:
         return FilesSearchQuery(
             tree=self.predicate,
-            min_size=self.size.lower,
-            max_size=self.size.upper,
-            mtime_min=self.modified.lower,
-            mtime_max=self.modified.upper,
+            size=self.size,
+            modified=self.modified,
         )
 
 
@@ -354,8 +334,8 @@ async def find(
     scope = _FindScope.from_path(path)
     criteria = _FindCriteria(
         predicate=predicate,
-        size=_Range[int](lower=min_size, upper=max_size),
-        modified=_Range[float](lower=mtime_min, upper=mtime_max),
+        size=Bounds[int](lower=min_size, upper=max_size),
+        modified=Bounds[float](lower=mtime_min, upper=mtime_max),
         min_depth=mindepth,
         max_depth=maxdepth,
     )
