@@ -81,14 +81,6 @@ jobs:
             data:
               - 'integ/**'
               - 'python/**'
-              - 'typescript/packages/core/src/index.ts'
-              - 'typescript/packages/core/src/types.ts'
-              - 'typescript/packages/node/src/accessor/nextcloud.ts'
-              - 'typescript/packages/node/src/commands/builtin/nextcloud/**'
-              - 'typescript/packages/node/src/core/nextcloud/**'
-              - 'typescript/packages/node/src/ops/nextcloud/**'
-              - 'typescript/packages/node/src/resource/nextcloud/**'
-              - 'typescript/packages/node/src/resource/registry.ts'
               - '.github/workflows/test_integ.yml'
             fuse:
               - 'integ/fuse.py'
@@ -201,6 +193,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      nextcloud:
+        image: nextcloud:30-apache
+        ports:
+          - 8080:80
+        env:
+          SQLITE_DATABASE: nextcloud
+          NEXTCLOUD_ADMIN_USER: admin
+          NEXTCLOUD_ADMIN_PASSWORD: admin123
+          NEXTCLOUD_TRUSTED_DOMAINS: localhost
     env:
       REDIS_URL: redis://localhost:6379/0
       S3_BUCKET: mirage-integ
@@ -208,6 +209,9 @@ jobs:
       S3_REGION: us-east-1
       AWS_ACCESS_KEY_ID: minio
       AWS_SECRET_ACCESS_KEY: minio123
+      NEXTCLOUD_URL: http://localhost:8080/remote.php/dav/files/admin/
+      NEXTCLOUD_USERNAME: admin
+      NEXTCLOUD_PASSWORD: admin123
     steps:
       - uses: actions/checkout@v7
 
@@ -236,6 +240,24 @@ jobs:
       - name: Build mirage-browser
         working-directory: typescript
         run: pnpm --filter @struktoai/mirage-browser build
+
+      - name: Wait for Nextcloud install
+        shell: bash
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/status.php | grep -q '"installed":true'; then
+              echo "Nextcloud is installed"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Nextcloud did not finish installing in time" >&2
+          curl -s http://localhost:8080/status.php || true
+          exit 1
+
+      - name: Run declarative battery on Nextcloud
+        working-directory: integ
+        run: pnpm exec tsx runners/typescript/main.ts --target nextcloud
 
       - name: Start MinIO
         run: |
@@ -723,24 +745,6 @@ jobs:
         working-directory: python
         run: uv sync --all-extras --no-extra camel
 
-      - name: Set up Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 10.32.1
-
-      - name: Install TypeScript dependencies
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile=false
-
-      - name: Build TypeScript Nextcloud packages
-        working-directory: typescript
-        run: pnpm --filter @struktoai/mirage-core build && pnpm --filter @struktoai/mirage-node build
-
       - name: Run dify integ (mock server) and diff against truth
         run: |
           ./python/.venv/bin/python integ/dify.py > /tmp/dify.out
@@ -774,10 +778,6 @@ jobs:
 
       - name: Run declarative battery on nextcloud
         run: ./python/.venv/bin/python integ/runners/python/main.py --target nextcloud
-
-      - name: Run TypeScript declarative battery on nextcloud
-        working-directory: integ
-        run: pnpm exec tsx runners/typescript/main.ts --target nextcloud
 
   integ-fuse:
     needs: changes
