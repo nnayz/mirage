@@ -29,15 +29,8 @@ ElementTree.register_namespace("sd", SEARCHDAV_NAMESPACE)
 
 
 @dataclass(frozen=True, slots=True)
-class SearchName:
-    pattern: str
-    case_insensitive: bool = False
-
-
-@dataclass(frozen=True, slots=True)
 class FilesSearchQuery:
-    names: tuple[SearchName, ...] = ()
-    kind: str | None = None
+    tree: PredNode
     min_size: int | None = None
     max_size: int | None = None
     mtime_min: float | None = None
@@ -147,49 +140,48 @@ def _glob_to_like(pattern: str) -> str:
     return "".join(translated)
 
 
-def build_dav_condition(node: PredNode) -> ElementTree.Element | None:
+def _compile_predicate(
+        node: PredNode) -> tuple[ElementTree.Element | None, bool]:
     if isinstance(node, TrueNode):
-        return None
+        return None, True
     if isinstance(node, Name):
         if "[" in node.pattern:
-            return None
-        return _name_condition(
-            SearchName(pattern=node.pattern, case_insensitive=node.icase))
+            return None, False
+        return _name_condition(node), True
     if isinstance(node, Type):
         if node.kind == "d":
-            return _is_collection()
+            return _is_collection(), True
         if node.kind == "f":
-            return _not_collection()
-        return None
+            return _not_collection(), True
+        return None, False
     if isinstance(node, Not):
-        inner = build_dav_condition(node.kid)
-        if inner is None:
-            return None
-        el = ElementTree.Element(_dav("not"))
-        el.append(inner)
-        return el
-    if isinstance(node, And):
-        kids = [
-            c for c in (build_dav_condition(k) for k in node.kids)
-            if c is not None
-        ]
-        if not kids:
-            return None
-        return _combine("and", kids)
-    if isinstance(node, Or):
-        kids = [
-            c for c in (build_dav_condition(k) for k in node.kids)
-            if c is not None
-        ]
-        if not kids:
-            return None
-        return _combine("or", kids)
-    return None
+        condition, supported = _compile_predicate(node.kid)
+        if not supported or condition is None:
+            return None, False
+        element = ElementTree.Element(_dav("not"))
+        element.append(condition)
+        return element, True
+    if isinstance(node, (And, Or)):
+        conditions: list[ElementTree.Element] = []
+        for kid in node.kids:
+            condition, supported = _compile_predicate(kid)
+            if not supported:
+                return None, False
+            if condition is None:
+                if isinstance(node, Or):
+                    return None, False
+                continue
+            conditions.append(condition)
+        if not conditions:
+            return None, isinstance(node, And)
+        operation = "and" if isinstance(node, And) else "or"
+        return _combine(operation, conditions), True
+    return None, False
 
 
-def _name_condition(name: SearchName) -> ElementTree.Element:
+def _name_condition(name: Name) -> ElementTree.Element:
     has_wildcard = "*" in name.pattern or "?" in name.pattern
-    operation = "like" if has_wildcard or name.case_insensitive else "eq"
+    operation = "like" if has_wildcard or name.icase else "eq"
     value = _glob_to_like(
         name.pattern) if operation == "like" else name.pattern
     return _comparison(operation, DAV_NAMESPACE, "displayname", value)
@@ -210,22 +202,20 @@ def _size_condition(query: FilesSearchQuery) -> ElementTree.Element | None:
     if not bounds:
         return None
     file_bounds = _combine("and", [_not_collection(), *bounds])
-    return _combine("or", [_is_collection(), file_bounds])
+    includes_zero = (query.min_size is None or query.min_size
+                     <= 0) and (query.max_size is None or query.max_size >= 0)
+    if includes_zero:
+        return _combine("or", [_is_collection(), file_bounds])
+    return file_bounds
 
 
-def _where_condition(
-        query: FilesSearchQuery,
-        extra_condition: ElementTree.Element | None = None
-) -> ElementTree.Element:
+def _where_condition(query: FilesSearchQuery) -> ElementTree.Element | None:
+    predicate, supported = _compile_predicate(query.tree)
+    if not supported:
+        return None
     conditions: list[ElementTree.Element] = []
-    if extra_condition is not None:
-        conditions.append(extra_condition)
-    else:
-        conditions.extend(_name_condition(name) for name in query.names)
-    if query.kind == "d":
-        conditions.append(_is_collection())
-    elif query.kind == "f":
-        conditions.append(_not_collection())
+    if predicate is not None:
+        conditions.append(predicate)
     size_condition = _size_condition(query)
     if size_condition is not None:
         conditions.append(size_condition)
@@ -237,9 +227,11 @@ def _where_condition(
         conditions.append(
             _comparison("lte", DAV_NAMESPACE, "getlastmodified",
                         math.ceil(query.mtime_max)))
-    if not conditions:
-        raise ValueError("Nextcloud Files Search requires a predicate")
-    return _combine("and", conditions)
+    return _combine("and", conditions) if conditions else None
+
+
+def supports_query(query: FilesSearchQuery) -> bool:
+    return _where_condition(query) is not None
 
 
 def _order(parent: ElementTree.Element, namespace: str,
@@ -249,11 +241,8 @@ def _order(parent: ElementTree.Element, namespace: str,
     ElementTree.SubElement(order, _dav("ascending"))
 
 
-def _request_body(target: _SearchTarget,
-                  path: PathSpec,
-                  query: FilesSearchQuery,
-                  offset: int,
-                  extra_condition: ElementTree.Element | None = None) -> bytes:
+def _request_body(target: _SearchTarget, path: PathSpec,
+                  query: FilesSearchQuery, offset: int) -> bytes:
     root = ElementTree.Element(_dav("searchrequest"))
     basic = ElementTree.SubElement(root, _dav("basicsearch"))
     select = ElementTree.SubElement(basic, _dav("select"))
@@ -270,7 +259,10 @@ def _request_body(target: _SearchTarget,
     depth = ElementTree.SubElement(scope, _dav("depth"))
     depth.text = "infinity"
     where = ElementTree.SubElement(basic, _dav("where"))
-    where.append(_where_condition(query, extra_condition))
+    condition = _where_condition(query)
+    if condition is None:
+        raise ValueError("Nextcloud Files Search requires a supported query")
+    where.append(condition)
     orderby = ElementTree.SubElement(basic, _dav("orderby"))
     _order(orderby, DAV_NAMESPACE, "displayname")
     _order(orderby, DAV_NAMESPACE, "getlastmodified")
@@ -403,8 +395,9 @@ async def search_files(
     accessor: NextcloudAccessor,
     path: PathSpec,
     query: FilesSearchQuery,
-    extra_condition: ElementTree.Element | None = None,
 ) -> list[SearchEntry] | None:
+    if not supports_query(query):
+        return None
     target = _search_target(accessor.config.url)
     if target is None:
         logger.debug("Nextcloud Files Search unavailable for URL %s",
@@ -422,8 +415,7 @@ async def search_files(
             response = await client.request(
                 "SEARCH",
                 target.endpoint,
-                content=_request_body(target, path, query, offset,
-                                      extra_condition),
+                content=_request_body(target, path, query, offset),
                 headers={
                     "Accept": "application/xml",
                     "Content-Type": "text/xml; charset=utf-8",

@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from mirage.commands.builtin.find_eval import And, Name, Path, Type
 from mirage.core.nextcloud.find import find
 from mirage.core.nextcloud.search import SearchEntry
 from mirage.types import PathSpec
@@ -108,8 +109,7 @@ async def test_find_uses_server_search_for_supported_name_and_type(
 
     assert out == ["/Documents/Invoices"]
     query = mock_search_files.await_args.args[2]
-    assert query.names[0].pattern == "Invoices"
-    assert query.kind == "d"
+    assert query.tree == And([Name("Invoices"), Type("d")])
 
 
 @pytest.mark.asyncio
@@ -150,6 +150,7 @@ async def test_find_applies_exact_name_depth_and_mtime_after_search(
 
     assert out == ["/Projects/a.pdf"]
     query = mock_search_files.await_args.args[2]
+    assert query.tree == Name("*.pdf")
     assert query.mtime_min == 100.0
     assert query.mtime_max == 250.0
 
@@ -183,11 +184,7 @@ async def test_find_pushes_size_and_keeps_directories(make_acc,
                      min_size=10,
                      max_size=10)
 
-    assert out == [
-        "/Accounting",
-        "/Accounting/exact.txt",
-        "/Accounting/folder",
-    ]
+    assert out == ["/Accounting/exact.txt"]
     query = mock_search_files.await_args.args[2]
     assert query.min_size == 10
     assert query.max_size == 10
@@ -251,37 +248,20 @@ async def test_find_falls_back_for_bracket_name_glob(make_acc,
 
 
 @pytest.mark.asyncio
-async def test_find_uses_server_for_supported_name_with_unsupported_path(
+async def test_find_falls_back_for_mixed_supported_and_unsupported_predicates(
         make_acc, mock_search_files):
-    acc = make_acc({"Projects/existing.txt": b"x"})
-    acc._fake.scan = AsyncMock(
-        side_effect=AssertionError("recursive scan should not run"))
-    mock_search_files.return_value = [
-        SearchEntry(key="/Projects/a.pdf",
-                    name="a.pdf",
-                    kind="f",
-                    size=5,
-                    modified=200.0),
-        SearchEntry(key="/Projects/deep/b.pdf",
-                    name="b.pdf",
-                    kind="f",
-                    size=5,
-                    modified=200.0),
-        SearchEntry(key="/Projects/c.pdf",
-                    name="c.pdf",
-                    kind="f",
-                    size=5,
-                    modified=200.0),
-    ]
+    acc = make_acc({
+        "Projects/a.pdf": b"a",
+        "Projects/deep/b.pdf": b"b",
+        "Projects/deep/c.txt": b"c",
+    })
 
     out = await find(acc,
                      PathSpec.from_str_path("/Projects"),
-                     name="*.pdf",
-                     path_pattern="*/deep/*")
+                     tree=And([Name("*.pdf"), Path("*/deep/*")]))
 
     assert out == ["/Projects/deep/b.pdf"]
-    query = mock_search_files.await_args.args[2]
-    assert query.names[0].pattern == "*.pdf"
+    mock_search_files.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Protocol
 
@@ -5,13 +6,10 @@ from opendal.exceptions import NotFound
 from opendal.types import EntryMode
 
 from mirage.accessor.nextcloud import NextcloudAccessor
-from mirage.commands.builtin.find_eval import (And, FindEntry, Name, PredNode,
-                                               TrueNode, Type, build_tree,
-                                               emit_start_path, keep,
-                                               start_basename)
+from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
+                                               keep, start_basename)
 from mirage.core.nextcloud.search import (FilesSearchQuery, SearchEntry,
-                                          SearchName, build_dav_condition,
-                                          search_files)
+                                          search_files, supports_query)
 from mirage.types import PathSpec
 
 
@@ -30,149 +28,121 @@ class _Metadata(Protocol):
         ...
 
 
-def _gather_server_predicates(
-    node: PredNode,
-    names: list[SearchName],
-    kinds: set[str],
-) -> None:
-    if isinstance(node, TrueNode):
-        return
-    if isinstance(node, Name):
-        if "[" in node.pattern:
-            return
-        names.append(
-            SearchName(pattern=node.pattern, case_insensitive=node.icase))
-        return
-    if isinstance(node, Type):
-        if node.kind in ("d", "f"):
-            kinds.add(node.kind)
-        return
-    if isinstance(node, And):
-        for kid in node.kids:
-            _gather_server_predicates(kid, names, kinds)
-        return
-    # Path, Empty, Not, Or and other nodes are not pushed to the server
-    # query; the full tree is still applied client-side in _matches/keep.
-    return
+@dataclass(frozen=True, slots=True)
+class _Entry:
+    key: str
+    name: str
+    kind: str
+    size: int | None
+    modified: float | None
+    is_empty: bool | None = None
 
 
-def _server_query(
-    tree: PredNode,
-    min_size: int | None,
-    max_size: int | None,
-    mtime_min: float | None,
-    mtime_max: float | None,
-) -> FilesSearchQuery | None:
-    names: list[SearchName] = []
-    kinds: set[str] = set()
-    _gather_server_predicates(tree, names, kinds)
-    if len(kinds) > 1:
-        return None
-    kind = next(iter(kinds)) if kinds else None
-    if (not names and kind is None and min_size is None and max_size is None
-            and mtime_min is None and mtime_max is None):
-        return None
-    return FilesSearchQuery(
-        names=tuple(names),
-        kind=kind,
-        min_size=min_size,
-        max_size=max_size,
-        mtime_min=mtime_min,
-        mtime_max=mtime_max,
-    )
+@dataclass(frozen=True, slots=True)
+class _FindOptions:
+    tree: PredNode
+    min_size: int | None
+    max_size: int | None
+    mtime_min: float | None
+    mtime_max: float | None
+    maxdepth: int | None
+    mindepth: int | None
 
 
-def _metadata_entry(key: str, name: str, metadata: _Metadata) -> SearchEntry:
-    is_dir = getattr(metadata, "mode", None) == EntryMode.Dir
-    last_modified = getattr(metadata, "last_modified", None)
-    modified = last_modified.timestamp() if last_modified is not None else None
-    return SearchEntry(
+def _base_path(path: PathSpec) -> str:
+    relative = path.mount_path.strip("/")
+    return "/" + relative if relative else "/"
+
+
+def _entry_from_metadata(key: str, name: str, metadata: _Metadata) -> _Entry:
+    is_dir = metadata.mode == EntryMode.Dir
+    modified = (metadata.last_modified.timestamp()
+                if metadata.last_modified is not None else None)
+    return _Entry(
         key=key,
         name=name,
         kind="d" if is_dir else "f",
-        size=getattr(metadata, "content_length", 0) or 0,
+        size=0 if is_dir else metadata.content_length,
         modified=modified,
     )
 
 
-async def _start_entry(
+def _entry_from_search(entry: SearchEntry) -> _Entry:
+    return _Entry(
+        key=entry.key,
+        name=entry.name,
+        kind=entry.kind,
+        size=entry.size,
+        modified=entry.modified,
+    )
+
+
+async def _stat_entry(
     accessor: NextcloudAccessor,
-    base: str,
-    start_name: str,
-) -> SearchEntry | None:
-    op = accessor.operator()
-    if base == "/":
+    key: str,
+    name: str,
+) -> _Entry | None:
+    operator = accessor.operator()
+    if key == "/":
         try:
-            metadata = await op.stat("/")
+            metadata = await operator.stat("/")
         except NotFound:
-            return SearchEntry(key="/",
-                               name=start_name,
-                               kind="d",
-                               size=0,
-                               modified=None)
-        return _metadata_entry("/", start_name, metadata)
-    key = base.strip("/")
+            return _Entry(key="/", name=name, kind="d", size=0, modified=None)
+        return _entry_from_metadata("/", name, metadata)
+    relative = key.strip("/")
     try:
-        metadata = await op.stat(key)
+        metadata = await operator.stat(relative)
     except NotFound:
         try:
-            metadata = await op.stat(key + "/")
+            metadata = await operator.stat(relative + "/")
         except NotFound:
             return None
-    return _metadata_entry(base, start_name, metadata)
+    return _entry_from_metadata(key, name, metadata)
 
 
-def _entry_depth(path: str, base: str) -> int:
-    if path == base:
+def _depth(key: str, base: str) -> int:
+    if key == base:
         return 0
     base_depth = 0 if base == "/" else base.count("/")
-    return path.count("/") - base_depth
+    return key.count("/") - base_depth
 
 
-def _in_scope(path: str, base: str) -> bool:
+def _in_scope(key: str, base: str) -> bool:
     if base == "/":
-        return path.startswith("/")
-    return path == base or path.startswith(base.rstrip("/") + "/")
+        return key.startswith("/")
+    return key == base or key.startswith(base + "/")
 
 
-def _matches(
-    entry: SearchEntry,
-    base: str,
-    tree: PredNode,
-    min_size: int | None,
-    max_size: int | None,
-    mtime_min: float | None,
-    mtime_max: float | None,
-    maxdepth: int | None,
-    mindepth: int | None,
-) -> bool:
+def _matches(entry: _Entry, base: str, options: _FindOptions) -> bool:
     if not _in_scope(entry.key, base):
         raise ValueError(
             f"Nextcloud Files Search out-of-scope path: {entry.key}")
-    depth = _entry_depth(entry.key, base)
-    if maxdepth is not None and depth > maxdepth:
+    depth = _depth(entry.key, base)
+    if options.maxdepth is not None and depth > options.maxdepth:
         return False
-    find_entry = FindEntry(
+    candidate = FindEntry(
         key=entry.key,
         name=entry.name,
         kind=entry.kind,
         depth=depth,
-        is_empty=False if entry.kind == "d" else (entry.size or 0) == 0,
+        is_empty=entry.is_empty,
     )
-    if not keep(find_entry, tree, mindepth):
+    if not keep(candidate, options.tree, options.mindepth):
         return False
-    if entry.kind == "f" and (min_size is not None or max_size is not None):
-        size = entry.size or 0
-        if min_size is not None and size < min_size:
+    if options.min_size is not None or options.max_size is not None:
+        size = 0 if entry.kind == "d" else (entry.size or 0)
+        if options.min_size is not None and size < options.min_size:
             return False
-        if max_size is not None and size > max_size:
+        if options.max_size is not None and size > options.max_size:
             return False
-    if mtime_min is not None or mtime_max is not None:
+    if options.mtime_min is not None or options.mtime_max is not None:
         if entry.modified is None:
             return False
-        if mtime_min is not None and entry.modified < mtime_min:
+        if (options.mtime_min is not None
+                and entry.modified < options.mtime_min):
             return False
-        if mtime_max is not None and entry.modified > mtime_max:
+        if (options.mtime_max is not None
+                and entry.modified > options.mtime_max):
             return False
     return True
 
@@ -180,148 +150,107 @@ def _matches(
 async def _server_find(
     accessor: NextcloudAccessor,
     path: PathSpec,
-    tree: PredNode,
-    min_size: int | None,
-    max_size: int | None,
-    mtime_min: float | None,
-    mtime_max: float | None,
-    maxdepth: int | None,
-    mindepth: int | None,
+    options: _FindOptions,
 ) -> list[str] | None:
-    query = _server_query(tree, min_size, max_size, mtime_min, mtime_max)
-    tree_cond = build_dav_condition(tree)
-    if query is None and tree_cond is None:
+    query = FilesSearchQuery(
+        tree=options.tree,
+        min_size=options.min_size,
+        max_size=options.max_size,
+        mtime_min=options.mtime_min,
+        mtime_max=options.mtime_max,
+    )
+    if not supports_query(query):
         return None
-    base = "/" + path.mount_path.strip("/") if path.mount_path.strip(
-        "/") else "/"
-    start = await _start_entry(accessor, base, start_basename(path))
+    base = _base_path(path)
+    start = await _stat_entry(accessor, base, start_basename(path))
     if start is None:
         return []
     if start.kind != "d":
         return None
-    entries: list[SearchEntry] = [start]
-    if maxdepth != 0:
-        found = await search_files(accessor,
-                                   path,
-                                   query or FilesSearchQuery(),
-                                   extra_condition=tree_cond)
+    entries = {base: start}
+    if options.maxdepth != 0:
+        found = await search_files(accessor, path, query)
         if found is None:
             return None
-        entries.extend(found)
-    unique: dict[str, SearchEntry] = {}
-    for entry in entries:
-        unique.setdefault(entry.key, entry)
-    return sorted(entry.key for entry in unique.values()
-                  if _matches(entry, base, tree, min_size, max_size, mtime_min,
-                              mtime_max, maxdepth, mindepth))
+        for entry in found:
+            entries.setdefault(entry.key, _entry_from_search(entry))
+    return sorted(entry.key for entry in entries.values()
+                  if _matches(entry, base, options))
+
+
+def _parent_entries(key: str, base: str) -> list[_Entry]:
+    parents: list[_Entry] = []
+    parent = key.rsplit("/", 1)[0] or "/"
+    while _in_scope(parent, base):
+        parents.append(
+            _Entry(
+                key=parent,
+                name=parent.rstrip("/").rsplit("/", 1)[-1],
+                kind="d",
+                size=0,
+                modified=None,
+            ))
+        if parent == base:
+            break
+        parent = parent.rsplit("/", 1)[0] or "/"
+    return parents
+
+
+async def _fill_directory_mtime(
+    accessor: NextcloudAccessor,
+    entry: _Entry,
+) -> _Entry:
+    if entry.kind != "d" or entry.modified is not None:
+        return entry
+    found = await _stat_entry(accessor, entry.key, entry.name)
+    return found if found is not None else entry
 
 
 async def _scan_find(
     accessor: NextcloudAccessor,
     path: PathSpec,
-    tree: PredNode,
-    min_size: int | None,
-    max_size: int | None,
-    maxdepth: int | None,
-    mtime_min: float | None,
-    mtime_max: float | None,
-    mindepth: int | None,
+    options: _FindOptions,
 ) -> list[str]:
-    start_name = start_basename(path)
-    target = path.mount_path
-    pfx = target.strip("/")
-    scan_path = pfx + "/" if pfx else "/"
-    base = "/" + pfx if pfx else "/"
-    base_depth = 0 if base == "/" else base.count("/")
-
-    op = accessor.operator()
-    results: list[str] = []
-    seen_dirs: set[str] = set()
-    saw_descendant = False
-    dir_exists = False
+    base = _base_path(path)
+    relative = path.mount_path.strip("/")
+    scan_path = relative + "/" if relative else "/"
+    entries: dict[str, _Entry] = {}
+    nonempty_dirs: set[str] = set()
+    operator = accessor.operator()
     try:
-        async for entry in await op.scan(scan_path):
-            rel = entry.path
-            if not rel:
+        async for raw_entry in await operator.scan(scan_path):
+            raw_key = raw_entry.path
+            if not raw_key:
                 continue
-            meta = entry.metadata
-            is_dir = (rel.endswith("/")
-                      or getattr(meta, "mode", None) == EntryMode.Dir)
-            entry_path = "/" + rel.rstrip("/").lstrip("/")
-            if entry_path == base:
-                dir_exists = True
-                continue
-            saw_descendant = True
-            kind = "d" if is_dir else "f"
-            content_length = getattr(meta, "content_length", 0) or 0
-            last_modified = getattr(meta, "last_modified", None)
-
-            file_entries: list[tuple[str, str]] = [(entry_path, kind)]
-            if not is_dir:
-                parent = entry_path.rsplit("/", 1)[0] or "/"
-                while parent and parent != base and parent != "/":
-                    if parent not in seen_dirs:
-                        seen_dirs.add(parent)
-                        file_entries.append((parent, "d"))
-                    parent = parent.rsplit("/", 1)[0] or "/"
-
-            for entry_key, entry_kind in file_entries:
-                entry_name = entry_key.rsplit("/", 1)[-1]
-                depth = entry_key.count("/") - base_depth
-                if maxdepth is not None and depth > maxdepth:
-                    continue
-                find_entry = FindEntry(
-                    key=entry_key,
-                    name=entry_name,
-                    kind=entry_kind,
-                    depth=depth,
-                    is_empty=False
-                    if entry_kind == "d" else content_length == 0,
-                )
-                if not keep(find_entry, tree, mindepth):
-                    continue
-
-                if min_size is not None or max_size is not None:
-                    size = content_length if entry_kind == "f" else 0
-                    if min_size is not None and size < min_size:
-                        continue
-                    if max_size is not None and size > max_size:
-                        continue
-
-                if mtime_min is not None or mtime_max is not None:
-                    if last_modified is None:
-                        continue
-                    modified = last_modified.timestamp()
-                    if mtime_min is not None and modified < mtime_min:
-                        continue
-                    if mtime_max is not None and modified > mtime_max:
-                        continue
-
-                results.append(entry_key)
-    except NotFound:
-        return []
-    if saw_descendant or dir_exists:
-        if mtime_min is not None or mtime_max is not None:
-            start = await _start_entry(accessor, base, start_name)
-            if (start is not None
-                    and _matches(start, base, tree, min_size, max_size,
-                                 mtime_min, mtime_max, maxdepth, mindepth)):
-                results.append(base)
-        else:
-            emit_start_path(
-                results,
-                base,
-                start_name,
-                kind="d",
-                is_empty=False,
-                exists=True,
-                tree=tree,
-                maxdepth=maxdepth,
-                mindepth=mindepth,
-                min_size=min_size,
-                max_size=max_size,
+            key = "/" + raw_key.rstrip("/").lstrip("/")
+            entry = _entry_from_metadata(
+                key,
+                key.rsplit("/", 1)[-1],
+                raw_entry.metadata,
             )
-    return sorted(set(results))
+            entries[key] = entry
+            for parent in _parent_entries(key, base):
+                nonempty_dirs.add(parent.key)
+                entries.setdefault(parent.key, parent)
+    except NotFound:
+        pass
+    start = await _stat_entry(accessor, base, start_basename(path))
+    if start is None:
+        return []
+    entries[base] = start
+    need_mtime = (options.mtime_min is not None
+                  or options.mtime_max is not None)
+    results: list[str] = []
+    for key in sorted(entries):
+        entry = entries[key]
+        if need_mtime:
+            entry = await _fill_directory_mtime(accessor, entry)
+        is_empty = ((entry.size or 0) == 0
+                    if entry.kind == "f" else key not in nonempty_dirs)
+        entry = replace(entry, is_empty=is_empty)
+        if _matches(entry, base, options):
+            results.append(key)
+    return results
 
 
 async def find(
@@ -342,8 +271,6 @@ async def find(
     empty: bool = False,
     tree: PredNode | None = None,
 ) -> list[str]:
-    if isinstance(path, str):
-        path = PathSpec.from_str_path(path)
     predicate = tree if tree is not None else build_tree(
         name=name,
         iname=iname,
@@ -353,27 +280,16 @@ async def find(
         or_names=or_names,
         empty=empty,
     )
-    server_results = await _server_find(
-        accessor,
-        path,
-        predicate,
-        min_size,
-        max_size,
-        mtime_min,
-        mtime_max,
-        maxdepth,
-        mindepth,
+    options = _FindOptions(
+        tree=predicate,
+        min_size=min_size,
+        max_size=max_size,
+        mtime_min=mtime_min,
+        mtime_max=mtime_max,
+        maxdepth=maxdepth,
+        mindepth=mindepth,
     )
+    server_results = await _server_find(accessor, path, options)
     if server_results is not None:
         return server_results
-    return await _scan_find(
-        accessor,
-        path,
-        predicate,
-        min_size,
-        max_size,
-        maxdepth,
-        mtime_min,
-        mtime_max,
-        mindepth,
-    )
+    return await _scan_find(accessor, path, options)

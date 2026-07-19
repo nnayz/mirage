@@ -13,6 +13,11 @@ example.parquet
 /nc/data/example.json
 /nc/data/example.jsonl
 
+# ---- Files Search pushdown (recursive scan disabled) ----
+=== search_name_pushdown ===
+=== search_size_pushdown ===
+=== search_mtime_pushdown ===
+
 # ---- stat / wc ----
 15533 /nc/data/example.json
 5766 /nc/data/example.jsonl
