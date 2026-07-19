@@ -147,8 +147,8 @@ def _set_cat_safeguard(ws: Workspace, max_lines: int) -> None:
 
 
 async def main() -> None:
-    config = NextcloudConfig(url=URL, username=USERNAME, password=PASSWORD)
-    resource = NextcloudResource(config)
+    resource = NextcloudResource(
+        NextcloudConfig(url=URL, username=USERNAME, password=PASSWORD))
     ws = Workspace({MOUNT: resource}, mode=MountMode.WRITE)
     await _seed(ws)
     _set_cat_safeguard(ws, max_lines=20)
