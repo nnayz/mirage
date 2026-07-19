@@ -10,6 +10,7 @@
       "disk",
       "dropbox",
       "gdrive",
+      "nextcloud",
       "ram",
       "redis",
       "s3",

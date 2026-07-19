@@ -17,6 +17,7 @@
       "hf_datasets",
       "hf_models",
       "hf_spaces",
+      "nextcloud",
       "ram",
       "redis",
       "s3",
