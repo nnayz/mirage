@@ -10,7 +10,7 @@ from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
                                                keep, start_basename)
 from mirage.core.nextcloud.search import (FilesSearchQuery, SearchEntry,
                                           search_files, supports_query)
-from mirage.types import PathSpec
+from mirage.types import FindType, PathSpec
 
 
 class _Metadata(Protocol):
@@ -32,7 +32,7 @@ class _Metadata(Protocol):
 class _Entry:
     key: str
     name: str
-    kind: str
+    kind: FindType
     size: int | None
     modified: float | None
     is_empty: bool | None = None
@@ -61,7 +61,7 @@ def _entry_from_metadata(key: str, name: str, metadata: _Metadata) -> _Entry:
     return _Entry(
         key=key,
         name=name,
-        kind="d" if is_dir else "f",
+        kind=FindType.DIRECTORY if is_dir else FindType.FILE,
         size=0 if is_dir else metadata.content_length,
         modified=modified,
     )
@@ -87,7 +87,11 @@ async def _stat_entry(
         try:
             metadata = await operator.stat("/")
         except NotFound:
-            return _Entry(key="/", name=name, kind="d", size=0, modified=None)
+            return _Entry(key="/",
+                          name=name,
+                          kind=FindType.DIRECTORY,
+                          size=0,
+                          modified=None)
         return _entry_from_metadata("/", name, metadata)
     relative = key.strip("/")
     try:
@@ -130,7 +134,7 @@ def _matches(entry: _Entry, base: str, options: _FindOptions) -> bool:
     if not keep(candidate, options.tree, options.mindepth):
         return False
     if options.min_size is not None or options.max_size is not None:
-        size = 0 if entry.kind == "d" else (entry.size or 0)
+        size = (0 if entry.kind == FindType.DIRECTORY else (entry.size or 0))
         if options.min_size is not None and size < options.min_size:
             return False
         if options.max_size is not None and size > options.max_size:
@@ -165,7 +169,7 @@ async def _server_find(
     start = await _stat_entry(accessor, base, start_basename(path))
     if start is None:
         return []
-    if start.kind != "d":
+    if start.kind != FindType.DIRECTORY:
         return None
     entries = {base: start}
     if options.maxdepth != 0:
@@ -186,7 +190,7 @@ def _parent_entries(key: str, base: str) -> list[_Entry]:
             _Entry(
                 key=parent,
                 name=parent.rstrip("/").rsplit("/", 1)[-1],
-                kind="d",
+                kind=FindType.DIRECTORY,
                 size=0,
                 modified=None,
             ))
@@ -200,7 +204,7 @@ async def _fill_directory_mtime(
     accessor: NextcloudAccessor,
     entry: _Entry,
 ) -> _Entry:
-    if entry.kind != "d" or entry.modified is not None:
+    if entry.kind != FindType.DIRECTORY or entry.modified is not None:
         return entry
     found = await _stat_entry(accessor, entry.key, entry.name)
     return found if found is not None else entry
@@ -245,8 +249,8 @@ async def _scan_find(
         entry = entries[key]
         if need_mtime:
             entry = await _fill_directory_mtime(accessor, entry)
-        is_empty = ((entry.size or 0) == 0
-                    if entry.kind == "f" else key not in nonempty_dirs)
+        is_empty = ((entry.size or 0) == 0 if entry.kind == FindType.FILE else
+                    key not in nonempty_dirs)
         entry = replace(entry, is_empty=is_empty)
         if _matches(entry, base, options):
             results.append(key)

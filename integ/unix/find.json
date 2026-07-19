@@ -309,6 +309,19 @@
       }
     },
     {
+      "id": "find_nextcloud_search_fields",
+      "seq": 139,
+      "targets": [
+        "nextcloud"
+      ],
+      "command": "find /data -type f -name \"*.txt\" -size +10c -mtime -1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/a.txt\n/data/anchors.txt\n/data/c.txt\n/data/disptree/x.txt\n/data/fields.txt\n/data/mixed.txt\n/data/no_nl.txt\n/data/numbers.txt\n/data/poem.txt\n/data/prefix_dup.txt\n/data/repeats.txt\n/data/sections.txt\n/data/sorted_a.txt\n/data/sorted_b.txt\n/data/sorted_c.txt\n/data/spaced.txt\n/data/sub/nested.txt\n/data/tabbed.txt\n",
+        "stderr": ""
+      }
+    },
+    {
       "id": "find_recurse",
       "seq": 140,
       "targets": [

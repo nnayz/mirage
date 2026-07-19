@@ -6,14 +6,16 @@ import pytest
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.commands.builtin.find_eval import (And, Name, Not, Or, Path,
                                                TrueNode, Type)
-from mirage.core.nextcloud.search import (DAV_NAMESPACE, OWNCLOUD_NAMESPACE,
-                                          PAGE_SIZE, SEARCHDAV_NAMESPACE,
-                                          FilesSearchQuery, _glob_to_like,
-                                          _relative_path, _request_body,
-                                          _search_target, search_files,
-                                          supports_query)
+from mirage.core.nextcloud.search import (_SEARCH_PAGE_SIZE, FilesSearchQuery,
+                                          _glob_to_like, _relative_path,
+                                          _request_body, _search_target,
+                                          search_files, supports_query)
 from mirage.resource.nextcloud import NextcloudConfig
-from mirage.types import PathSpec
+from mirage.types import FindType, PathSpec
+
+_DAV_NAMESPACE = "DAV:"
+_OWNCLOUD_NAMESPACE = "http://owncloud.org/ns"
+_SEARCHDAV_NAMESPACE = "https://github.com/icewind1991/SearchDAV/ns"
 
 
 def _qname(namespace: str, name: str) -> str:
@@ -21,33 +23,34 @@ def _qname(namespace: str, name: str) -> str:
 
 
 def _multistatus(paths: list[tuple[str, bool]]) -> bytes:
-    root = ElementTree.Element(_qname(DAV_NAMESPACE, "multistatus"))
+    root = ElementTree.Element(_qname(_DAV_NAMESPACE, "multistatus"))
     for href_value, is_dir in paths:
         response = ElementTree.SubElement(root,
-                                          _qname(DAV_NAMESPACE, "response"))
-        href = ElementTree.SubElement(response, _qname(DAV_NAMESPACE, "href"))
+                                          _qname(_DAV_NAMESPACE, "response"))
+        href = ElementTree.SubElement(response, _qname(_DAV_NAMESPACE, "href"))
         href.text = href_value
         propstat = ElementTree.SubElement(response,
-                                          _qname(DAV_NAMESPACE, "propstat"))
-        prop = ElementTree.SubElement(propstat, _qname(DAV_NAMESPACE, "prop"))
+                                          _qname(_DAV_NAMESPACE, "propstat"))
+        prop = ElementTree.SubElement(propstat, _qname(_DAV_NAMESPACE, "prop"))
         displayname = ElementTree.SubElement(
-            prop, _qname(DAV_NAMESPACE, "displayname"))
+            prop, _qname(_DAV_NAMESPACE, "displayname"))
         displayname.text = href_value.rstrip("/").rsplit("/", 1)[-1]
         resource_type = ElementTree.SubElement(
-            prop, _qname(DAV_NAMESPACE, "resourcetype"))
+            prop, _qname(_DAV_NAMESPACE, "resourcetype"))
         if is_dir:
             ElementTree.SubElement(resource_type,
-                                   _qname(DAV_NAMESPACE, "collection"))
+                                   _qname(_DAV_NAMESPACE, "collection"))
         content_length = ElementTree.SubElement(
-            prop, _qname(DAV_NAMESPACE, "getcontentlength"))
+            prop, _qname(_DAV_NAMESPACE, "getcontentlength"))
         content_length.text = "42"
-        size = ElementTree.SubElement(prop, _qname(OWNCLOUD_NAMESPACE, "size"))
+        size = ElementTree.SubElement(prop, _qname(_OWNCLOUD_NAMESPACE,
+                                                   "size"))
         size.text = "42"
         modified = ElementTree.SubElement(
-            prop, _qname(DAV_NAMESPACE, "getlastmodified"))
+            prop, _qname(_DAV_NAMESPACE, "getlastmodified"))
         modified.text = "Sat, 11 Jul 2026 12:00:00 GMT"
         status = ElementTree.SubElement(propstat,
-                                        _qname(DAV_NAMESPACE, "status"))
+                                        _qname(_DAV_NAMESPACE, "status"))
         status.text = "HTTP/1.1 200 OK"
     return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
 
@@ -88,8 +91,8 @@ def test_scope_preserves_spaces_unicode_and_xml_escapes_ampersand():
             FilesSearchQuery(tree=Name("Invoices")),
             0,
         ))
-    assert body.findtext(".//" + _qname(DAV_NAMESPACE, "scope") + "/" +
-                         _qname(DAV_NAMESPACE, "href")
+    assert body.findtext(".//" + _qname(_DAV_NAMESPACE, "scope") + "/" +
+                         _qname(_DAV_NAMESPACE, "href")
                          ) == "/files/alice/team docs/My Documents/税 & VAT"
 
 
@@ -124,15 +127,15 @@ def test_positive_size_query_excludes_directories():
             FilesSearchQuery(tree=TrueNode(), min_size=10),
             0,
         ))
-    where = body.find(".//" + _qname(DAV_NAMESPACE, "where"))
+    where = body.find(".//" + _qname(_DAV_NAMESPACE, "where"))
     assert where is not None
-    assert where.find("./" + _qname(DAV_NAMESPACE, "or")) is None
+    assert where.find("./" + _qname(_DAV_NAMESPACE, "or")) is None
 
 
 @pytest.mark.asyncio
 async def test_search_files_builds_query_and_paginates(make_acc, httpx_mock):
     first_paths = [(f"/remote.php/dav/files/user/Accounting/item-{index}.pdf",
-                    True) for index in range(PAGE_SIZE)]
+                    True) for index in range(_SEARCH_PAGE_SIZE)]
     second_paths = [("/files/user/Accounting/final%20invoice.pdf", True)]
     httpx_mock.add_response(method="SEARCH",
                             status_code=207,
@@ -153,9 +156,9 @@ async def test_search_files_builds_query_and_paginates(make_acc, httpx_mock):
                                  PathSpec.from_str_path("/Accounting"), query)
 
     assert entries is not None
-    assert len(entries) == PAGE_SIZE + 1
+    assert len(entries) == _SEARCH_PAGE_SIZE + 1
     assert entries[-1].key == "/Accounting/final invoice.pdf"
-    assert entries[-1].kind == "d"
+    assert entries[-1].kind == FindType.DIRECTORY
     assert entries[-1].size == 42
     requests = httpx_mock.get_requests()
     assert len(requests) == 2
@@ -166,18 +169,19 @@ async def test_search_files_builds_query_and_paginates(make_acc, httpx_mock):
     first_body = ElementTree.fromstring(requests[0].content)
     second_body = ElementTree.fromstring(requests[1].content)
     assert first_body.findtext(
-        ".//" + _qname(DAV_NAMESPACE, "scope") + "/" +
-        _qname(DAV_NAMESPACE, "href")) == "/files/user/Accounting"
+        ".//" + _qname(_DAV_NAMESPACE, "scope") + "/" +
+        _qname(_DAV_NAMESPACE, "href")) == "/files/user/Accounting"
     assert first_body.findtext(
-        ".//" + _qname(SEARCHDAV_NAMESPACE, "firstresult")) == "0"
+        ".//" + _qname(_SEARCHDAV_NAMESPACE, "firstresult")) == "0"
     assert second_body.findtext(
-        ".//" + _qname(SEARCHDAV_NAMESPACE, "firstresult")) == str(PAGE_SIZE)
+        ".//" +
+        _qname(_SEARCHDAV_NAMESPACE, "firstresult")) == str(_SEARCH_PAGE_SIZE)
     assert first_body.find(".//" +
-                           _qname(DAV_NAMESPACE, "is-collection")) is not None
+                           _qname(_DAV_NAMESPACE, "is-collection")) is not None
     literals = [
         element.text
         for element in first_body.findall(".//" +
-                                          _qname(DAV_NAMESPACE, "literal"))
+                                          _qname(_DAV_NAMESPACE, "literal"))
     ]
     assert "%.pdf" in literals
     assert "10" in literals
@@ -203,7 +207,7 @@ async def test_search_files_returns_none_when_search_is_unavailable(
 async def test_search_files_stops_when_pagination_makes_no_progress(
         make_acc, httpx_mock):
     paths = [(f"/files/user/Documents/item-{index}", False)
-             for index in range(PAGE_SIZE)]
+             for index in range(_SEARCH_PAGE_SIZE)]
     page = _multistatus(paths)
     httpx_mock.add_response(method="SEARCH", status_code=207, content=page)
     httpx_mock.add_response(method="SEARCH", status_code=207, content=page)
@@ -246,8 +250,8 @@ async def test_search_files_rebases_configured_subroot(httpx_mock):
     request = httpx_mock.get_requests()[0]
     body = ElementTree.fromstring(request.content)
     assert body.findtext(
-        ".//" + _qname(DAV_NAMESPACE, "scope") + "/" +
-        _qname(DAV_NAMESPACE, "href")) == "/files/alice/team docs/Reports"
+        ".//" + _qname(_DAV_NAMESPACE, "scope") + "/" +
+        _qname(_DAV_NAMESPACE, "href")) == "/files/alice/team docs/Reports"
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ import pytest
 from mirage.commands.builtin.find_eval import And, Name, Path, Type
 from mirage.core.nextcloud.find import find
 from mirage.core.nextcloud.search import SearchEntry
-from mirage.types import PathSpec
+from mirage.types import FindType, PathSpec
 
 
 @pytest.fixture(autouse=True)
@@ -87,17 +87,17 @@ async def test_find_uses_server_search_for_supported_name_and_type(
     mock_search_files.return_value = [
         SearchEntry(key="/Documents/Invoices",
                     name="Invoices",
-                    kind="d",
+                    kind=FindType.DIRECTORY,
                     size=0,
                     modified=100.0),
         SearchEntry(key="/Documents/invoices",
                     name="invoices",
-                    kind="d",
+                    kind=FindType.DIRECTORY,
                     size=0,
                     modified=100.0),
         SearchEntry(key="/Documents/Invoices-old",
                     name="Invoices-old",
-                    kind="d",
+                    kind=FindType.DIRECTORY,
                     size=0,
                     modified=100.0),
     ]
@@ -121,22 +121,22 @@ async def test_find_applies_exact_name_depth_and_mtime_after_search(
     mock_search_files.return_value = [
         SearchEntry(key="/Projects/a.pdf",
                     name="a.pdf",
-                    kind="f",
+                    kind=FindType.FILE,
                     size=5,
                     modified=200.0),
         SearchEntry(key="/Projects/a.PDF",
                     name="a.PDF",
-                    kind="f",
+                    kind=FindType.FILE,
                     size=5,
                     modified=200.0),
         SearchEntry(key="/Projects/old.pdf",
                     name="old.pdf",
-                    kind="f",
+                    kind=FindType.FILE,
                     size=5,
                     modified=50.0),
         SearchEntry(key="/Projects/deep/b.pdf",
                     name="b.pdf",
-                    kind="f",
+                    kind=FindType.FILE,
                     size=5,
                     modified=200.0),
     ]
@@ -164,17 +164,17 @@ async def test_find_pushes_size_and_keeps_directories(make_acc,
     mock_search_files.return_value = [
         SearchEntry(key="/Accounting/folder",
                     name="folder",
-                    kind="d",
+                    kind=FindType.DIRECTORY,
                     size=100,
                     modified=200.0),
         SearchEntry(key="/Accounting/small.txt",
                     name="small.txt",
-                    kind="f",
+                    kind=FindType.FILE,
                     size=5,
                     modified=200.0),
         SearchEntry(key="/Accounting/exact.txt",
                     name="exact.txt",
-                    kind="f",
+                    kind=FindType.FILE,
                     size=10,
                     modified=200.0),
     ]
@@ -203,7 +203,7 @@ async def test_find_mtime_root_semantics_match_scan_fallback(
     mock_search_files.return_value = [
         SearchEntry(key="/Accounting/report.pdf",
                     name="report.pdf",
-                    kind="f",
+                    kind=FindType.FILE,
                     size=6,
                     modified=100.0)
     ]

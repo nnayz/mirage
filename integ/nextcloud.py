@@ -15,13 +15,10 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Any
 
-import opendal
 from cases import run_not_found
 
 from mirage import MountMode, Workspace
-from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.resource.nextcloud import NextcloudConfig, NextcloudResource
 from mirage.types import CommandSafeguard
 
@@ -112,30 +109,6 @@ STREAMING_CASES: list[tuple[str, str]] = [
     ("cat_wc_full", "cat {m}/data/example.jsonl | wc -l"),
 ]
 
-SEARCH_CASES: list[tuple[str, str]] = [
-    ("search_name_pushdown", "find {m}/ -name '*.json'"),
-    ("search_size_pushdown", "find {m}/data -type f -size +10000c | sort"),
-    ("search_mtime_pushdown", "find {m}/data -type f -mtime -1 | sort"),
-]
-
-
-class _SearchOnlyOperator:
-
-    def __init__(self, operator: opendal.AsyncOperator) -> None:
-        self._operator = operator
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._operator, name)
-
-    async def scan(self, path: str) -> None:
-        raise AssertionError(f"recursive scan used for {path}")
-
-
-class _SearchOnlyAccessor(NextcloudAccessor):
-
-    def operator(self) -> _SearchOnlyOperator:
-        return _SearchOnlyOperator(super().operator())
-
 
 async def _seed(ws: Workspace) -> None:
     await ws.execute(f"rm -rf {MOUNT}/data")
@@ -173,15 +146,6 @@ def _set_cat_safeguard(ws: Workspace, max_lines: int) -> None:
         m.command_safeguards["cat"] = sg
 
 
-async def _run_search_cases(config: NextcloudConfig) -> None:
-    resource = NextcloudResource(config)
-    resource.accessor = _SearchOnlyAccessor(config)
-    workspace = Workspace({MOUNT: resource}, mode=MountMode.WRITE)
-    for name, command in SEARCH_CASES:
-        await _run(workspace, name, command.format(m=MOUNT))
-    await workspace.close()
-
-
 async def main() -> None:
     config = NextcloudConfig(url=URL, username=USERNAME, password=PASSWORD)
     resource = NextcloudResource(config)
@@ -192,7 +156,6 @@ async def main() -> None:
         await _run(ws, name, tmpl.format(m=MOUNT))
     for name, tmpl in STREAMING_CASES:
         await _measure(ws, f"stream:{name}", tmpl.format(m=MOUNT))
-    await _run_search_cases(config)
     await run_not_found(ws, MOUNT)
 
 
