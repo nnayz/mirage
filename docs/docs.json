@@ -76,7 +76,8 @@
               "home/snapshot",
               "home/observer",
               "home/policy-engine",
-              "home/auth"
+              "home/auth",
+              "home/docs-mcp"
             ]
           },
           {
