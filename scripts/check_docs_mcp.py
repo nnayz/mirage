@@ -11,18 +11,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-"""Smoke-test the public docs MCP server at https://docs.mirage.strukto.ai/mcp.
-
-Calls the live, stateless endpoint (no session handshake, no auth) and
-asserts it can still search the docs and retrieve a known page's Markdown.
-Exits non-zero with a message naming the failing step if either breaks.
-"""
-
+import argparse
 import json
 import sys
 import urllib.error
 import urllib.request
 
+DOCS_CONFIG = "docs/docs.json"
 ENDPOINT = "https://docs.mirage.strukto.ai/mcp"
 KNOWN_PAGE = "/home/install.mdx"
 KNOWN_PAGE_HEADING = "# Installation"
@@ -71,6 +66,21 @@ def main() -> int:
     Returns:
         int: process exit code.
     """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config-only", action="store_true")
+    args = parser.parse_args()
+
+    if args.config_only:
+        with open(DOCS_CONFIG, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        options = config.get("contextual", {}).get("options", [])
+        if "mcp" not in options:
+            print(f"FAIL: {DOCS_CONFIG} does not enable contextual MCP",
+                  file=sys.stderr)
+            return 1
+        print(f"OK: {DOCS_CONFIG} enables contextual MCP")
+        return 0
+
     try:
         retrieval = call_tool(
             "query_docs_filesystem_mirage",

@@ -16,7 +16,7 @@ training data.
 This is a different server from the **workspace MCP server** Mirage exposes
 for your own agents (`MirageServer` in Python's
 [Claude Agent SDK integration](/python/agents/claude-agent-sdk) or
-TypeScript's [`createMirageMcpServer`](/typescript/agents/claude-agent-sdk)).
+TypeScript's [`createMirageMcpServer`](/typescript/agents/codex)).
 That one wraps a `Workspace` you construct and exposes `execute_command`,
 `read`, `write`, `edit`, `ls`, and `grep` against your mounts. The docs server
 below wraps this website and exposes only search and read-only retrieval of
@@ -101,6 +101,7 @@ curl -s https://docs.mirage.strukto.ai/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_docs_filesystem_mirage","arguments":{"command":"head -3 /home/install.mdx"}}}'
 ```
 
-`scripts/check_docs_mcp.py` runs this same check in CI against a known page,
-so a broken deployment fails the build instead of surfacing as a silent gap
-for every agent that connects.
+CI validates the candidate `docs/docs.json` configuration on pull requests and
+pushes. A scheduled check runs `scripts/check_docs_mcp.py` against this known
+page in the deployed endpoint, so an outage does not remain a silent gap for
+every agent that connects.
