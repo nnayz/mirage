@@ -160,13 +160,13 @@ jobs:
       - name: Run lancedb integ (embedded, JSON harness)
         env:
           LANCEDB_ENABLED: "1"
-        run: ./python/.venv/bin/python integ/runners/python/main.py --target lancedb
+        run: ./python/.venv/bin/python integ/runners/python/main.py --target lancedb --strict
 
       - name: Run find arg-error battery (SaaS backends, dummy creds, no server)
-        run: ./python/.venv/bin/python integ/runners/python/main.py --facet argerr
+        run: ./python/.venv/bin/python integ/runners/python/main.py --facet argerr --strict
 
       - name: Run curl/wget battery (HTTP fixture started by the adapter)
-        run: ./python/.venv/bin/python integ/runners/python/main.py --facet http
+        run: ./python/.venv/bin/python integ/runners/python/main.py --facet http --strict
 
       - name: Run cross-mount commands (ram -> ram/redis/s3 via moto)
         run: ./python/.venv/bin/python integ/cross_commands.py
@@ -252,7 +252,7 @@ jobs:
 
       - name: Run declarative battery on Nextcloud
         working-directory: integ
-        run: pnpm exec tsx runners/typescript/main.ts --target nextcloud
+        run: pnpm exec tsx runners/typescript/main.ts --target nextcloud --strict
 
       - name: Start MinIO
         run: |
@@ -301,7 +301,7 @@ jobs:
         working-directory: integ
         env:
           NOTION_ENABLED: "1"
-        run: pnpm exec tsx runners/typescript/main.ts --target notion
+        run: pnpm exec tsx runners/typescript/main.ts --target notion --strict
 
       - name: Run notion MCP/REST parity check (TS)
         working-directory: integ
@@ -311,11 +311,11 @@ jobs:
         working-directory: integ
         env:
           LANCEDB_ENABLED: "1"
-        run: pnpm exec tsx runners/typescript/main.ts --target lancedb
+        run: pnpm exec tsx runners/typescript/main.ts --target lancedb --strict
 
       - name: Run find arg-error battery (SaaS backends, dummy creds, no server)
         working-directory: integ
-        run: pnpm exec tsx runners/typescript/main.ts --facet argerr
+        run: pnpm exec tsx runners/typescript/main.ts --facet argerr --strict
 
   integ-shared-py:
     needs: changes
@@ -362,7 +362,7 @@ jobs:
         with:
           build-packages: "false"
       - name: Run declarative battery (python hosts)
-        run: ./python/.venv/bin/python integ/runners/python/main.py --facet core
+        run: ./python/.venv/bin/python integ/runners/python/main.py --facet core --strict --allow-skip chroma,lancedb,nextcloud,notion,postgres,qdrant
 
   integ-shared-ts:
     needs: changes
@@ -406,16 +406,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/integ-battery-setup
+
+      # Every "verified by integ" claim rests on the runner failing when it
+      # tests nothing, so assert the gates themselves before the battery.
+      # This job hosts them because it is the only one with both halves: the
+      # setup action always installs the python venv, and this job is the
+      # one that builds the mirage packages the typescript runner imports
+      # (integ-shared-py passes build-packages: false). --require-ts turns
+      # an absent tsx into a failure rather than a silent half-run.
+      - name: Assert the integ runner gates (strict exit, services, case ids)
+        run: ./python/.venv/bin/python integ/runners/tools/gate_selftest.py --require-ts
+
       - name: Run declarative battery (typescript hosts)
         working-directory: integ
-        run: pnpm exec tsx runners/typescript/main.ts --facet core
+        run: pnpm exec tsx runners/typescript/main.ts --facet core --strict --allow-skip chroma,lancedb,nextcloud,notion,postgres,qdrant
 
       # The fixture server is python (started by the adapter through
       # startPythonServer), so this runs here rather than in integ-ts, which
       # has no python toolchain.
       - name: Run curl/wget battery (typescript host)
         working-directory: integ
-        run: pnpm exec tsx runners/typescript/main.ts --facet http
+        run: pnpm exec tsx runners/typescript/main.ts --facet http --strict
 
   # The two jobs above prove each language passes its own battery. This one
   # runs both emitters and diffs them case by case, so a change that breaks
@@ -573,6 +584,7 @@ jobs:
         run: >-
           ./python/.venv/bin/python integ/runners/python/main.py
           --target mongodb --target postgres --target chroma --target qdrant
+          --strict
 
       - name: Run database battery (typescript host)
         if: ${{ !cancelled() }}
@@ -580,6 +592,7 @@ jobs:
         run: >-
           pnpm exec tsx runners/typescript/main.ts
           --target mongodb --target postgres --target chroma --target qdrant
+          --strict
 
   integ-data:
     needs: changes
@@ -619,7 +632,7 @@ jobs:
       - name: Run notion integ (mock server, JSON harness)
         env:
           NOTION_ENABLED: "1"
-        run: ./python/.venv/bin/python integ/runners/python/main.py --target notion
+        run: ./python/.venv/bin/python integ/runners/python/main.py --target notion --strict
 
       - name: Wait for Nextcloud install
         shell: bash
@@ -636,7 +649,7 @@ jobs:
           exit 1
 
       - name: Run declarative battery on nextcloud
-        run: ./python/.venv/bin/python integ/runners/python/main.py --target nextcloud
+        run: ./python/.venv/bin/python integ/runners/python/main.py --target nextcloud --strict
 
       - name: Run watch battery on nextcloud
         env:
@@ -1076,14 +1089,14 @@ jobs:
         env:
           LANGFUSE_URL: http://localhost:3000
           JAEGER_URL: http://localhost:16686
-        run: ./python/.venv/bin/python integ/runners/python/main.py --facet observability
+        run: ./python/.venv/bin/python integ/runners/python/main.py --facet observability --strict
 
       - name: Run observability battery (typescript host)
         working-directory: integ
         env:
           LANGFUSE_URL: http://localhost:3000
           JAEGER_URL: http://localhost:16686
-        run: pnpm exec tsx runners/typescript/main.ts --facet observability
+        run: pnpm exec tsx runners/typescript/main.ts --facet observability --strict
 
       - name: Jaeger logs on failure
         if: failure()
@@ -1233,11 +1246,11 @@ jobs:
           echo "DIFY_ENDPOINT=http://127.0.0.1:5093" >> "$GITHUB_ENV"
 
       - name: Run ${{ matrix.facet }} battery (python host)
-        run: ./python/.venv/bin/python integ/runners/python/main.py --facet ${{ matrix.facet }}
+        run: ./python/.venv/bin/python integ/runners/python/main.py --facet ${{ matrix.facet }} --strict
 
       - name: Run ${{ matrix.facet }} battery (typescript host)
         working-directory: integ
-        run: pnpm exec tsx runners/typescript/main.ts --facet ${{ matrix.facet }}
+        run: pnpm exec tsx runners/typescript/main.ts --facet ${{ matrix.facet }} --strict
 
       - name: Stop GreenMail
         if: always() && (matrix.facet == 'email' || matrix.facet == 'cli')

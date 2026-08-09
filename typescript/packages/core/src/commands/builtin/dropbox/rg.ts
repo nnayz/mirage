@@ -20,15 +20,10 @@ import { IOResult } from '../../../io/types.ts'
 import { type FileStat, ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { resolveGlobOf } from '../generic_bind/index.ts'
-import { defaultProvision } from '../generic_bind/provision.ts'
 import { patternArg } from '../grep_helper.ts'
 import { rgGeneric } from '../generic/rg.ts'
-import { DROPBOX_IO } from './io.ts'
 import { narrowScope } from './narrow.ts'
 import { FlagView } from '../../spec/types.ts'
-
-const dropboxResolveGlob = resolveGlobOf(DROPBOX_IO)
 
 // Reproduce rg's dotfile pruning for search-narrowed candidates: the
 // generic rg walk skips hidden files and never descends into hidden
@@ -111,5 +106,4 @@ export const DROPBOX_RG = command({
   fn: rgCommand,
   // Same cost estimate the generic-bound rg carried; narrowing only ever
   // lowers the real cost below it.
-  provision: defaultProvision('rg', DROPBOX_IO.stat, dropboxResolveGlob, DROPBOX_IO.readdir),
 })

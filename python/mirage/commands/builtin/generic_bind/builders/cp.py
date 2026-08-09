@@ -100,7 +100,6 @@ async def cp(
                           mkdir=mkdir)
     return await generic_cp(paths,
                             strategy=strategy,
-                            find_type="f",
                             stat=overlayable_stat(ops, accessor, index,
                                                   stat_overlay),
                             flags=parsed,

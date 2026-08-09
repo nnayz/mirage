@@ -17,7 +17,6 @@ from functools import partial
 from mirage.accessor.history import HistoryAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.tree import tree as generic_tree
-from mirage.commands.builtin.generic_bind.provision import metadata_provision
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue
@@ -28,10 +27,7 @@ from mirage.ops.types import StatPath
 from mirage.types import PathSpec
 
 
-@command("tree",
-         resource="history",
-         spec=SPECS["tree"],
-         provision=metadata_provision)
+@command("tree", resource="history", spec=SPECS["tree"])
 async def tree(
     accessor: HistoryAccessor,
     paths: list[PathSpec],

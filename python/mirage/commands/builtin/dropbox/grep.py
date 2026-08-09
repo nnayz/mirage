@@ -14,10 +14,8 @@
 
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.commands.builtin.dropbox.io import IO as _IO
 from mirage.commands.builtin.dropbox.narrow import narrow_scope
 from mirage.commands.builtin.generic.grep import grep as generic_grep
-from mirage.commands.builtin.generic_bind import default_provision
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg
 from mirage.commands.registry import command
@@ -31,13 +29,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("grep",
-         resource="dropbox",
-         spec=SPECS["grep"],
-         provision=default_provision("grep",
-                                     _IO.stat,
-                                     resolve_glob=_IO.resolve_glob,
-                                     readdir=_IO.readdir))
+@command("grep", resource="dropbox", spec=SPECS["grep"])
 async def grep(
     accessor: DropboxAccessor,
     paths: list[PathSpec],

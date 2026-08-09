@@ -16,7 +16,6 @@ from mirage.accessor.history import HistoryAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.stat import stat as generic_stat
 from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.generic_bind.provision import metadata_provision
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue
@@ -26,10 +25,7 @@ from mirage.ops.types import LinkView
 from mirage.types import PathSpec
 
 
-@command("stat",
-         resource="history",
-         spec=SPECS["stat"],
-         provision=metadata_provision)
+@command("stat", resource="history", spec=SPECS["stat"])
 async def stat(
     accessor: HistoryAccessor,
     paths: list[PathSpec],

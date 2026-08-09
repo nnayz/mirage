@@ -239,15 +239,15 @@ async def grep(
                     continue
                 data = split_lines((await
                                     rb(p.virtual)).decode(errors="replace"))
+                # -l returned at the top of this function, so every path
+                # from here down has files_only false.
                 hits = grep_lines(p.raw_path, data, pat, f.invert,
-                                  f.line_numbers, f.count_only, f.files_only,
+                                  f.line_numbers, f.count_only, False,
                                   f.only_matching, f.max_count)
                 label = "" if f.no_filename else f"{p.raw_path}:"
                 if f.count_only:
                     if hits:
                         all_results.append(f"{label}{hits[0]}")
-                elif f.files_only:
-                    all_results.extend(hits)
                 else:
                     all_results.extend(f"{label}{r}" for r in hits)
             stderr = format_optional_records(multi_warnings)

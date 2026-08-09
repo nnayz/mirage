@@ -187,7 +187,6 @@ def record(op: str,
             bytes=nbytes,
             timestamp=int(time.time() * 1000),
             duration_ms=elapsed,
-            mount_prefix=prefix,
             fingerprint=fingerprint,
             revision=revision,
         ))
@@ -232,7 +231,6 @@ def record_stream(op: str,
         bytes=0,
         timestamp=int(time.time() * 1000),
         duration_ms=0,
-        mount_prefix=prefix,
         fingerprint=fingerprint,
         revision=revision,
     )
@@ -281,7 +279,7 @@ def revision_for(path: str) -> str | None:
     """Return the revision pin for ``path`` if one is active.
 
     Args:
-        path (str): Virtual path (mount_prefix + rel_path).
+        path (str): Virtual path, mount prefix included.
 
     Returns:
         str | None: The pinned revision, or None if no revisions

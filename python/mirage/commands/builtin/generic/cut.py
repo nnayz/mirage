@@ -73,10 +73,9 @@ async def cut(
     read_stream: Callable[..., AsyncIterator[bytes]],
     stdin: ByteSource | None = None,
     flags: Mapping[str, FlagValue] | None = None,
-    **legacy_flags: FlagValue,
 ) -> tuple[ByteSource | None, IOResult]:
     try:
-        parsed = parse_flags(flags if flags is not None else legacy_flags)
+        parsed = parse_flags(flags or {})
         ranges = parse_ranges(parsed.ranges)
     except (TypeError, ValueError) as exc:
         return None, IOResult(exit_code=1, stderr=(str(exc) + "\n").encode())

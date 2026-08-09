@@ -19,7 +19,6 @@ from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.head import head as generic_head
 from mirage.commands.builtin.generic.head import head_multi, parse_flags
 from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.postgres._provision import head_tail_provision
 from mirage.commands.builtin.postgres.io import resolve_glob
 from mirage.commands.builtin.utils.stream import _read_stdin_async
 from mirage.commands.registry import command
@@ -30,10 +29,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("head",
-         resource="postgres",
-         spec=SPECS["head"],
-         provision=head_tail_provision)
+@command("head", resource="postgres", spec=SPECS["head"])
 async def head(
     accessor: PostgresAccessor,
     paths: list[PathSpec],

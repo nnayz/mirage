@@ -19,7 +19,6 @@ from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.stat import stat as generic_stat
 from mirage.commands.builtin.generic_bind.adapter import (bound_op,
                                                           overlaid_stat)
-from mirage.commands.builtin.generic_bind.provision import metadata_provision
 from mirage.commands.builtin.s3.io import resolve_glob
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -30,10 +29,7 @@ from mirage.ops.types import LinkView, StatOverlay
 from mirage.types import PathSpec
 
 
-@command("stat",
-         resource="s3",
-         spec=SPECS["stat"],
-         provision=metadata_provision)
+@command("stat", resource="s3", spec=SPECS["stat"])
 async def stat(
     accessor: S3Accessor,
     paths: list[PathSpec],

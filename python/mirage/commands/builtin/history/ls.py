@@ -17,7 +17,6 @@ from functools import partial
 from mirage.accessor.history import HistoryAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.ls import ls as generic_ls
-from mirage.commands.builtin.generic_bind.provision import metadata_provision
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue
@@ -28,10 +27,7 @@ from mirage.ops.types import LinkView
 from mirage.types import LsSortBy, PathSpec
 
 
-@command("ls",
-         resource="history",
-         spec=SPECS["ls"],
-         provision=metadata_provision)
+@command("ls", resource="history", spec=SPECS["ls"])
 async def ls(
     accessor: HistoryAccessor,
     paths: list[PathSpec],

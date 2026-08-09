@@ -20,7 +20,6 @@ from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import (has_search_shaping_flags,
                                                  pattern_arg)
-from mirage.commands.builtin.mongodb._provision import search_provision
 from mirage.commands.builtin.mongodb.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
@@ -44,10 +43,7 @@ SEARCHABLE_SCOPE_TYPES = (MongoDBEntityScope, MongoDBDatabaseScope,
                           MongoDBRootScope)
 
 
-@command("grep",
-         resource="mongodb",
-         spec=SPECS["grep"],
-         provision=search_provision)
+@command("grep", resource="mongodb", spec=SPECS["grep"])
 async def grep(
     accessor: MongoDBAccessor,
     paths: list[PathSpec],

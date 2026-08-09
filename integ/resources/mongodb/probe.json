@@ -93,6 +93,20 @@
         "stdout": "net=0 write=0 cache=0 ops=1 hits=0 precision=exact\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "mdb_prov_rg",
+      "seq": 620097,
+      "targets": [
+        "mongodb"
+      ],
+      "provision": true,
+      "command": "rg x /mongodb/mirage_integ/collections/books/documents.jsonl",
+      "expect": {
+        "exit": 0,
+        "stdout": "net=0 write=0 cache=0 ops=1 hits=0 precision=unknown\n",
+        "stderr": ""
+      }
     }
   ]
 }

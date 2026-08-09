@@ -23,7 +23,6 @@ import {
   removalLines,
   resolveGlobOf,
   specOf,
-  writeMetadataProvision,
   type ByteSource,
   type CommandFnResult,
   type CommandOpts,
@@ -145,5 +144,4 @@ export const GRIDFS_RM = command({
   spec: specOf('rm'),
   fn: rmCommand,
   write: true,
-  provision: writeMetadataProvision,
 })

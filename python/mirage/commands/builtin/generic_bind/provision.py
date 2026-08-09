@@ -650,3 +650,38 @@ def default_provision(
     if name == "jq":
         return make_jq_provision(stat)
     return None
+
+
+def with_default_provisions(
+        commands: list[Callable[..., Any]],
+        stat: Callable[..., Any],
+        resolve_glob: Callable[..., Any] | None = None,
+        readdir: Callable[..., Any] | None = None) -> list[Callable[..., Any]]:
+    """Back-fill the family provision catalog onto hand-written commands.
+
+    Hand-written command modules would otherwise each name a provision
+    factory themselves, which is a second copy of the family table: a
+    command that moves family keeps its old estimator until someone
+    remembers to edit its module. Commands that already declare a
+    provision, or that carry a filetype, keep what they declare.
+
+    Args:
+        commands (list[Callable]): decorated command functions.
+        stat (Callable): backend stat used to resolve operand sizes.
+        resolve_glob (Callable | None): backend glob resolver.
+        readdir (Callable | None): backend readdir for recursive walks.
+
+    Returns:
+        list[Callable]: the same commands, provisions filled in.
+    """
+    for fn in commands:
+        for registered in getattr(fn, "_registered_commands", []):
+            if (registered.filetype is not None
+                    or registered.provision_fn is not None):
+                continue
+            provision = default_provision(registered.name, stat, resolve_glob,
+                                          readdir)
+            if provision is None:
+                continue
+            registered.provision_fn = provision
+    return commands

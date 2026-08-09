@@ -63,7 +63,6 @@ async def _run(files, dirs, paths, *, mtimes=None, readdir=None, **kw):
         verbose=kw.get("verbose", False))
     return await cp([_spec(p) for p in paths],
                     strategy=NativeCopy(copy=copy, find=find),
-                    find_type="f",
                     stat=stat,
                     flags=flags,
                     readdir=readdir)
@@ -627,7 +626,6 @@ async def test_recursive_update_keeps_directories_without_files():
     stat, copy, find, mkdir = _typed_backend(files, dirs)
     _, io = await cp([_spec(p) for p in ["/t", "/c"]],
                      strategy=NativeCopy(copy=copy, find=find, mkdir=mkdir),
-                     find_type="f",
                      stat=stat,
                      flags=CpFlags(recursive=True, update="older"))
     assert io.exit_code == 0
@@ -642,7 +640,6 @@ async def test_recursive_empty_tree_still_creates_destination():
     stat, copy, find, mkdir = _typed_backend(files, dirs)
     _, io = await cp([_spec(p) for p in ["/t", "/c"]],
                      strategy=NativeCopy(copy=copy, find=find, mkdir=mkdir),
-                     find_type="f",
                      stat=stat,
                      flags=CpFlags(recursive=True, backup="simple"))
     assert io.exit_code == 0
@@ -670,7 +667,6 @@ async def test_no_op_policy_modes_keep_the_native_dir_copy():
                                              find=find,
                                              dir_copy=dir_copy,
                                              mkdir=mkdir),
-                         find_type="f",
                          stat=stat,
                          flags=flags)
         assert io.exit_code == 0

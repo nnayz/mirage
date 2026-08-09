@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { CachableAsyncIterator } from '../../../io/cachable_iterator.ts'
+import { asyncChain } from '../../../io/stream.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { FileStat, PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
@@ -57,14 +58,6 @@ export async function* numberLines(source: AsyncIterable<Uint8Array>): AsyncIter
     lineNo += 1
     yield ENC.encode(`${formatLineNo(lineNo)}\t`)
     yield buf
-  }
-}
-
-async function* chainStreams(
-  streams: readonly AsyncIterable<Uint8Array>[],
-): AsyncIterable<Uint8Array> {
-  for (const s of streams) {
-    for await (const chunk of s) yield chunk
   }
 }
 
@@ -190,7 +183,7 @@ export async function catGeneric(
       cacheKeys.push(p.mountPath)
       outputs.push(cachable)
     }
-    const merged = outputs.length === 1 ? outputs[0] : chainStreams(outputs)
+    const merged = outputs.length === 1 ? outputs[0] : asyncChain(...outputs)
     if (merged === undefined) throw new Error('cat: missing readable stream')
     const out: ByteSource = wantsDisplay ? displayLines(merged, display) : merged
     return [

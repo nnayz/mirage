@@ -19,7 +19,6 @@ import {
   command,
   resolveGlobOf,
   specOf,
-  writeMetadataProvision,
   type ByteSource,
   type CommandFnResult,
   type CommandOpts,
@@ -63,5 +62,4 @@ export const GRIDFS_MKDIR = command({
   spec: specOf('mkdir'),
   fn: mkdirCommand,
   write: true,
-  provision: writeMetadataProvision,
 })

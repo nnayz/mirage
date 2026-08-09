@@ -16,7 +16,6 @@ from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.cat import cat as generic_cat
 from mirage.commands.builtin.generic.cat import needs_display
-from mirage.commands.builtin.mongodb._provision import file_read_provision
 from mirage.commands.builtin.mongodb.io import resolve_glob
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.registry import command
@@ -32,10 +31,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("cat",
-         resource="mongodb",
-         spec=SPECS["cat"],
-         provision=file_read_provision)
+@command("cat", resource="mongodb", spec=SPECS["cat"])
 async def cat(
     accessor: MongoDBAccessor,
     paths: list[PathSpec],

@@ -19,7 +19,6 @@ import {
   command,
   resolveGlobOf,
   specOf,
-  writeMetadataProvision,
   type CommandFnResult,
   type CommandOpts,
   type PathSpec,
@@ -62,5 +61,4 @@ export const GRIDFS_TOUCH = command({
   spec: specOf('touch'),
   fn: touchCommand,
   write: true,
-  provision: writeMetadataProvision,
 })

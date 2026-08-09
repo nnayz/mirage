@@ -39,7 +39,6 @@ import { specOf } from '../../spec/builtins.ts'
 import { grepGeneric } from '../generic/grep.ts'
 import { patternArg, searchPushdownOk } from '../grep_helper.ts'
 import { formatRecords } from '../utils/output.ts'
-import { searchProvision } from './_provision.ts'
 import { FlagView } from '../../spec/types.ts'
 
 const resolveGlob = resolveGlobOf(POSTGRES_IO)
@@ -155,5 +154,4 @@ export const POSTGRES_GREP = command({
   resource: ResourceName.POSTGRES,
   spec: specOf('grep'),
   fn: grepCommand,
-  provision: searchProvision,
 })

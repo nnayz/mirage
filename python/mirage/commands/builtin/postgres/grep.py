@@ -17,7 +17,6 @@ from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg, search_pushdown_ok
-from mirage.commands.builtin.postgres._provision import search_provision
 from mirage.commands.builtin.postgres.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
@@ -37,10 +36,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("grep",
-         resource="postgres",
-         spec=SPECS["grep"],
-         provision=search_provision)
+@command("grep", resource="postgres", spec=SPECS["grep"])
 async def grep(
     accessor: PostgresAccessor,
     paths: list[PathSpec],

@@ -17,8 +17,6 @@ import functools
 from mirage.accessor.gridfs import GridFSAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.cp import walk
-from mirage.commands.builtin.generic_bind.provision import \
-    write_metadata_provision
 from mirage.commands.builtin.gridfs.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.builtin.utils.verbose import removal_lines
@@ -86,11 +84,7 @@ async def _rm(
     return None, [f"removed '{label}'"] if verbose else []
 
 
-@command("rm",
-         resource="gridfs",
-         spec=SPECS["rm"],
-         write=True,
-         provision=write_metadata_provision)
+@command("rm", resource="gridfs", spec=SPECS["rm"], write=True)
 async def rm(
     accessor: GridFSAccessor,
     paths: list[PathSpec],

@@ -32,7 +32,6 @@ import { command, type CommandFnResult, type CommandOpts } from '../../config.ts
 import { specOf } from '../../spec/builtins.ts'
 import { tailGeneric } from '../generic/tail.ts'
 import { parseN } from '../tail_helper.ts'
-import { headTailProvision } from './_provision.ts'
 import { FlagView } from '../../spec/types.ts'
 
 const resolveGlob = resolveGlobOf(MONGODB_IO)
@@ -107,5 +106,4 @@ export const MONGODB_TAIL = command({
   resource: ResourceName.MONGODB,
   spec: specOf('tail'),
   fn: tailCommand,
-  provision: headTailProvision,
 })

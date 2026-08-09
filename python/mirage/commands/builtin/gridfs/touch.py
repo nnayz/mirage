@@ -14,8 +14,6 @@
 
 from mirage.accessor.gridfs import GridFSAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.generic_bind.provision import \
-    write_metadata_provision
 from mirage.commands.builtin.gridfs.io import resolve_glob
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -26,11 +24,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("touch",
-         resource="gridfs",
-         spec=SPECS["touch"],
-         write=True,
-         provision=write_metadata_provision)
+@command("touch", resource="gridfs", spec=SPECS["touch"], write=True)
 async def touch(
     accessor: GridFSAccessor,
     paths: list[PathSpec],

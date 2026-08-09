@@ -17,7 +17,6 @@ from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.tail import tail as generic_tail
 from mirage.commands.builtin.generic.tail import tail_multi
 from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.mongodb._provision import head_tail_provision
 from mirage.commands.builtin.mongodb.io import resolve_glob
 from mirage.commands.builtin.tail_helper import _parse_n
 from mirage.commands.builtin.utils.stream import _resolve_source
@@ -32,10 +31,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("tail",
-         resource="mongodb",
-         spec=SPECS["tail"],
-         provision=head_tail_provision)
+@command("tail", resource="mongodb", spec=SPECS["tail"])
 async def tail(
     accessor: MongoDBAccessor,
     paths: list[PathSpec],

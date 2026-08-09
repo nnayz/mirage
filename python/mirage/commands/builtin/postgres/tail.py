@@ -19,7 +19,6 @@ from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.tail import tail as generic_tail
 from mirage.commands.builtin.generic.tail import tail_multi
 from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.postgres._provision import head_tail_provision
 from mirage.commands.builtin.postgres.io import resolve_glob
 from mirage.commands.builtin.tail_helper import _parse_n
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
@@ -34,10 +33,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-@command("tail",
-         resource="postgres",
-         spec=SPECS["tail"],
-         provision=head_tail_provision)
+@command("tail", resource="postgres", spec=SPECS["tail"])
 async def tail(
     accessor: PostgresAccessor,
     paths: list[PathSpec],

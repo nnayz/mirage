@@ -543,8 +543,7 @@ def descendant_path(root: PathSpec, virtual: str) -> PathSpec:
 
 
 async def _tree_lines(strategy: NativeCopy, src: PathSpec, target: PathSpec,
-                      src_base: str, dst_base: str,
-                      find_type: str) -> list[str]:
+                      src_base: str, dst_base: str) -> list[str]:
     """GNU ``-v`` lines for a natively copied tree, parents first.
 
     GNU ``cp -rv`` reports directories as well as files, including the
@@ -560,10 +559,9 @@ async def _tree_lines(strategy: NativeCopy, src: PathSpec, target: PathSpec,
         target (PathSpec): Destination root.
         src_base (str): Source root's mount path, no trailing slash.
         dst_base (str): Destination root's mount path, no trailing slash.
-        find_type (str): File-type selector for the file pass.
     """
     dirs = await strategy.find(src, type="d")
-    files = await strategy.find(src, type=find_type)
+    files = await strategy.find(src, type="f")
     lines: list[str] = []
     for entry_mount in sorted({src_base, *dirs, *files}):
         entry = mounted_path(src, entry_mount)
@@ -785,7 +783,6 @@ async def cp(
     stat: StatFn,
     strategy: CopyStrategy,
     flags: CpFlags,
-    find_type: str = "f",
     backend_key: Callable[[PathSpec], str] | None = None,
     readdir: ReaddirFn | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
@@ -804,7 +801,6 @@ async def cp(
         stat (Callable): Stats a path; raises when missing.
         strategy (CopyStrategy): Complete native or primitive copy capability.
         flags (CpFlags): Parsed cp flags.
-        find_type (str): File-type selector passed to ``find``.
         backend_key (Callable | None): Maps a path to its backend storage key
             for the same-file and into-own-subtree guards; defaults to the
             normalized mount-relative path.
@@ -895,14 +891,13 @@ async def cp(
                 if flags.no_clobber and target_exists:
                     continue
                 await strategy.dir_copy(src, target)
-                for entry_mount in await strategy.find(src, type=find_type):
+                for entry_mount in await strategy.find(src, type="f"):
                     entry_dst = mounted_path(
                         target, dst_base + entry_mount[len(src_base):])
                     writes[entry_dst.mount_path] = b""
                 if flags.verbose:
-                    lines.extend(await
-                                 _tree_lines(strategy, src, target, src_base,
-                                             dst_base, find_type))
+                    lines.extend(await _tree_lines(strategy, src, target,
+                                                   src_base, dst_base))
                 continue
             # Per-entry policy forfeits dir_copy, so the tree's directories
             # are recreated here: a files-only pass would drop every
@@ -911,7 +906,7 @@ async def cp(
                                       dst_base, writes, errors,
                                       lines if flags.verbose else None):
                 continue
-            for entry_mount in await strategy.find(src, type=find_type):
+            for entry_mount in await strategy.find(src, type="f"):
                 entry = mounted_path(src, entry_mount)
                 entry_dst = mounted_path(
                     target, dst_base + entry_mount[len(src_base):])
