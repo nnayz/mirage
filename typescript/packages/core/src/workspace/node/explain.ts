@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { renderDeny, renderPending } from '../../policy/index.ts'
+import { refusalOf, renderDeny, renderPending } from '../../policy/index.ts'
 import { decide } from '../../policy/match/decide.ts'
 import {
   Outcome,
@@ -39,7 +39,7 @@ import {
   gate,
   redirectPaths,
   statementRedirects,
-  type Refusal,
+  type Refused,
 } from './admission.ts'
 import { innerLines, innerReadable, wordValue, type Word } from './inner_lines.ts'
 
@@ -67,7 +67,8 @@ type Walk = Generator<WalkItem, Session>
 
 function unreadableWord(raw: string): Explanation {
   const reason = `cannot read ${raw} before the runtime expands it`
-  const [stderr, exitCode] = renderDeny(raw, { kind: 'deny', reason, scope: 'command' })
+  const deny: Deny = { kind: 'deny', reason, scope: 'command' }
+  const [stderr, exitCode] = renderDeny(raw, deny)
   return {
     command: raw,
     argv: [],
@@ -79,10 +80,11 @@ function unreadableWord(raw: string): Explanation {
     paths: [],
     exitCode,
     stderr: DECODER.decode(stderr),
+    refusal: refusalOf(deny),
   }
 }
 
-function fromRefusal(name: string, args: readonly string[], refusal: Refusal): Explanation {
+function fromRefusal(name: string, args: readonly string[], refusal: Refused): Explanation {
   return {
     command: name,
     argv: args,
@@ -94,6 +96,7 @@ function fromRefusal(name: string, args: readonly string[], refusal: Refusal): E
     paths: [],
     exitCode: refusal.exitCode,
     stderr: DECODER.decode(refusal.stderr),
+    refusal: refusal.refusal,
   }
 }
 
@@ -125,6 +128,7 @@ async function explained(
     paths: ctx.paths.map((p) => p.virtual),
     exitCode: 0,
     stderr: '',
+    refusal: null,
   }
   const action: Deny | Pending | null =
     asked !== null && asked.kind === 'ask' ? await registry.decisions.held(ctx, asked) : asked
@@ -136,6 +140,7 @@ async function explained(
     reason: base.reason === '' ? action.reason : base.reason,
     exitCode,
     stderr: DECODER.decode(stderr),
+    refusal: refusalOf(action),
   }
 }
 
@@ -369,7 +374,7 @@ export async function prejudgeLine(
   // compound line asked here waited on an answer that its own timeout
   // could no longer cut short.
   signal?: AbortSignal,
-): Promise<Refusal | null> {
+): Promise<Refused | null> {
   const judged: [Word[], Session, Explanation[]][] = []
   for (const [words, redirects, walked] of walkedLine(root, session)) {
     if (words[0]?.text === null) continue

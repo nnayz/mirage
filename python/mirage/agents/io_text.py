@@ -13,6 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.io.types import IOResult
+from mirage.policy import describe_refusal
+from mirage.types import Refusal
 
 
 def decode(value: bytes | None) -> str:
@@ -21,9 +23,31 @@ def decode(value: bytes | None) -> str:
     return value.decode("utf-8", errors="replace")
 
 
+def with_refusal(text: str, refusal: Refusal | None) -> str:
+    """Append the refusal's reason as one more line after the shell's
+    own output, for a surface that hands the agent text.
+
+    Only a command-scoped refusal is described: its stderr is bash's
+    bare ``Permission denied``, which says nothing. An operand-scoped
+    one already names the reason on the line, GNU-style.
+
+    Args:
+        text (str): the joined stdout and stderr.
+        refusal (Refusal | None): the record off the result; None
+            returns the text unchanged.
+    """
+    if refusal is None or refusal.scope == "operand":
+        return text
+    line = describe_refusal(refusal) + "\n"
+    if not text:
+        return line
+    return text + line if text.endswith("\n") else f"{text}\n{line}"
+
+
 def io_to_str(io: IOResult) -> str:
     stdout = decode(io.stdout if isinstance(io.stdout, bytes) else None)
     stderr = decode(io.stderr if isinstance(io.stderr, bytes) else None)
+    text = stdout
     if stderr:
-        return f"{stdout}\n{stderr}" if stdout else stderr
-    return stdout
+        text = f"{stdout}\n{stderr}" if stdout else stderr
+    return with_refusal(text, io.refusal)

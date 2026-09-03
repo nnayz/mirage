@@ -66,7 +66,8 @@ describe('profile scripts', () => {
       expect((await ws.execute('echo hi', { sessionId: 's' })).exitCode).toBe(0)
       const denied = await ws.execute('cat /data/sealed/k', { sessionId: 's' })
       expect(denied.exitCode).toBe(126)
-      expect(denied.stderrText).toBe('cat: policy denied: sealed by release\n')
+      expect(denied.stderrText).toBe('cat: Permission denied\n')
+      expect(denied.refusal).toMatchObject({ kind: 'deny', reason: 'sealed by release' })
     } finally {
       await ws.close()
     }
@@ -80,7 +81,7 @@ describe('profile scripts', () => {
       ws.createSession('s', { profile: 'release' })
       const denied = await ws.execute('cd /data && cat sealed/k', { sessionId: 's' })
       expect(denied.exitCode).toBe(126)
-      expect(denied.stderrText).toBe('cat: policy denied: sealed by release\n')
+      expect(denied.stderrText).toBe('cat: Permission denied\n')
     } finally {
       await ws.close()
     }
@@ -111,7 +112,7 @@ describe('profile scripts', () => {
       expect((await ws.execute('rm /data/x', { sessionId: 's' })).exitCode).toBe(127)
       const denied = await ws.execute('cat /data/sealed/k', { sessionId: 's' })
       expect(denied.exitCode).toBe(126)
-      expect(denied.stderrText).toBe('cat: policy denied: sealed by release\n')
+      expect(denied.stderrText).toBe('cat: Permission denied\n')
     } finally {
       await ws.close()
     }
@@ -123,7 +124,9 @@ describe('profile scripts', () => {
       ws.createSession('s', { profile: 'release' })
       const held = await ws.execute('shred /data/x', { sessionId: 's' })
       expect(held.exitCode).toBe(126)
-      expect(held.stderrText).toMatch(/^shred: requires approval: sign-off/)
+      expect(held.stderrText).toBe('shred: Permission denied\n')
+      expect(held.refusal).toMatchObject({ kind: 'pending', reason: 'sign-off' })
+      expect(held.refusal?.askId).toBeTruthy()
     } finally {
       await ws.close()
     }
@@ -147,7 +150,7 @@ describe('profile scripts', () => {
       expect((await ws.execute('echo hi')).exitCode).toBe(0)
       const denied = await ws.execute('cat /data/sealed/k')
       expect(denied.exitCode).toBe(126)
-      expect(denied.stderrText).toBe('cat: policy denied: sealed by release\n')
+      expect(denied.stderrText).toBe('cat: Permission denied\n')
     } finally {
       await ws.close()
     }
@@ -159,7 +162,7 @@ describe('profile scripts', () => {
       ws.createSession('s', { profile: 'release' })
       const denied = await ws.execute('cat /data/sealed/k', { sessionId: 's' })
       expect(denied.exitCode).toBe(126)
-      expect(denied.stderrText).toBe('cat: policy denied: sealed by release\n')
+      expect(denied.stderrText).toBe('cat: Permission denied\n')
     } finally {
       await ws.close()
     }
@@ -174,7 +177,7 @@ describe('profile scripts', () => {
       ws.createSession('s', { profile: 'release' })
       const denied = await ws.execute('cat /data/sealed/k', { sessionId: 's' })
       expect(denied.exitCode).toBe(126)
-      expect(denied.stderrText).toBe('cat: policy denied: sealed by release\n')
+      expect(denied.stderrText).toBe('cat: Permission denied\n')
     } finally {
       await ws.close()
     }
@@ -188,7 +191,8 @@ describe('profile scripts', () => {
       ws.createSession('s', { profile: 'release' })
       const refused = await ws.execute('echo hi', { sessionId: 's' })
       expect(refused.exitCode).toBe(126)
-      expect(refused.stderrText).toMatch(/profile 'release' script failed/)
+      expect(refused.stderrText).toBe('echo: Permission denied\n')
+      expect(refused.refusal?.reason).toMatch(/profile 'release' script failed/)
       expect((await ws.execute('echo hi')).exitCode).toBe(0)
     } finally {
       await ws.close()
@@ -201,7 +205,8 @@ describe('profile scripts', () => {
       ws.createSession('s', { profile: 'release' })
       const refused = await ws.execute('echo hi', { sessionId: 's' })
       expect(refused.exitCode).toBe(126)
-      expect(refused.stderrText).toMatch(/cannot evaluate one/)
+      expect(refused.stderrText).toBe('echo: Permission denied\n')
+      expect(refused.refusal?.reason).toMatch(/cannot evaluate one/)
     } finally {
       await ws.close()
     }

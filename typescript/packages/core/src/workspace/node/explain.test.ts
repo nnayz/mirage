@@ -293,7 +293,8 @@ describe('prejudge', () => {
     await w.execute('echo b > /data/b.txt')
     const ran = await w.execute('rm /data/a.txt && cat /data/b.txt')
     expect(ran.exitCode).not.toBe(0)
-    expect(DEC.decode(ran.stderr)).toContain('cat is refused by policy')
+    expect(DEC.decode(ran.stderr)).toBe('cat: Permission denied\n')
+    expect(ran.refusal?.reason).toBe('cat is refused by policy')
     expect(await w.fs.readdir('/data')).toContain('/data/a.txt')
   })
 

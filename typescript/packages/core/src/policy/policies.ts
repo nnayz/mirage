@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { operandExitCode } from '../commands/spec/usage.ts'
-import { Limit, type PathSpec } from '../types.ts'
+import { Limit, type PathSpec, type Refusal } from '../types.ts'
 import type { Policy } from './base.ts'
 import { POLICY_DENIED_EXIT } from './constants.ts'
 import { PolicyDenied, PolicyError } from './errors.ts'
@@ -35,32 +35,60 @@ type Hook = keyof typeof VALIDITY
  * The command plane's rendering of a refusal: stderr and exit code. The
  * one place the outcome table for that plane is written down, so a
  * document rule and a coded policy print alike: a whole-command Deny is
- * `<subject>: policy denied: <reason>` at 126, an operand Deny keeps the
- * GNU voice `<subject>: <reason>` at the command's operand-refusal code
- * (1, tar 2).
+ * bash's own `<subject>: Permission denied` at 126, with the reason on
+ * the result's `refusal` record rather than on stderr; an operand Deny
+ * keeps the GNU voice `<subject>: <reason>` at the command's
+ * operand-refusal code (1, tar 2), because there the reason is the
+ * diagnostic.
  */
 export function renderDeny(subject: string, deny: Deny): [Uint8Array, number] {
   if (deny.scope === 'operand') {
     return [new TextEncoder().encode(`${subject}: ${deny.reason}\n`), operandExitCode(subject)]
   }
-  return [
-    new TextEncoder().encode(`${subject}: policy denied: ${deny.reason}\n`),
-    POLICY_DENIED_EXIT,
-  ]
+  return [new TextEncoder().encode(`${subject}: Permission denied\n`), POLICY_DENIED_EXIT]
 }
 
 /**
  * The command plane's rendering of an unanswered ask: refused for now
- * at 126, naming the ask id the agent should quote, so the retry
- * after the host allows it passes.
+ * at 126 in the same words as a deny, so stderr never tells an agent
+ * whether a retry might pass; the ask id it should quote rides the
+ * `refusal` record.
  */
 export function renderPending(subject: string, pending: Pending): [Uint8Array, number] {
-  return [
-    new TextEncoder().encode(
-      `${subject}: requires approval: ${pending.reason} (ask ${pending.id})\n`,
-    ),
-    POLICY_DENIED_EXIT,
-  ]
+  void pending
+  return [new TextEncoder().encode(`${subject}: Permission denied\n`), POLICY_DENIED_EXIT]
+}
+
+/** The record a refused result carries beside its bash-voiced stderr. */
+export function refusalOf(action: Deny | Pending): Refusal {
+  if (action.kind === 'pending') {
+    return {
+      kind: 'pending',
+      reason: action.reason,
+      policy: '',
+      scope: 'command',
+      askId: action.id,
+    }
+  }
+  return {
+    kind: action.failed === true ? 'failed' : 'deny',
+    reason: action.reason,
+    policy: action.policy ?? '',
+    scope: action.scope ?? 'command',
+    askId: null,
+  }
+}
+
+/**
+ * One line saying why, for a surface that hands the agent text rather
+ * than a record; the agent adapters append it after stderr.
+ */
+export function describeRefusal(refusal: Refusal): string {
+  if (refusal.kind === 'pending') {
+    return `requires approval: ${refusal.reason} (ask ${refusal.askId ?? ''})`
+  }
+  if (refusal.kind === 'failed') return `policy ${refusal.policy} failed`
+  return `policy denied: ${refusal.reason}`
 }
 
 /**
@@ -228,8 +256,11 @@ export class Policies {
             SessionContext,
         )
       } catch (err) {
+        // The agent reads which policy broke, never what it threw: the
+        // error text is the deployment's to debug, in the log.
         const detail = err instanceof Error ? err.message : String(err)
-        return [{ kind: 'deny', reason: `policy ${name} failed: ${detail}` }, null]
+        console.error(`${hook} policy ${name} raised: ${detail}`)
+        return [{ kind: 'deny', reason: `${name} failed`, policy: name, failed: true }, null]
       }
       if (action === null) continue
       const kind: unknown = typeof action === 'object' ? action.kind : undefined
@@ -239,7 +270,14 @@ export class Policies {
             `legal kinds here: ${[...VALIDITY[hook]].join(', ')}`,
         )
       }
-      if (action.kind === 'deny') return [action, null]
+      if (action.kind === 'deny') {
+        return [
+          action.policy === undefined || action.policy === ''
+            ? { ...action, policy: name }
+            : action,
+          null,
+        ]
+      }
       if (action.kind === 'ask') {
         asked ??= action
         continue

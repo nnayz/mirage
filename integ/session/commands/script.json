@@ -39,7 +39,7 @@
       "expect": {
         "exit": 126,
         "stdout": "",
-        "stderr": "cat: policy denied: written by scripted\n"
+        "stderr": "cat: Permission denied\n"
       }
     },
     {
@@ -94,7 +94,7 @@
       "expect": {
         "exit": 126,
         "stdout": "",
-        "stderr": "cat: policy denied: sealed by scriptedjs\n"
+        "stderr": "cat: Permission denied\n"
       }
     },
     {
@@ -108,7 +108,7 @@
       "expect": {
         "exit": 126,
         "stdout": "",
-        "stderr": "cat: policy denied: sealed by scriptedjs\n"
+        "stderr": "cat: Permission denied\n"
       }
     },
     {
@@ -136,7 +136,7 @@
       "expect": {
         "exit": 126,
         "stdout": "",
-        "stderr": "cat: policy denied: written by scripted\n"
+        "stderr": "cat: Permission denied\n"
       }
     },
     {
@@ -150,7 +150,7 @@
       "expect": {
         "exit": 126,
         "stdout": "",
-        "stderr": "cat: policy denied: written by scripted\n"
+        "stderr": "cat: Permission denied\n"
       }
     },
     {
@@ -164,7 +164,7 @@
       "expect": {
         "exit": 126,
         "stdout": "",
-        "stderr": "cat: policy denied: written by scripted\n"
+        "stderr": "cat: Permission denied\n"
       }
     },
     {
@@ -191,7 +191,7 @@
       "expect": {
         "exit": 126,
         "stdout": "",
-        "stderr": "rm: requires approval: scripted sign-off (ask a288d3df2ca1)\n"
+        "stderr": "rm: Permission denied\n"
       }
     },
     {

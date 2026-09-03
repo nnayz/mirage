@@ -510,7 +510,11 @@ async function runArgv(
     if (!(verdict instanceof Admitted)) {
       return [
         null,
-        new IOResult({ exitCode: verdict.exitCode, stderr: verdict.stderr }),
+        new IOResult({
+          exitCode: verdict.exitCode,
+          stderr: verdict.stderr,
+          refusal: verdict.refusal,
+        }),
         new ExecutionNode({
           command: [name, ...argv.args].join(' '),
           stderr: verdict.stderr,

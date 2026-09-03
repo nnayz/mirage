@@ -78,7 +78,9 @@ silent allow.
 
 - **Silence** (`None`/`null`): no opinion, the next policy speaks.
 - **`Deny(reason, scope)`**: with the default `COMMAND` scope the line
-  reads `<command>: policy denied: <reason>` at exit 126; the
+  reads `<command>: Permission denied` at exit 126, bash's own wording,
+  and the reason travels as the result's `refusal` record
+  (`kind: deny`, the reason, the policy's class name, the scope); the
   `OPERAND` scope keeps the GNU operand voice instead —
   `<command>: <reason>` at the command's own operand exit code, the
   reason naming the operand
@@ -87,8 +89,9 @@ silent allow.
   a number a policy returns. At the op and session doors a Deny is
   `EACCES`.
 - **`Ask(reason)`** (`pre_command` only): the line does not run, the
-  agent reads `requires approval` with an ask id at exit 126, and the
-  question lands in `ws.decisions` for a host to answer — the same
+  agent reads `<command>: Permission denied` at exit 126 with a
+  `pending` refusal record naming the ask id, and the question lands in
+  `ws.decisions` for a host to answer — the same
   ledger, `on_ask` handler, CLI and REST doors as a profile's `ask`
   rules; see [Asks](/home/permissions#asks).
 - **`Limit(max_bytes, max_lines, timeout_seconds, on_exceed)`**: a
@@ -137,11 +140,12 @@ places. A typed line clears them in a fixed order:
    `pre_session`, and the finished line is bounded by `post_ops` and
    `post_execute`.
 
-Both layers refuse in the same voice (`policy denied`, exit 126) on
-purpose, so an agent reads one grammar; a host tells them apart by what
-they judge. The route policy speaks once per line and can only place or
-deny; the policy engine speaks per command, per op and per write, and
-only it can ask instead of denying. Nested lines (`$()`, `eval`,
+Both layers refuse in the same voice (`Permission denied`, exit 126, the
+reason in the `refusal` record) on purpose, so an agent reads one
+grammar; a host tells them apart by what they judge. The route policy
+speaks once per line and can only place or deny; the policy engine
+speaks per command, per op and per write, and only it can ask instead
+of denying. Nested lines (`$()`, `eval`,
 `source`, `xargs`) inherit the outer line's route decision and never
 re-route, but every nested command clears admission itself.
 

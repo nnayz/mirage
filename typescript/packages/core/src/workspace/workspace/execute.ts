@@ -33,6 +33,7 @@ import { makeAbortError, mergeSignals } from '../abort.ts'
 import type { Dispatcher } from '../dispatcher/index.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import { RouteDeny, type RouteDecision } from '../../runtime/routing/index.ts'
+import { refusalOf, renderDeny, type Deny } from '../../policy/index.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import type { ExecuteFn } from '../expand/node.ts'
 import type { MountRegistry } from '../mount/registry.ts'
@@ -102,7 +103,8 @@ function syntaxErrorResult(offending: string): ExecuteResult {
  * result the way a timeout does, never a throw. The typed line still
  * records and the session still flushes, mirroring Python's finally
  * path. The denied party is the command, so the message carries its
- * name like every per-command error.
+ * name like every per-command error, in bash's voice; the reason rides
+ * the result's `refusal` record.
  */
 async function deniedResult(
   env: ExecuteEnv,
@@ -112,12 +114,14 @@ async function deniedResult(
   reason: string,
 ): Promise<ExecuteResult> {
   const cmdName = commandName(command) || command
-  const msg = new TextEncoder().encode(`${cmdName}: policy denied: ${reason}\n`)
-  session.lastExitCode = 126
+  const deny: Deny = { kind: 'deny', reason, scope: 'command' }
+  const [msg, exitCode] = renderDeny(cmdName, deny)
+  const refusal = refusalOf(deny)
+  session.lastExitCode = exitCode
   if (options.record !== false) {
     await env.observer.logExecution(
       command,
-      new IOResult({ exitCode: 126, stderr: msg }),
+      new IOResult({ exitCode, stderr: msg, refusal }),
       [],
       options.agentId ?? env.agentId ?? '',
       session.sessionId,
@@ -125,7 +129,7 @@ async function deniedResult(
     )
   }
   await env.sessions.flush()
-  return new ExecuteResult(new Uint8Array(), msg, 126)
+  return new ExecuteResult(new Uint8Array(), msg, exitCode, refusal)
 }
 
 /**
@@ -147,7 +151,7 @@ async function drainToSink(sink: JobConsole, result: ExecuteResult): Promise<Exe
   if (result.stdout.byteLength === 0 && result.stderr.byteLength === 0) return result
   if (result.stdout.byteLength > 0) await sink.emit(Channel.STDOUT, result.stdout)
   if (result.stderr.byteLength > 0) await sink.emit(Channel.STDERR, result.stderr)
-  return new ExecuteResult(new Uint8Array(), new Uint8Array(), result.exitCode)
+  return new ExecuteResult(new Uint8Array(), new Uint8Array(), result.exitCode, result.refusal)
 }
 
 /**
@@ -408,7 +412,7 @@ async function runParsedLine(
     // A whole line is a command like any other: the same visibility and
     // admission gate as the tree, per parsed command, before the
     // runtime sees a byte of it.
-    const refusal = await admitLine(
+    const refused = await admitLine(
       rootNode,
       effectiveSession,
       env.registry,
@@ -417,19 +421,23 @@ async function runParsedLine(
       reparse,
       killed,
     )
-    if (refusal !== null) {
-      targetSession.lastExitCode = refusal.exitCode
+    if (refused !== null) {
+      targetSession.lastExitCode = refused.exitCode
       if (isLine) {
         await env.observer.logExecution(
           command,
-          new IOResult({ exitCode: refusal.exitCode, stderr: refusal.stderr }),
+          new IOResult({
+            exitCode: refused.exitCode,
+            stderr: refused.stderr,
+            refusal: refused.refusal,
+          }),
           [],
           callAgentId,
           targetSession.sessionId,
           effectiveSession.cwd,
         )
       }
-      return new ExecuteResult(new Uint8Array(), refusal.stderr, refusal.exitCode)
+      return new ExecuteResult(new Uint8Array(), refused.stderr, refused.exitCode, refused.refusal)
     }
     if (env.sessions.hasManagedEnv) {
       // A whole-line program may read any name, so the walk is not
@@ -451,6 +459,7 @@ async function runParsedLine(
       const lineIo = new IOResult({
         exitCode: result.exitCode,
         stdout: result.stdout,
+        refusal: result.refusal,
         ...(result.stderr !== null ? { stderr: result.stderr } : {}),
       })
       await env.observer.logExecution(
@@ -462,7 +471,12 @@ async function runParsedLine(
         effectiveSession.cwd,
       )
     }
-    return new ExecuteResult(result.stdout, result.stderr ?? new Uint8Array(), result.exitCode)
+    return new ExecuteResult(
+      result.stdout,
+      result.stderr ?? new Uint8Array(),
+      result.exitCode,
+      result.refusal,
+    )
   }
   // The line is the unit a rule judges, so every command in it is
   // judged before any of it runs. Nothing here replaces the per-command
@@ -479,7 +493,12 @@ async function runParsedLine(
   )
   if (prejudged !== null) {
     targetSession.lastExitCode = prejudged.exitCode
-    return new ExecuteResult(new Uint8Array(), prejudged.stderr, prejudged.exitCode)
+    return new ExecuteResult(
+      new Uint8Array(),
+      prejudged.stderr,
+      prejudged.exitCode,
+      prejudged.refusal,
+    )
   }
   if (env.sessions.hasManagedEnv) {
     // The walked set carries stored function bodies and alias
@@ -557,5 +576,5 @@ async function runParsedLine(
     )
   }
 
-  return new ExecuteResult(stdoutBytes, stderrBytes, io.exitCode)
+  return new ExecuteResult(stdoutBytes, stderrBytes, io.exitCode, io.refusal)
 }

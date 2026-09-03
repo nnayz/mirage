@@ -218,11 +218,12 @@ async def execute_line(
             # A whole line is a command like any other: the same
             # visibility and admission gate as the tree, per parsed
             # command, before the runtime sees a byte of it.
-            refusal = await admit_line(ast, effective_session, ws._registry,
+            refused = await admit_line(ast, effective_session, ws._registry,
                                        ws._namespace, agent or "", cancel)
-            if refusal is not None:
-                io = IOResult(exit_code=refusal.exit_code,
-                              stderr=refusal.stderr)
+            if refused is not None:
+                io = IOResult(exit_code=refused.exit_code,
+                              stderr=refused.stderr,
+                              refusal=refused.refusal)
                 session.last_exit_code = io.exit_code
                 return io
             if ws._has_managed_env:
@@ -256,10 +257,12 @@ async def execute_line(
         # per-command gate below, which still binds each command's own
         # entry gate; this only stops a line a rule refuses from
         # running half-way.
-        refusal = await prejudge_line(ast, effective_session, ws._registry,
+        refused = await prejudge_line(ast, effective_session, ws._registry,
                                       ws._namespace, agent or "", cancel)
-        if refusal is not None:
-            io = IOResult(exit_code=refusal.exit_code, stderr=refusal.stderr)
+        if refused is not None:
+            io = IOResult(exit_code=refused.exit_code,
+                          stderr=refused.stderr,
+                          refusal=refused.refusal)
             session.last_exit_code = io.exit_code
             return io
         if ws._has_managed_env:

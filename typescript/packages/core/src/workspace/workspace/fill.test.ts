@@ -914,7 +914,7 @@ describe('fillEnv through execute', () => {
     try {
       const io = await ws.execute('printenv TOKEN')
       expect(io.exitCode).toBe(126)
-      expect(stderrStr(io)).toContain('printenv is off')
+      expect(io.refusal?.reason).toContain('printenv is off')
       expect(calls).toEqual([])
       expect(stdoutStr(await ws.execute('echo $TOKEN'))).toBe('t0\n')
       expect(calls).toEqual(['r'])
@@ -935,7 +935,7 @@ describe('fillEnv through execute', () => {
     try {
       const io = await ws.execute('echo $TOKEN')
       expect(io.exitCode).toBe(126)
-      expect(stderrStr(io)).toContain('echo is off')
+      expect(io.refusal?.reason).toContain('echo is off')
       expect(calls).toEqual(['r'])
     } finally {
       await ws.close()
@@ -984,7 +984,7 @@ describe('fillEnv through execute', () => {
     try {
       const io = await ws.execute('printenv TOKEN')
       expect(io.exitCode).toBe(126)
-      expect(stderrStr(io)).toContain('printenv needs sign-off')
+      expect(io.refusal?.reason).toContain('printenv needs sign-off')
       expect(calls).toEqual(['ask'])
     } finally {
       await ws.close()
@@ -1002,7 +1002,8 @@ describe('fillEnv through execute', () => {
     try {
       const io = await ws.execute('printenv TOKEN')
       expect(io.exitCode).toBe(126)
-      expect(stderrStr(io)).toContain('requires approval')
+      expect(stderrStr(io)).toBe('printenv: Permission denied\n')
+      expect(io.refusal?.kind).toBe('pending')
       expect(calls).toEqual([])
       const pending = ws.decisions.pending()
       expect(pending).toHaveLength(1)
@@ -1029,7 +1030,7 @@ describe('fillEnv through execute', () => {
       expect((await ws.execute('f() { printenv TOKEN; }')).exitCode).toBe(0)
       const io = await ws.execute('f')
       expect(io.exitCode).toBe(126)
-      expect(stderrStr(io)).toContain('printenv is off')
+      expect(io.refusal?.reason).toContain('printenv is off')
       expect(calls).toEqual([])
       expect(stdoutStr(await ws.execute('echo $TOKEN'))).toBe('t0\n')
       expect(calls).toEqual(['r'])
@@ -1073,7 +1074,7 @@ describe('fillEnv through execute', () => {
       session.functions.f = tree.namedChildren.filter((node) => node.type === 'command')
       const io = await ws.execute('f')
       expect(stdoutStr(io)).toBe('e:t0\n')
-      expect(stderrStr(io)).toContain('printenv is off')
+      expect(io.refusal?.reason).toContain('printenv is off')
       expect(calls).toEqual(['r'])
     } finally {
       await ws.close()
@@ -1157,7 +1158,7 @@ describe('fillEnv through execute', () => {
       await ws.execute('f() { printenv TOKEN; }')
       const io = await ws.execute('f')
       expect(io.exitCode).toBe(126)
-      expect(stderrStr(io)).toContain('printenv needs sign-off')
+      expect(io.refusal?.reason).toContain('printenv needs sign-off')
       expect(calls).toEqual(['ask'])
     } finally {
       await ws.close()

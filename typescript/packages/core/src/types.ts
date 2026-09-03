@@ -315,14 +315,42 @@ const LIMIT_AGGR: { [K in LimitAggrField]: (present: readonly Limit[]) => Limit[
  * boundary; merge keeps the rightmost producer, so this names the
  * command whose stream the caller actually sees. Post-layer policies
  * (output caps today; budgets and attribution later) read it as
- * context. Facts only: policy decisions never travel on the envelope.
- * `declared` is the bound the command's own registration declared,
+ * context. Facts only: no policy reads a decision off the envelope;
+ * the one a chain hands down is written beside it as
+ * `IOResult.refusal` after the last hook has spoken. `declared` is
+ * the bound the command's own registration declared,
  * when the dispatch site knows it (e.g. a CLI leaf).
  */
 export interface Producer {
   readonly command: string
   readonly prefixes: readonly string[]
   readonly declared: Limit | null
+}
+
+export type RefusalKind = 'deny' | 'pending' | 'failed'
+export type RefusalScope = 'command' | 'operand'
+
+/**
+ * Why a line did not run, for the caller that reads the result.
+ *
+ * stderr keeps bash's voice (`<cmd>: Permission denied`), which says
+ * nothing about who refused or why; this record carries that beside
+ * the envelope, so a host or an agent adapter can show the reason
+ * without the shell having to. null on every run that was not
+ * refused, and absent on the 127 `command not found` row, which must
+ * not reveal that the word names anything. `kind` is `deny` for a
+ * policy's refusal, `pending` for an ask the host has not answered,
+ * `failed` for a policy that raised and so refused by default;
+ * `policy` is the class name of the policy that spoke, empty for an
+ * ask, which belongs to the host; `askId` is the approval to quote,
+ * for `pending`. Mirrors the Python `Refusal`.
+ */
+export interface Refusal {
+  readonly kind: RefusalKind
+  readonly reason: string
+  readonly policy: string
+  readonly scope: RefusalScope
+  readonly askId: string | null
 }
 
 export const ResourceName = Object.freeze({

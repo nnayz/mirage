@@ -19,6 +19,7 @@ import {
   PolicyDenied,
   Scope,
   askRule,
+  refusalOf,
   renderDeny,
   renderPending,
 } from '../../policy/index.ts'
@@ -36,7 +37,7 @@ import {
 } from '../../shell/helpers.ts'
 import { NodeType, RedirectKind } from '../../shell/types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
-import { PathSpec } from '../../types.ts'
+import { PathSpec, type Refusal } from '../../types.ts'
 import type { EntryGate } from '../../types.ts'
 import { isGlob } from '../../utils/hidden.ts'
 import { CycleError, resolvePath } from '../../utils/path.ts'
@@ -75,11 +76,14 @@ import { innerLines, innerReadable, wordValue, type Word } from './inner_lines.t
  * What the command plane prints when a line does not get to run: 127
  * for a word the session cannot see, 126 for a whole-command refusal
  * or an unanswered ask, the operand code (1, tar 2) for an
- * operand-scoped refusal. Mirrors the Python `Refusal`.
+ * operand-scoped refusal. `refusal` is the record the result carries
+ * beside stderr, null on the 127 row, which must not say the word
+ * names anything. Mirrors the Python `Refused`.
  */
-export interface Refusal {
+export interface Refused {
   readonly stderr: Uint8Array
   readonly exitCode: number
+  readonly refusal: Refusal | null
 }
 
 function norm(virtual: string): string {
@@ -313,10 +317,14 @@ export async function gate(
   stdin: ByteSource | null = null,
   redirects: readonly PathSpec[] = [],
   definedFn = false,
-): Promise<Refusal | [CommandContext, Deny | Ask | null]> {
+): Promise<Refused | [CommandContext, Deny | Ask | null]> {
   const tool = definedFn ? SHELL_NAMES.has(name) : isTool(name, session)
   if (tool && !listed(name, session)) {
-    return { stderr: new TextEncoder().encode(`${name}: command not found\n`), exitCode: 127 }
+    return {
+      stderr: new TextEncoder().encode(`${name}: command not found\n`),
+      exitCode: 127,
+      refusal: null,
+    }
   }
   const [tokens, program] = programTokens(registry, name, [...args], session.cwd)
   const implied =
@@ -357,7 +365,7 @@ export async function admit(
   // cannot outlive the run that raised it. Nothing else here waits on
   // anything outside mirage.
   signal?: AbortSignal,
-): Promise<Refusal | Admitted> {
+): Promise<Refused | Admitted> {
   const gated = await gate(
     name,
     args,
@@ -399,12 +407,13 @@ export async function admit(
   }
   const [stderr, exitCode] =
     action.kind === 'pending' ? renderPending(name, action) : renderDeny(name, action)
-  return { stderr, exitCode }
+  return { stderr, exitCode, refusal: refusalOf(action) }
 }
 
-function refuse(name: string, reason: string): Refusal {
-  const [stderr, exitCode] = renderDeny(name, { kind: 'deny', reason, scope: 'command' })
-  return { stderr, exitCode }
+function refuse(name: string, reason: string): Refused {
+  const deny: Deny = { kind: 'deny', reason, scope: 'command' }
+  const [stderr, exitCode] = renderDeny(name, deny)
+  return { stderr, exitCode, refusal: refusalOf(deny) }
 }
 
 function unreadable(raw: string): string {
@@ -460,7 +469,7 @@ async function admitWords(
   reparse: (line: string) => TSNodeLike,
   redirectWords: readonly Word[] = [],
   signal?: AbortSignal,
-): Promise<Refusal | null> {
+): Promise<Refused | null> {
   const head = words[0]
   if (head === undefined) return null
   if (head.text === null && hasRules(rules)) return refuse(head.raw, unreadable(head.raw))
@@ -569,7 +578,7 @@ export async function admitLine(
   agentId: string,
   reparse: (line: string) => TSNodeLike,
   signal?: AbortSignal,
-): Promise<Refusal | null> {
+): Promise<Refused | null> {
   const rules = session.commands
   const home = homeDir(session)
   for (const node of commandNodes(root)) {

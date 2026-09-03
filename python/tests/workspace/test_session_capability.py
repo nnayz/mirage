@@ -295,7 +295,7 @@ def test_background_job_inherits_the_sessions_view():
         # Background a forbidden read; the job runs in a Task that
         # snapshots the contextvar. wait reaps it; jobs reports state.
         return await ws.execute(
-            "cat /b/secret.txt &; wait",
+            "cat /b/secret.txt & wait",
             session_id="agent",
         )
 

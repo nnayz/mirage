@@ -433,7 +433,7 @@
           "command": "python3 -c \"print(1)\"",
           "expect": {
             "exit": 126,
-            "stderr": "python3: policy denied: python3 is blocked here\n"
+            "stderr": "python3: Permission denied\n"
           }
         },
         {
@@ -543,7 +543,7 @@
           "expect": {
             "exit": 126,
             "stdout": "",
-            "stderr": "grep: policy denied: recursive search is not allowed here\n"
+            "stderr": "grep: Permission denied\n"
           }
         },
         {
@@ -815,7 +815,7 @@
           "expect": {
             "exit": 126,
             "stdout": "",
-            "stderr_contains": "policy Boom failed"
+            "stderr_contains": "echo: Permission denied"
           }
         }
       ]

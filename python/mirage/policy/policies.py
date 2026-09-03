@@ -14,6 +14,7 @@
 
 import errno
 import logging
+from dataclasses import replace
 from typing import Any
 
 from mirage.commands.spec.usage import operand_exit_code
@@ -23,7 +24,7 @@ from mirage.policy.errors import PolicyDenied, PolicyError
 from mirage.policy.types import (VALIDITY, Ask, CommandContext, Deny,
                                  DenyScope, ExecuteResultContext, OpsContext,
                                  OpsResultContext, Pending, SessionContext)
-from mirage.types import Limit, PathSpec
+from mirage.types import Limit, PathSpec, Refusal
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,11 @@ def render_deny(subject: str, deny: Deny) -> tuple[bytes, int]:
 
     The one place the outcome table for that plane is written down, so
     a document rule and a coded policy print alike: a whole-command
-    Deny is ``<subject>: policy denied: <reason>`` at 126, an operand
-    Deny keeps the GNU voice ``<subject>: <reason>`` at the command's
-    operand-refusal code (1, tar 2).
+    Deny is bash's own ``<subject>: Permission denied`` at 126, with
+    the reason on the result's ``refusal`` record rather than on
+    stderr; an operand Deny keeps the GNU voice ``<subject>: <reason>``
+    at the command's operand-refusal code (1, tar 2), because there
+    the reason is the diagnostic.
 
     Args:
         subject (str): the command name (or ``line`` at the boundary).
@@ -47,21 +50,49 @@ def render_deny(subject: str, deny: Deny) -> tuple[bytes, int]:
     if deny.scope is DenyScope.OPERAND:
         return (f"{subject}: {deny.reason}\n".encode(),
                 operand_exit_code(subject))
-    return (f"{subject}: policy denied: {deny.reason}\n".encode(),
-            POLICY_DENIED_EXIT)
+    return f"{subject}: Permission denied\n".encode(), POLICY_DENIED_EXIT
 
 
 def render_pending(subject: str, pending: Pending) -> tuple[bytes, int]:
     """The command plane's rendering of an unanswered ask: refused for
-    now at 126, naming the ask id the agent should quote, so the
-    retry after the host allows it passes.
+    now at 126 in the same words as a deny, so stderr never tells an
+    agent whether a retry might pass; the ask id it should quote rides
+    the ``refusal`` record.
 
     Args:
         subject (str): the command name.
         pending (Pending): the door's answer.
     """
-    return (f"{subject}: requires approval: {pending.reason} "
-            f"(ask {pending.id})\n".encode(), POLICY_DENIED_EXIT)
+    return f"{subject}: Permission denied\n".encode(), POLICY_DENIED_EXIT
+
+
+def refusal_of(action: Deny | Pending) -> Refusal:
+    """The record a refused result carries beside its bash-voiced stderr.
+
+    Args:
+        action (Deny | Pending): what the command plane refused with.
+    """
+    if isinstance(action, Pending):
+        return Refusal(kind="pending", reason=action.reason, ask_id=action.id)
+    return Refusal(
+        kind="failed" if action.failed else "deny",
+        reason=action.reason,
+        policy=action.policy,
+        scope=("operand" if action.scope is DenyScope.OPERAND else "command"))
+
+
+def describe_refusal(refusal: Refusal) -> str:
+    """One line saying why, for a surface that hands the agent text
+    rather than a record; the agent adapters append it after stderr.
+
+    Args:
+        refusal (Refusal): the record off a refused result.
+    """
+    if refusal.kind == "pending":
+        return f"requires approval: {refusal.reason} (ask {refusal.ask_id})"
+    if refusal.kind == "failed":
+        return f"policy {refusal.policy} failed"
+    return f"policy denied: {refusal.reason}"
 
 
 async def pre_ops_gate(policies: "Policies",
@@ -265,12 +296,17 @@ class Policies:
             try:
                 action = await getattr(policy, hook)(ctx)
             except Exception as exc:
+                # The agent reads which policy broke, never what it
+                # raised: the exception text is the deployment's to
+                # debug, in the log.
                 logger.error("%s policy %s raised: %s", hook, name, exc)
-                return Deny(f"policy {name} failed: {exc}"), None
+                return Deny(f"{name} failed", policy=name, failed=True), None
             if action is None:
                 continue
             legal = VALIDITY[hook]
             if isinstance(action, Deny) and Deny.kind in legal:
+                if action.policy == "":
+                    action = replace(action, policy=name)
                 return action, None
             if isinstance(action, Ask) and Ask.kind in legal:
                 if asked is None:

@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
+import type { Refusal } from '@struktoai/mirage-core/types'
 import { ExecuteResult } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { decode, ioToStr } from './io-text.ts'
 
@@ -44,5 +45,51 @@ describe('ioToStr', () => {
 
   it('combines stdout and stderr', () => {
     expect(ioToStr(new ExecuteResult(enc('out'), enc('err'), 1))).toBe('out\nerr')
+  })
+})
+
+describe('ioToStr with a refusal', () => {
+  const denied: Refusal = {
+    kind: 'deny',
+    reason: 'no deletes',
+    policy: 'RulePolicy',
+    scope: 'command',
+    askId: null,
+  }
+  const pending: Refusal = {
+    kind: 'pending',
+    reason: 'sign-off',
+    policy: '',
+    scope: 'command',
+    askId: 'a1',
+  }
+
+  it('appends the refusal after stderr', () => {
+    expect(ioToStr(new ExecuteResult(enc(''), enc('rm: Permission denied\n'), 126, denied))).toBe(
+      'rm: Permission denied\npolicy denied: no deletes\n',
+    )
+  })
+
+  it('starts a line for the refusal when needed', () => {
+    expect(ioToStr(new ExecuteResult(enc('partial'), enc(''), 126, pending))).toBe(
+      'partial\nrequires approval: sign-off (ask a1)\n',
+    )
+    expect(ioToStr(new ExecuteResult(enc(''), enc(''), 126, pending))).toBe(
+      'requires approval: sign-off (ask a1)\n',
+    )
+  })
+
+  it('leaves an operand refusal alone', () => {
+    // The stderr line already names the reason, GNU-style.
+    const operand: Refusal = {
+      kind: 'deny',
+      reason: "cannot remove 'x': keys",
+      policy: 'RulePolicy',
+      scope: 'operand',
+      askId: null,
+    }
+    expect(
+      ioToStr(new ExecuteResult(enc(''), enc("rm: cannot remove 'x': keys\n"), 1, operand)),
+    ).toBe("rm: cannot remove 'x': keys\n")
   })
 })

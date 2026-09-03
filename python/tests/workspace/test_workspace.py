@@ -2536,9 +2536,9 @@ def test_special_var_at_split():
 
 
 def test_background_then_foreground():
-    """echo bg &; echo fg — foreground runs after background."""
+    """echo bg & echo fg — foreground runs after background."""
     ws = _ws()
-    io = _exec(ws, "echo bg &; echo fg")
+    io = _exec(ws, "echo bg & echo fg")
     assert b"fg" in _stdout(io)
 
 

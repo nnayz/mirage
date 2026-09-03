@@ -25,6 +25,7 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import picomatch from 'picomatch'
 import { FileVersionTracker } from '../file-version.ts'
+import { withRefusal } from '../io-text.ts'
 
 export { StaleMirageFileError } from '../file-version.ts'
 
@@ -139,6 +140,8 @@ export function mirageOperations(
       if (result.stderr.length > 0) {
         options.onData(Buffer.from(result.stderr))
       }
+      const why = withRefusal('', result.refusal)
+      if (why.length > 0) options.onData(Buffer.from(why))
       return { exitCode: result.exitCode }
     },
   }

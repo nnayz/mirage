@@ -23,7 +23,7 @@ import type { Resource } from '../../resource/base.ts'
 import type { EnvEntries, SecretEntries } from '../../secrets/config.ts'
 import type { ConsoleFactory } from '../../shell/job_table/index.ts'
 import type { ShellParser } from '../../shell/parse/index.ts'
-import type { Limit, ConsistencyPolicy, DriftPolicy, MountMode } from '../../types.ts'
+import type { Limit, ConsistencyPolicy, DriftPolicy, MountMode, Refusal } from '../../types.ts'
 import type { AskHandler, Policy } from '../../policy/index.ts'
 import type { RouteDecision, RoutePolicy } from '../../runtime/routing/index.ts'
 import type { RuntimeEntry } from '../../runtime/base.ts'
@@ -173,11 +173,23 @@ export class ExecuteResult {
   readonly stdout: Uint8Array
   readonly stderr: Uint8Array
   readonly exitCode: number
+  /**
+   * Why the line did not run, when a policy or an unanswered ask refused
+   * it; null on every ordinary run. stderr stays in bash's voice, this
+   * carries the reason.
+   */
+  readonly refusal: Refusal | null
 
-  constructor(stdout: Uint8Array, stderr: Uint8Array, exitCode: number) {
+  constructor(
+    stdout: Uint8Array,
+    stderr: Uint8Array,
+    exitCode: number,
+    refusal: Refusal | null = null,
+  ) {
     this.stdout = stdout
     this.stderr = stderr
     this.exitCode = exitCode
+    this.refusal = refusal
   }
 
   get stdoutText(): string {

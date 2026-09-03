@@ -41,7 +41,7 @@ from mirage.workspace.expand.argv import Argv, expand_argv
 from mirage.workspace.expand.globs import expand_boundary_globs
 from mirage.workspace.lookup import (SLASH_KEEPS_LAST, UNSUPPORTED_BUILTINS,
                                      follows_last_component)
-from mirage.workspace.node.admission import Admitted, Refusal, admit
+from mirage.workspace.node.admission import Admitted, Refused, admit
 from mirage.workspace.session.state import (ensure_var_visible,
                                             pre_session_gate, seed_var,
                                             session_view, set_attr)
@@ -378,10 +378,11 @@ async def _run_argv(
                               stdin,
                               redirects=redirects,
                               cancel=cancel)
-        if isinstance(verdict, Refusal):
+        if isinstance(verdict, Refused):
             cmd_str = " ".join([name, *argv.args])
             return None, IOResult(exit_code=verdict.exit_code,
-                                  stderr=verdict.stderr), ExecutionNode(
+                                  stderr=verdict.stderr,
+                                  refusal=verdict.refusal), ExecutionNode(
                                       command=cmd_str,
                                       exit_code=verdict.exit_code,
                                       stderr=verdict.stderr,

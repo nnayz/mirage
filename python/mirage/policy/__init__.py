@@ -22,8 +22,9 @@ from mirage.policy.constants import (DEFAULT_ASK_REASON, DEFAULT_DENY_REASON,
 from mirage.policy.decisions import (AskHandler, Decisions, ask_rule, covers,
                                      decision_id)
 from mirage.policy.errors import PolicyDenied, PolicyError
-from mirage.policy.policies import (Policies, post_execute_gate, post_ops_gate,
-                                    pre_ops_gate, pre_session_gate,
+from mirage.policy.policies import (Policies, describe_refusal,
+                                    post_execute_gate, post_ops_gate,
+                                    pre_ops_gate, pre_session_gate, refusal_of,
                                     render_deny, render_pending)
 from mirage.policy.profile import (CommandsBlock, CompiledProfile,
                                    MountCommandsBlock, PathsBlock,
@@ -81,6 +82,8 @@ __all__ = [
     "pre_session_gate",
     "ProfileMount",
     "ProfileScript",
+    "describe_refusal",
+    "refusal_of",
     "render_deny",
     "render_pending",
     "resolve_across_mounts",
