@@ -15,9 +15,11 @@
 import { CommandTimeoutError } from '../commands/errors.ts'
 import type { Runtime } from '../runtime/base.ts'
 import { EvalError } from '../runtime/errors.ts'
+import { LanguageRuntime } from '../runtime/language.ts'
 import type { Evaluator } from '../runtime/mixin.ts'
+import type { MountResolver } from '../runtime/resolver.ts'
 import { evalWithCtx, scriptEngine } from '../runtime/script.ts'
-import type { EvalValue } from '../runtime/types.ts'
+import type { BridgeDispatchFn, EvalValue } from '../runtime/types.ts'
 import type { Policy } from './base.ts'
 import {
   DEFAULT_ASK_REASON,
@@ -105,6 +107,22 @@ export function scriptAction(value: EvalValue): Deny | Ask | null {
 }
 
 /**
+ * The workspace's file doors, for the engine a profile script runs on.
+ *
+ * A script judges a line before it runs, and some judgments are about
+ * what a file holds rather than what it is called. The engine is
+ * attached with these exactly as `Runtimes` attaches an agent's, so
+ * the script's `open()` reads the mounts through the same door an
+ * agent's program would, and a read from a script clears the op door
+ * like any other. The workspace supplies them; a bare policy (outside
+ * a workspace) has none, and its scripts see no file.
+ */
+export interface ScriptWiring {
+  bridge: () => BridgeDispatchFn
+  resolver: MountResolver
+}
+
+/**
  * Each profile's script, enforced at the admission gate.
  *
  * The scripted twin of `PermissionsPolicy`, registered right after it:
@@ -114,6 +132,11 @@ export function scriptAction(value: EvalValue): Deny | Ask | null {
  * `SessionScriptsQuery` by the session id the door put in the context,
  * so a session whose profile states no script costs one lookup and
  * nothing else.
+ *
+ * The facts name the paths; the engine can open them. It is wired to
+ * the workspace's files the way an agent's runtime is (`ScriptWiring`),
+ * so a script may read what an operand holds and answer for its
+ * content, not only its name.
  *
  * Every failure fails closed: a script that threw, timed out, answered
  * with the wrong shape, or names an engine that cannot be built refuses
@@ -128,12 +151,18 @@ export function scriptAction(value: EvalValue): Deny | Ask | null {
 export class ScriptPolicy implements Policy {
   private readonly sessions: SessionScriptsQuery
   private readonly mounts: () => readonly string[]
+  private readonly wiring: ScriptWiring | null
   private readonly engines = new Map<string, Runtime & Evaluator>()
   private queue: Promise<unknown> = Promise.resolve()
 
-  constructor(sessions: SessionScriptsQuery, mounts: () => readonly string[]) {
+  constructor(
+    sessions: SessionScriptsQuery,
+    mounts: () => readonly string[],
+    wiring: ScriptWiring | null = null,
+  ) {
     this.sessions = sessions
     this.mounts = mounts
+    this.wiring = wiring
   }
 
   async preCommand(ctx: CommandContext): Promise<Action | null> {
@@ -173,6 +202,12 @@ export class ScriptPolicy implements Policy {
       let engine = this.engines.get(entry.runtime)
       if (engine === undefined) {
         engine = scriptEngine(entry.script, entry.runtime)
+        // Attached before the first eval, as `Runtimes` attaches an
+        // agent's engine: the script's `open()` then reads the mounts
+        // through the same door, and an unattached engine sees no file.
+        if (this.wiring !== null && engine instanceof LanguageRuntime) {
+          engine.attach(this.wiring.bridge(), this.wiring.resolver)
+        }
         this.engines.set(entry.runtime, engine)
       }
       return evalWithCtx(

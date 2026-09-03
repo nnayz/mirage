@@ -23,9 +23,11 @@ from mirage.policy.types import (Action, Ask, CommandContext, Deny,
                                  ProfileScript, SessionScriptsQuery)
 from mirage.runtime.base import Runtime
 from mirage.runtime.errors import EvalError
+from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.mixin import EvaluatorMixin
+from mirage.runtime.resolver import MountResolver
 from mirage.runtime.script import eval_with_ctx, script_engine
-from mirage.runtime.types import EvalValue
+from mirage.runtime.types import DispatchFn, EvalValue
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,13 @@ class ScriptPolicy(Policy):
     logged. Silence on failure would run exactly the commands the
     script existed to judge.
 
+    The facts name the paths; the engine can open them. It is wired to
+    the workspace's files the way an agent's runtime is (``dispatch``
+    and ``resolver``, attached before its first evaluation exactly as
+    ``Runtimes`` attaches an agent's engine), so a script may read what
+    an operand holds and answer for its content, not only its name. A
+    read from a script clears the op door like any other.
+
     Engines are built lazily on the first command that needs one,
     shared per engine name, and closed by the workspace's own close.
     Evaluations are serialized: the engines are worker processes, and
@@ -130,12 +139,31 @@ class ScriptPolicy(Policy):
         mounts (Callable[[], Sequence[str]]): the workspace's mount
             prefixes, read per evaluation so a mount added after
             construction is visible to the script.
+        dispatch (DispatchFn | None): the workspace's op dispatch, the
+            door a script's ``open()`` reads the mounts through; None
+            for a policy outside a workspace, whose scripts see no
+            file.
+        resolver (MountResolver | None): the live mount routing table
+            the dispatch is attached with. Travels with ``dispatch``:
+            one without the other is refused.
+
+    Raises:
+        ValueError: ``dispatch`` and ``resolver`` were not given
+            together.
     """
 
-    def __init__(self, sessions: SessionScriptsQuery,
-                 mounts: Callable[[], Sequence[str]]) -> None:
+    def __init__(self,
+                 sessions: SessionScriptsQuery,
+                 mounts: Callable[[], Sequence[str]],
+                 dispatch: DispatchFn | None = None,
+                 resolver: MountResolver | None = None) -> None:
+        if (dispatch is None) != (resolver is None):
+            raise ValueError(
+                "a script policy's dispatch and resolver travel together")
         self._sessions = sessions
         self._mounts = mounts
+        self._dispatch = dispatch
+        self._resolver = resolver
         self._engines: dict[str, Runtime] = {}
         self._lock = asyncio.Lock()
 
@@ -178,6 +206,13 @@ class ScriptPolicy(Policy):
             engine = self._engines.get(entry.runtime)
             if engine is None:
                 engine = script_engine(entry.script, entry.runtime)
+                # Attached before the first eval, as Runtimes attaches
+                # an agent's engine: the script's open() then reads the
+                # mounts through the same door, and an unattached
+                # engine sees no file.
+                if (self._dispatch is not None and self._resolver is not None
+                        and isinstance(engine, LanguageRuntime)):
+                    engine.attach(self._dispatch, self._resolver)
                 self._engines[entry.runtime] = engine
             # script_engine refuses anything that cannot evaluate, so
             # this narrows a fact already established.

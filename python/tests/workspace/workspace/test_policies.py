@@ -879,6 +879,20 @@ if c['name'] == 'shred':
 verdict
 """
 
+# A judge that reads what the operand holds, not what it is called:
+# the shape a content policy takes when it is a script.
+READER = """\
+verdict = None
+for p in ctx['command']['paths']:
+    try:
+        body = open(p).read()
+    except OSError:
+        continue
+    if 'payload' in body:
+        verdict = {'ask': 'sign-off on payload'}
+verdict
+"""
+
 
 def _scripted(source: str = JUDGE,
               runtime: str = "monty") -> dict[str, dict[str, object]]:
@@ -979,6 +993,33 @@ async def test_an_ask_it_computed_takes_the_approval_door():
         assert (held.refusal.kind, held.refusal.reason) == ("pending",
                                                             "sign-off")
         assert held.refusal.ask_id
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_profile_script_reads_what_the_line_names():
+    # Content, not names: the script opens each operand through the
+    # same door an agent's program would, so it can ask about what a
+    # file holds. A directory operand is not its business, and a file
+    # without the marker runs.
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(READER))
+    try:
+        await ws.execute("mkdir -p /data/in && "
+                         "printf 'subject: invoice\\n\\na payload\\n' "
+                         "> /data/in/mail.txt && "
+                         "echo plain > /data/in/note.txt")
+        ws.create_session("s", profile="release")
+        held = await ws.execute("cat /data/in/mail.txt", session_id="s")
+        assert held.exit_code == 126
+        assert held.refusal is not None
+        assert (held.refusal.kind,
+                held.refusal.reason) == ("pending", "sign-off on payload")
+        plain = await ws.execute("cat /data/in/note.txt", session_id="s")
+        assert plain.exit_code == 0
+        assert (await ws.execute("ls /data/in", session_id="s")).exit_code == 0
     finally:
         await ws.close()
 

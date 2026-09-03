@@ -28,6 +28,20 @@ if c['name'] == 'shred':
 verdict
 `
 
+// A judge that reads what the operand holds, not what it is called:
+// the shape a content policy takes when it is a script.
+const READER_PY = `\
+verdict = None
+for p in ctx['command']['paths']:
+    try:
+        body = open(p).read()
+    except OSError:
+        continue
+    if 'payload' in body:
+        verdict = {'ask': 'sign-off on payload'}
+verdict
+`
+
 // One scripted profile named release: the per-command program and
 // nothing else, so what runs is purely the script's decision.
 function scripted(source = JUDGE, runtime = 'quickjs', language: 'js' | 'python' = 'js') {
@@ -163,6 +177,27 @@ describe('profile scripts', () => {
       const denied = await ws.execute('cat /data/sealed/k', { sessionId: 's' })
       expect(denied.exitCode).toBe(126)
       expect(denied.stderrText).toBe('cat: Permission denied\n')
+    } finally {
+      await ws.close()
+    }
+  }, 120000)
+
+  it('a python judge reads what the line names, through the mounts', async () => {
+    // Content, not names: the script opens each operand through the
+    // same door an agent's program would, so it can ask about what a
+    // file holds. A directory operand is not its business, and a file
+    // without the marker runs.
+    const ws = await build(scripted(READER_PY, 'monty', 'python'))
+    try {
+      await ws.execute(
+        "mkdir -p /data/in && printf 'subject: invoice\\n\\na payload\\n' > /data/in/mail.txt && echo plain > /data/in/note.txt",
+      )
+      ws.createSession('s', { profile: 'release' })
+      const held = await ws.execute('cat /data/in/mail.txt', { sessionId: 's' })
+      expect(held.exitCode).toBe(126)
+      expect(held.refusal).toMatchObject({ kind: 'pending', reason: 'sign-off on payload' })
+      expect((await ws.execute('cat /data/in/note.txt', { sessionId: 's' })).exitCode).toBe(0)
+      expect((await ws.execute('ls /data/in', { sessionId: 's' })).exitCode).toBe(0)
     } finally {
       await ws.close()
     }

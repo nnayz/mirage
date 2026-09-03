@@ -7,8 +7,11 @@ from mirage.policy.script import ScriptPolicy, script_action, script_context
 from mirage.policy.types import (Ask, CommandContext, Deny, DenyScope,
                                  ProfileScript)
 from mirage.runtime.errors import EvalError
+from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.mixin import EvaluatorMixin
-from mirage.runtime.types import EvalResult, EvalValue, ScriptSource
+from mirage.runtime.resolver import PrefixResolver
+from mirage.runtime.types import (EvalResult, EvalValue, RunArgs, RunResult,
+                                  ScriptSource)
 from mirage.types import PathSpec
 
 DENY_ANSWER = {"deny": "sealed"}
@@ -55,6 +58,37 @@ class FakeEngine(EvaluatorMixin):
 
     async def close(self) -> None:
         self.closed = True
+
+
+class FakeLanguageEngine(LanguageRuntime, EvaluatorMixin):
+    """An interpreter engine, recording the doors it was attached to."""
+
+    language = "python"
+    name = "fake"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attached: tuple[object, object] | None = None
+
+    def attach(self, dispatch, resolver) -> None:
+        self.attached = (dispatch, resolver)
+
+    async def run(self, args: RunArgs) -> RunResult:
+        raise NotImplementedError
+
+    async def eval(self,
+                   code: str,
+                   *,
+                   inputs: dict[str, EvalValue] | None = None,
+                   session: str | None = None) -> EvalResult:
+        return EvalResult(value=None)
+
+    async def close(self) -> None:
+        pass
+
+
+async def _door(op, path, **kwargs):
+    raise AssertionError("the door is attached, never called here")
 
 
 class OneScript:
@@ -272,3 +306,41 @@ async def test_an_engine_it_cannot_build_fails_closed(monkeypatch):
     assert isinstance(action, Deny)
     assert action.reason == "profile 'release' script names runtime " \
                             "'ghost': nope"
+
+
+@pytest.mark.asyncio
+async def test_a_wired_policy_attaches_the_doors_to_the_engine(monkeypatch):
+    # The facts name the path; the engine opens it. Attached before the
+    # first evaluation, as Runtimes attaches an agent's engine, so the
+    # script's open() reads the mounts through the same door.
+    engine = FakeLanguageEngine()
+    monkeypatch.setattr("mirage.policy.script.script_engine",
+                        lambda script, runtime: engine)
+    resolver = PrefixResolver(lambda: ["/repo/"])
+    policy = ScriptPolicy(OneScript(_entry()),
+                          _mounts,
+                          dispatch=_door,
+                          resolver=resolver)
+    assert await policy.pre_command(_ctx()) is None
+    assert engine.attached == (_door, resolver)
+
+
+@pytest.mark.asyncio
+async def test_a_bare_policy_attaches_nothing(monkeypatch):
+    # Outside a workspace there is no door to hand over, and the
+    # engine is left as built: its scripts see no file.
+    engine = FakeLanguageEngine()
+    monkeypatch.setattr("mirage.policy.script.script_engine",
+                        lambda script, runtime: engine)
+    policy = ScriptPolicy(OneScript(_entry()), _mounts)
+    assert await policy.pre_command(_ctx()) is None
+    assert engine.attached is None
+
+
+def test_dispatch_and_resolver_travel_together():
+    with pytest.raises(ValueError, match="travel together"):
+        ScriptPolicy(OneScript(None), _mounts, dispatch=_door)
+    with pytest.raises(ValueError, match="travel together"):
+        ScriptPolicy(OneScript(None),
+                     _mounts,
+                     resolver=PrefixResolver(lambda: []))

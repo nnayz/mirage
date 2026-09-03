@@ -215,8 +215,17 @@ class Workspace:
         # (route_policy=) is the line-level counterpart until it is
         # absorbed as a hook.
         self._registry.policies.add(PermissionsPolicy(self._session_mgr))
+        # The doors the runtime world attaches (below), so a profile
+        # script reads the mounts an agent's program would, and through
+        # the same gate. The link source is a lambda because the
+        # namespace is built after this and read only at run time.
+        self._sandbox_resolver = PrefixResolver(
+            self._sandbox_visible_mounts,
+            lambda directory: self._namespace.link_names_under(directory))
         self._script_policy = ScriptPolicy(self._session_mgr,
-                                           self._mount_prefixes)
+                                           self._mount_prefixes,
+                                           dispatch=self.dispatch,
+                                           resolver=self._sandbox_resolver)
         self._registry.policies.add(self._script_policy)
         for entry in policies or []:
             self._registry.policies.add(entry)
@@ -281,9 +290,7 @@ class Workspace:
         self._vfs_loop: asyncio.AbstractEventLoop | None = None
 
         self._runtimes, self._router = wire_runtime_world(
-            self._registry, self.dispatch,
-            PrefixResolver(self._sandbox_visible_mounts,
-                           self._namespace.link_names_under), runtimes)
+            self._registry, self.dispatch, self._sandbox_resolver, runtimes)
         reject_config_script("route_policy", route_policy)
         self._route_policy = route_policy
 

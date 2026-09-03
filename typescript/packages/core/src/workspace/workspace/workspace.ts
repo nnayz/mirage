@@ -283,8 +283,12 @@ export class Workspace {
     // through ws.policies.add(). The runtime policy (policy option) is
     // the line-level counterpart until it is absorbed as a hook.
     this.registry.policies.add(new PermissionsPolicy(this.sessionManager))
-    this.scriptPolicy = new ScriptPolicy(this.sessionManager, () =>
-      this.mounts().map((entry) => entry.prefix),
+    this.scriptPolicy = new ScriptPolicy(
+      this.sessionManager,
+      () => this.mounts().map((entry) => entry.prefix),
+      // The doors the runtime world attaches, so a profile script reads
+      // the mounts an agent's program would, and through the same gate.
+      { bridge: () => this.buildWorkspaceBridge(), resolver: sandboxResolver },
     )
     this.registry.policies.add(this.scriptPolicy)
     for (const entry of options.policies ?? []) this.registry.policies.add(entry)
