@@ -156,6 +156,37 @@ describe('decisions', () => {
     expect(waiting.pending()).toHaveLength(1)
   })
 
+  it('spends an inline answer on the line that asked, not the next one', async () => {
+    // The host answers while the line waits, so the answer belongs to that
+    // line. Allowing once must not let the next identical line through with
+    // nobody asked, and refusing once must not refuse it either.
+    let asked = 0
+    const allow = (r: Decision): Promise<Decision> => {
+      asked += 1
+      return Promise.resolve({ ...r, outcome: Outcome.ALLOW, scope: Scope.ONCE })
+    }
+    const ledger = new Decisions(null, allow)
+    expect(await ledger.resolve(ctx(), ASK)).toBeNull()
+    expect(await ledger.resolve(ctx(), ASK)).toBeNull()
+    expect(asked).toBe(2)
+
+    let refusals = 0
+    const deny = (r: Decision): Promise<Decision> => {
+      refusals += 1
+      return Promise.resolve({ ...r, outcome: Outcome.DENY, scope: Scope.ONCE })
+    }
+    const refused = new Decisions(null, deny)
+    expect((await refused.resolve(ctx(), ASK))?.kind).toBe('deny')
+    expect((await refused.resolve(ctx(), ASK))?.kind).toBe('deny')
+    expect(refusals).toBe(2)
+
+    // A SESSION answer still stands for the rest of the session.
+    const forever = new Decisions(null, (r: Decision) =>
+      Promise.resolve({ ...r, outcome: Outcome.ALLOW, scope: Scope.SESSION }),
+    )
+    for (let i = 0; i < 3; i += 1) expect(await forever.resolve(ctx(), ASK)).toBeNull()
+  })
+
   it('hands the run signal to the host, so a prompt can be taken down', async () => {
     const seen: (AbortSignal | undefined)[] = []
     const controller = new AbortController()

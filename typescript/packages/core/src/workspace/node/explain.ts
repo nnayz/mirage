@@ -457,7 +457,10 @@ async function verdictRefuses(
   const standing = await registry.decisions.held(ctx, asked)
   if (standing === null) return false
   if (standing.kind === 'deny') return true
-  const action = await registry.decisions.resolve(ctx, asked, signal)
+  // handOff: this pass exists to decide whether a secret is fetched, and the
+  // gate behind it still has to admit the line. An answer given here is left
+  // standing for that gate, which consumes it — so the host is asked once.
+  const action = await registry.decisions.resolve(ctx, asked, signal, true)
   if (action !== null && action.kind === 'abandoned') throw makeAbortError()
   return action !== null
 }

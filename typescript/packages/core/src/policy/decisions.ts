@@ -198,10 +198,12 @@ export class Decisions {
   /**
    * Answer a waiting record, yes or no.
    *
-   * ALLOW at ONCE passes the retry of the exact line and is consumed by
-   * it; at SESSION it passes every line the rule covers for the rest of
-   * the session. DENY refuses the retry in the deny voice, once, and
-   * asking again raises a new record.
+   * ALLOW at ONCE passes the one line it was given for and is consumed
+   * by it — the line that asked, when the host answers while it waits,
+   * or that line's retry when the answer comes later; at SESSION it
+   * passes every line the rule covers for the rest of the session. DENY
+   * refuses in the deny voice, once, and asking again raises a new
+   * record.
    */
   async answer(
     decisionId: string,
@@ -233,12 +235,23 @@ export class Decisions {
    * They are asked one at a time, the retry of the line raising the
    * next, and a ONCE answer is only spent once the whole line is
    * answered: spending one while another is still waiting would make
-   * the first question come back on every retry.
+   * the first question come back on every retry. Once the line IS
+   * answered, every ONCE answer behind it is spent — the ones already
+   * on file and the ones a host gave inline moments ago alike — so an
+   * answer never outlives the line it was given for. The exception is
+   * `handOff`, for the pass that asks on another pass's behalf.
    *
    * @param ctx the classified command being admitted.
    * @param ask the chain's Ask.
    * @param signal the run's abort signal, so a question outlives
    *   neither its run's deadline nor a caller's kill.
+   * @param handOff true when a later pass on this same line will read
+   *   the ledger after this one — the env pre-pass raises the question
+   *   and the gate behind it consumes the answer — so an answer given
+   *   inline is left standing for that pass instead of being spent
+   *   here. False for the gate itself, which is the pass that runs the
+   *   line: an answer it was given belongs to the line it was given
+   *   for and to no other.
    * @returns the refusal, the question left waiting, an Abandoned for a
    *   run killed mid-question, or null to run.
    */
@@ -246,6 +259,7 @@ export class Decisions {
     ctx: CommandContext,
     ask: Ask,
     signal?: AbortSignal,
+    handOff = false,
   ): Promise<Deny | Pending | Abandoned | null> {
     const rules = ask.rules ?? [askRule(ctx, ask)]
     const argv = [ctx.command, ...ctx.argv]
@@ -265,10 +279,37 @@ export class Decisions {
     for (const [rule, record] of answers) {
       if (record !== null) continue
       const action = await this.raise(ctx, rule, argv, signal)
-      if (action !== null) return action
+      if (action === null) continue
+      // A refusal the host gave while this line waited refused THIS line, so
+      // it is spent by it — unless a later pass on the same line still has to
+      // read it, which is the pass that refuses in place. A question left
+      // waiting, or a killed run, answered nothing and spends nothing.
+      if (action.kind === 'deny' && !handOff) {
+        await this.spend(sessionId, this.onceAnswers(sessionId, rules, argv, ctx.cwd))
+      }
+      return action
     }
-    await this.spend(sessionId, spent)
+    // Every rule is answered and the line may run. Unless another pass on this
+    // same line is still to come, the ledger is read again rather than trusting
+    // the entry snapshot, because a host that answered inline settled its
+    // record during the loop above: without that, the grant it gave THIS line
+    // would still be standing for the next identical one, and whoever allowed
+    // once would have allowed twice.
+    await this.spend(sessionId, handOff ? spent : this.onceAnswers(sessionId, rules, argv, ctx.cwd))
     return null
+  }
+
+  /** Every ONCE answer standing behind this line, as the ledger holds it now. */
+  private onceAnswers(
+    sessionId: string,
+    rules: readonly CommandRule[],
+    argv: readonly string[],
+    cwd: string,
+  ): Decision[] {
+    const held = this.records(sessionId)
+    return rules
+      .map((rule) => Decisions.settled(held, rule, argv, cwd))
+      .filter((r): r is Decision => r !== null && r.scope === Scope.ONCE)
   }
 
   /**

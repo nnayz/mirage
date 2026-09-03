@@ -184,6 +184,48 @@ async def test_a_host_that_answers_inside_the_line_leaves_nothing_waiting():
 
 
 @pytest.mark.asyncio
+async def test_an_inline_answer_is_spent_by_the_line_that_asked():
+    """The host answers while the line waits, so the answer belongs to
+    that line: allowing once must not let the next identical line
+    through unasked, and refusing once must not refuse it either."""
+    asked = []
+
+    async def allow(record: Decision) -> Decision:
+        asked.append(record.id)
+        return dataclasses.replace(record,
+                                   outcome=Outcome.ALLOW,
+                                   scope=Scope.ONCE)
+
+    ledger = Decisions(on_ask=allow)
+    assert await ledger.resolve(_ctx(), Ask("sign-off", rule=RULE)) is None
+    assert await ledger.resolve(_ctx(), Ask("sign-off", rule=RULE)) is None
+    assert len(asked) == 2
+
+    refusals = []
+
+    async def deny(record: Decision) -> Decision:
+        refusals.append(record.id)
+        return dataclasses.replace(record,
+                                   outcome=Outcome.DENY,
+                                   scope=Scope.ONCE)
+
+    refused = Decisions(on_ask=deny)
+    for _ in range(2):
+        action = await refused.resolve(_ctx(), Ask("sign-off", rule=RULE))
+        assert isinstance(action, Deny)
+    assert len(refusals) == 2
+
+    # The pass that asks on another pass's behalf leaves its answer
+    # standing, so the gate behind it consumes the same one.
+    handed = Decisions(on_ask=allow)
+    asked.clear()
+    assert await handed.resolve(
+        _ctx(), Ask("sign-off", rule=RULE), None, True) is None
+    assert await handed.resolve(_ctx(), Ask("sign-off", rule=RULE)) is None
+    assert len(asked) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_host_takes_one_argument():
     # The handler is a plain `async def h(record)`, as it was before the
     # wait was bounded. The typescript twin grows an optional signal

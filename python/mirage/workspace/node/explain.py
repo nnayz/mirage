@@ -504,7 +504,11 @@ async def _verdict_refuses(
         return False
     if isinstance(standing, Deny):
         return True
-    action = await registry.decisions.resolve(ctx, asked, cancel)
+    # hand_off: this pass exists to decide whether a secret is fetched, and
+    # the gate behind it still has to admit the line. An answer given here is
+    # left standing for that gate, which consumes it -- so the host is asked
+    # once.
+    action = await registry.decisions.resolve(ctx, asked, cancel, True)
     if isinstance(action, Abandoned):
         raise MirageAbortError()
     return action is not None
