@@ -15,6 +15,7 @@
 import asyncio
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,7 @@ from mirage.provision import ProvisionResult
 from mirage.runtime.routing import RouteDecision, RouteDeny, RouteError
 from mirage.shell.parse import (find_syntax_error, find_unterminated_backtick,
                                 parse, syntax_error_result)
+from mirage.types import Refusal
 from mirage.workspace.abort import MirageAbortError
 from mirage.workspace.node import provision_node, run_command_tree
 from mirage.workspace.node.admission import admit_line
@@ -65,11 +67,30 @@ async def plan_eval_stub(cmd: str, **opts: Any) -> IOResult:
     return IOResult()
 
 
+@dataclass(slots=True)
+class NestedRefusal:
+    """The record the line's nested evaluations earned, latest kept.
+
+    Every nested line re-enters execute through ``recurse``, and a
+    substitution keeps only the inner stdout, so that door is the one
+    place its record survives. The typed line reports it when its own
+    tree earned none: the rightmost rule ``IOResult.merge`` applies,
+    with the inner line standing left of the command that consumed
+    its output.
+
+    Args:
+        latest (Refusal | None): the last record a nested line carried.
+    """
+
+    latest: Refusal | None = None
+
+
 async def recurse(
     ws: "Workspace",
     cancel: asyncio.Event | None,
     routing_decision: RouteDecision | None,
     agent_id: str | None,
+    nested: NestedRefusal,
     cmd: str,
     **opts: Any,
 ) -> Any:
@@ -87,14 +108,19 @@ async def recurse(
         routing_decision (RouteDecision | None): the typed line's
             decision, inherited verbatim.
         agent_id (str | None): the typed line's agent, inherited.
+        nested (NestedRefusal): where the record a nested line earned
+            is kept for the typed line.
         cmd (str): the nested command line.
     """
-    return await ws.execute(cmd,
-                            cancel=cancel,
-                            record=False,
-                            routing_decision=routing_decision,
-                            agent_id=agent_id,
-                            **opts)
+    io = await ws.execute(cmd,
+                          cancel=cancel,
+                          record=False,
+                          routing_decision=routing_decision,
+                          agent_id=agent_id,
+                          **opts)
+    if isinstance(io, IOResult) and io.refusal is not None:
+        nested.latest = io.refusal
+    return io
 
 
 def session_cwd(
@@ -200,7 +226,8 @@ async def execute_line(
                                            effective_session, session_id, agent
                                            or "", ws._route_policy,
                                            routing_decision)
-        exec_recursion = partial(recurse, ws, cancel, decision, agent)
+        nested = NestedRefusal()
+        exec_recursion = partial(recurse, ws, cancel, decision, agent, nested)
         if provision:
             name = command_name(command)
             guard = resolve_limit(name) if name else None
@@ -336,6 +363,10 @@ async def execute_line(
             cancel,
             routing_decision=decision,
         )
+        # A record a nested line earned is the line's to report when
+        # its own tree earned none (see NestedRefusal).
+        if io.refusal is None:
+            io.refusal = nested.latest
         session.last_exit_code = io.exit_code
         await ws.apply_io(io, records=scope.records)
         return io

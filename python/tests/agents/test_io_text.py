@@ -92,3 +92,29 @@ def test_with_refusal_bytes_leaves_the_bytes_alone_otherwise():
                       scope="operand")
     assert with_refusal_bytes(b"rm: cannot remove 'x': keys\n",
                               operand) == b"rm: cannot remove 'x': keys\n"
+
+
+def test_with_refusal_describes_an_operand_refusal_whose_line_is_gone():
+    # `cat /protected 2>/dev/null`: the GNU line was redirected away, so
+    # the record is the only reason left to hand over.
+    operand = Refusal(kind="deny",
+                      reason="/protected: frozen",
+                      policy="Frozen",
+                      scope="operand")
+    assert io_to_str(IOResult(
+        exit_code=1, refusal=operand)) == "policy denied: /protected: frozen\n"
+    assert with_refusal_bytes(
+        b"", operand) == b"policy denied: /protected: frozen\n"
+
+
+def test_with_refusal_trusts_the_reason_wherever_the_line_landed():
+    # `2>&1` moved the GNU line onto stdout; the text still says why,
+    # so nothing is repeated.
+    operand = Refusal(kind="deny",
+                      reason="/protected: frozen",
+                      policy="Frozen",
+                      scope="operand")
+    io = IOResult(stdout=b"cat: /protected: frozen\n",
+                  exit_code=1,
+                  refusal=operand)
+    assert io_to_str(io) == "cat: /protected: frozen\n"

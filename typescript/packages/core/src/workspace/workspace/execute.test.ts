@@ -257,4 +257,21 @@ describe('a nested line carries its refusal out', () => {
     expect(io.exitCode).toBe(126)
     expect(io.refusal?.reason).toBe('secrets stay put')
   })
+
+  // A substitution keeps only the inner stdout, so its record has to
+  // reach the line through the door every nested line re-enters by.
+  it('a substitution keeps the record the inner line earned', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; X=$(echo "$V")')
+    expect(io.exitCode).toBe(126)
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+
+  it('an unrefused outer command still reports the inner record', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; echo "[$(echo "$V")]"')
+    expect(io.exitCode).toBe(0)
+    expect(stdoutStr(io)).toBe('[]\n')
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
 })

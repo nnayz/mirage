@@ -38,6 +38,7 @@ export {
   preOpsGate,
   preSessionGate,
   describeRefusal,
+  saysWhy,
   refusalOf,
   renderDeny,
   renderPending,

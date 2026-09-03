@@ -19,7 +19,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../ops/registry.ts'
 import { RAMResource } from '../resource/ram/ram.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
-import { Limit, MountMode, OnExceed, PathSpec } from '../types.ts'
+import { Limit, MountMode, OnExceed, PathSpec, type Refusal } from '../types.ts'
 import { MountRegistry } from '../workspace/mount/registry.ts'
 import { Workspace } from '../workspace/workspace/workspace.ts'
 import type { Policy } from './base.ts'
@@ -31,6 +31,7 @@ import {
   postOpsGate,
   preOpsGate,
   describeRefusal,
+  saysWhy,
   refusalOf,
   renderDeny,
   renderPending,
@@ -770,5 +771,36 @@ describe('Ask in the chain', () => {
         askId: null,
       }),
     ).toBe('policy Raising failed')
+  })
+
+  it('saysWhy reads the reason off the text, not the scope', () => {
+    const operand: Refusal = {
+      kind: 'deny',
+      reason: '/protected: frozen',
+      policy: 'Frozen',
+      scope: 'operand',
+      askId: null,
+    }
+    expect(saysWhy('cat: /protected: frozen\n', operand)).toBe(true)
+    expect(saysWhy('', operand)).toBe(false)
+    const denied: Refusal = {
+      kind: 'deny',
+      reason: 'no deletes',
+      policy: 'RulePolicy',
+      scope: 'command',
+      askId: null,
+    }
+    expect(saysWhy('rm: Permission denied\n', denied)).toBe(false)
+    expect(saysWhy('rm: Permission denied\nno deletes\n', denied)).toBe(true)
+    // An empty reason says nothing, so no text can already have said it.
+    expect(
+      saysWhy('anything', {
+        kind: 'pending',
+        reason: '',
+        policy: '',
+        scope: 'command',
+        askId: 'a1',
+      }),
+    ).toBe(false)
   })
 })

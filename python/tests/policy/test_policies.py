@@ -21,7 +21,7 @@ from mirage.policy import (Action, Ask, CommandContext, CommandRule, Deny,
                            OpsContext, OpsResultContext, Pending, Policies,
                            Policy, PolicyError, describe_refusal,
                            post_execute_gate, post_ops_gate, pre_ops_gate,
-                           refusal_of, render_deny, render_pending)
+                           refusal_of, render_deny, render_pending, says_why)
 from mirage.policy.rule import RulePolicy
 from mirage.resource.ram import RAMResource
 from mirage.types import Limit, MountMode, PathSpec, Producer, Refusal
@@ -393,3 +393,18 @@ def test_describe_refusal_carries_the_reason_the_stderr_line_dropped():
     assert describe_refusal(
         Refusal(kind="failed", reason="Raising failed",
                 policy="Raising")) == "policy Raising failed"
+
+
+def test_says_why_reads_the_reason_off_the_text_not_the_scope():
+    operand = Refusal(kind="deny",
+                      reason="/protected: frozen",
+                      policy="Frozen",
+                      scope="operand")
+    assert says_why("cat: /protected: frozen\n", operand)
+    assert not says_why("", operand)
+    denied = Refusal(kind="deny", reason="no deletes", policy="RulePolicy")
+    assert not says_why("rm: Permission denied\n", denied)
+    assert says_why("rm: Permission denied\nno deletes\n", denied)
+    # An empty reason says nothing, so no text can already have said it.
+    assert not says_why("anything",
+                        Refusal(kind="pending", reason="", ask_id="a1"))

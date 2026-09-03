@@ -25,7 +25,7 @@ from mirage.policy.errors import PolicyDenied, PolicyError
 from mirage.policy.policies import (Policies, describe_refusal,
                                     post_execute_gate, post_ops_gate,
                                     pre_ops_gate, pre_session_gate, refusal_of,
-                                    render_deny, render_pending)
+                                    render_deny, render_pending, says_why)
 from mirage.policy.profile import (CommandsBlock, CompiledProfile,
                                    MountCommandsBlock, PathsBlock,
                                    ProfileMount, SessionProfile, VarsBlock)
@@ -90,6 +90,7 @@ __all__ = [
     "resolve_across_mounts",
     "resolve_limit",
     "resolve_producer",
+    "says_why",
     "Scope",
     "ScriptPolicy",
     "SessionCommandsQuery",

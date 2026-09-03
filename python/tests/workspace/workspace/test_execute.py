@@ -254,3 +254,24 @@ async def test_eval_keeps_the_record_the_inner_line_earned():
     assert io.exit_code == 126
     assert io.refusal is not None
     assert io.refusal.reason == "secrets stay put"
+
+
+# A substitution keeps only the inner stdout, so its record has to
+# reach the line through the door every nested line re-enters by.
+@pytest.mark.asyncio
+async def test_a_substitution_keeps_the_record_the_inner_line_earned():
+    ws = _policed_ws()
+    io = await ws.execute('V=secret; X=$(echo "$V")')
+    assert io.exit_code == 126
+    assert io.refusal is not None
+    assert io.refusal.reason == "secrets stay put"
+
+
+@pytest.mark.asyncio
+async def test_an_unrefused_outer_command_still_reports_the_inner_record():
+    ws = _policed_ws()
+    io = await ws.execute('V=secret; echo "[$(echo "$V")]"')
+    assert io.exit_code == 0
+    assert io.stdout == b"[]\n"
+    assert io.refusal is not None
+    assert io.refusal.reason == "secrets stay put"

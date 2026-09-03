@@ -34,6 +34,7 @@ import type { Dispatcher } from '../dispatcher/index.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import { RouteDeny, type RouteDecision } from '../../runtime/routing/index.ts'
 import { refusalOf, renderDeny, type Deny } from '../../policy/index.ts'
+import type { Refusal } from '../../types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import type { ExecuteFn } from '../expand/node.ts'
 import type { MountRegistry } from '../mount/registry.ts'
@@ -87,6 +88,19 @@ export interface ExecuteEnv {
     options?: Pick<ExecuteOptions, 'sessionId' | 'agentId' | 'cwd' | 'env'>,
   ): Promise<ProvisionResult>
   execute(cmd: string, options: ExecuteOptions): Promise<ExecuteResult>
+}
+
+/**
+ * The record the line's nested evaluations earned, latest kept. Every
+ * nested line re-enters execute through `executeFn`, and a substitution
+ * keeps only the inner stdout, so that door is the one place its record
+ * survives. The typed line reports it when its own tree earned none: the
+ * rightmost rule IOResult.merge applies, with the inner line standing
+ * left of the command that consumed its output. Mirrors Python's
+ * `NestedRefusal`.
+ */
+interface NestedRefusal {
+  latest: Refusal | null
 }
 
 function syntaxErrorResult(offending: string): ExecuteResult {
@@ -244,6 +258,8 @@ async function runLine(
 
   const dispatch: DispatchFn = env.dispatcher.dispatch
 
+  const nested: NestedRefusal = { latest: null }
+
   const executeFn: ExecuteFn = async (cmd, opts) => {
     // The executor's internal evals ($(), eval, source, xargs) are
     // never a typed line: they must not record a history entry or open
@@ -267,6 +283,7 @@ async function runLine(
     const res = await env.execute(cmd, innerOpts)
     // The record rides back with the streams: a refusal the inner line
     // earned is the outer line's to report.
+    if (res.refusal !== null) nested.latest = res.refusal
     return new IOResult({
       exitCode: res.exitCode,
       stdout: res.stdout,
@@ -306,6 +323,7 @@ async function runLine(
       targetSession,
       stdin,
       (line) => parser.parse(line),
+      nested,
     )
   } finally {
     // Durable session fields (cwd, env, grants) flush at the end of
@@ -323,6 +341,7 @@ async function runParsedLine(
   targetSession: Session,
   stdin: ByteSource | null,
   reparse: (line: string) => TSNodeLike,
+  nested: NestedRefusal,
 ): Promise<ExecuteResult> {
   const callAgentId = options.agentId ?? env.agentId ?? ''
   const effectiveSession = forkForCall(targetSession, options.cwd, options.env)
@@ -537,6 +556,9 @@ async function runParsedLine(
     return new ExecuteResult(new Uint8Array(), failed.stderr, failed.exitCode)
   }
   const [[materialized, io], opRecords] = execResult
+  // A record a nested line earned is the line's to report when its own
+  // tree earned none (see NestedRefusal).
+  io.refusal ??= nested.latest
   targetSession.lastExitCode = io.exitCode
   let stdoutBytes: Uint8Array
   try {

@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.io.types import IOResult
-from mirage.policy import describe_refusal
+from mirage.policy import describe_refusal, says_why
 from mirage.types import Refusal
 
 
@@ -23,18 +23,19 @@ def decode(value: bytes | None) -> str:
     return value.decode("utf-8", errors="replace")
 
 
-def refusal_line(refusal: Refusal | None) -> str:
+def refusal_line(text: str, refusal: Refusal | None) -> str:
     """The one line a text surface appends for a refusal, newline
-    included, or the empty string when there is nothing to add.
-
-    Only a command-scoped refusal is described: its stderr is bash's
-    bare ``Permission denied``, which says nothing. An operand-scoped
-    one already names the reason on the line, GNU-style.
+    included, or the empty string when there is nothing to add: no
+    record, or a text that already says why (an operand-scoped
+    denial's GNU line, wherever a redirect landed it). A command-scoped
+    refusal's stderr is bash's bare ``Permission denied``, which never
+    does.
 
     Args:
+        text (str): what the surface is about to hand over.
         refusal (Refusal | None): the record off the result.
     """
-    if refusal is None or refusal.scope == "operand":
+    if refusal is None or says_why(text, refusal):
         return ""
     return describe_refusal(refusal) + "\n"
 
@@ -48,7 +49,7 @@ def with_refusal(text: str, refusal: Refusal | None) -> str:
         refusal (Refusal | None): the record off the result; None
             returns the text unchanged.
     """
-    line = refusal_line(refusal)
+    line = refusal_line(text, refusal)
     if not line or not text:
         return text or line
     return text + line if text.endswith("\n") else f"{text}\n{line}"
@@ -63,7 +64,7 @@ def with_refusal_bytes(data: bytes, refusal: Refusal | None) -> bytes:
         refusal (Refusal | None): the record off the result; None
             returns the bytes unchanged.
     """
-    line = refusal_line(refusal).encode("utf-8")
+    line = refusal_line(decode(data), refusal).encode("utf-8")
     if not line or not data:
         return data or line
     return data + line if data.endswith(b"\n") else data + b"\n" + line

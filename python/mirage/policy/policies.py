@@ -96,6 +96,24 @@ def describe_refusal(refusal: Refusal) -> str:
     return f"policy denied: {refusal.reason}"
 
 
+def says_why(text: str, refusal: Refusal) -> bool:
+    """Whether ``text`` already says why the line was refused.
+
+    An operand-scoped denial's own GNU line carries the reason
+    verbatim, wherever a redirect landed it, so a surface that
+    describes the record after the text tests the text rather than
+    the scope: ``2>/dev/null`` takes the line away and the record is
+    the only reason left, ``2>&1`` moves it onto stdout and nothing
+    needs repeating. An empty reason says nothing, so no text can
+    already have said it.
+
+    Args:
+        text (str): what the surface is about to hand over.
+        refusal (Refusal): the record off the result.
+    """
+    return bool(refusal.reason) and refusal.reason in text
+
+
 async def pre_ops_gate(policies: "Policies",
                        op: str,
                        path: PathSpec,

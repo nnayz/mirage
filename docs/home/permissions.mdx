@@ -119,6 +119,13 @@ pydantic-ai, OpenAI, OpenHands and CAMEL adapters, and the MCP and
 Claude Agent SDK tool servers) appends the record as one line after
 stderr, `policy denied: <reason>` or
 `requires approval: <reason> (ask <id>)`, so the reason is never lost.
+The line is skipped only when the text already carries the reason, which
+is what an operand-scoped refusal's own GNU line does wherever it landed;
+when that line is not part of what the surface hands over, the appended
+one is the only reason left. A refusal a nested line earns
+(`X=$(cat /vault/aws.token)`, `eval`, `xargs`) rides out to the typed
+line's record too, so a denial inside a substitution is never silent
+even when the outer command ran.
 
 ### `paths` and `vars`: hide and show
 
