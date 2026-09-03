@@ -395,9 +395,11 @@ class ProfileScript:
     """One profile's script, as a session carries it: the program, the
     engine it runs on, and the profile it speaks for.
 
-    Compiled off ``SessionProfile.script`` beside the admission rules,
-    and evaluated per command by ``ScriptPolicy`` with the command's
-    facts as ``ctx``; its answer is allow (no opinion), deny or ask.
+    Compiled off ``SessionProfile.policy`` beside the admission rules,
+    and evaluated by ``ScriptPolicy`` at the admission hooks the program
+    defines (``pre_command``, ``pre_ops``, ``pre_session``) with the
+    door's facts as ``ctx``; its answer is allow (no opinion), deny, or
+    at the command gate ask.
 
     Args:
         profile (str): the profile's name, which the script reads as

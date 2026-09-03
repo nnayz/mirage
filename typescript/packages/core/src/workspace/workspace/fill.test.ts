@@ -20,6 +20,7 @@ import { CLISpec, type CLIVerbFn } from '../../commands/cli/types.ts'
 import { RAMResource } from '../../resource/ram/ram.ts'
 import type { Runtime } from '../../runtime/base.ts'
 import { VFSRuntime } from '../../runtime/table.ts'
+import { ScriptSource } from '../../runtime/routing/types.ts'
 import { registerSecrets } from '../../secrets/registry.ts'
 import type { EnvEntries, SecretEntries } from '../../secrets/config.ts'
 import type { ResolvedSecret } from '../../secrets/types.ts'
@@ -1794,4 +1795,68 @@ describe('declared source instances', () => {
       await ws.close()
     }
   })
+})
+
+// A profile policy at the session door and one away from it: only the
+// first is a session-write gate, and only for the sessions under its
+// profile.
+const SESSION_GATE = `\
+def pre_session(ctx):
+    if ctx['write']['key'].startswith('AWS_'):
+        return 'deny'
+    return None
+`
+
+const COMMAND_JUDGE = `\
+def pre_command(ctx):
+    return None
+`
+
+async function scriptedWs(env: EnvEntries, source: string): Promise<Workspace> {
+  const parser = await getTestParser()
+  return new Workspace(
+    { '/': new RAMResource() },
+    {
+      mode: MountMode.WRITE,
+      shellParser: parser,
+      env,
+      profiles: {
+        release: { policy: { script: new ScriptSource(source, 'python'), runtime: 'monty' } },
+      } as never,
+      profile: 'release',
+    },
+  )
+}
+
+describe('fillEnv under a profile policy', () => {
+  it('a policy at the session door drops the masks', async () => {
+    // Its preSession may refuse the assignment mid-line, so the standing
+    // value is fetched, as under a coded preSession policy.
+    const { calls, fetch } = countingSource({ TOKEN: 't0' })
+    registerSecrets('fake-scripted-gate', FakeConfig, fetch)
+    const ws = await scriptedWs({ TOKEN: { from: 'fake-scripted-gate', ref: 'r' } }, SESSION_GATE)
+    try {
+      const io = await ws.execute('TOKEN=local; printenv TOKEN')
+      expect(stdoutStr(io)).toBe('local\n')
+      expect(calls).toEqual(['r'])
+    } finally {
+      await ws.close()
+    }
+  }, 120000)
+
+  it('a policy away from the session door keeps the masks', async () => {
+    // The script policy stands at every door of every workspace, but
+    // this program says nothing at the session door, so the fill's masks
+    // hold and no source is contacted.
+    const { calls, fetch } = countingSource({ TOKEN: 't0' })
+    registerSecrets('fake-scripted-judge', FakeConfig, fetch)
+    const ws = await scriptedWs({ TOKEN: { from: 'fake-scripted-judge', ref: 'r' } }, COMMAND_JUDGE)
+    try {
+      const io = await ws.execute('TOKEN=local; printenv TOKEN')
+      expect(stdoutStr(io)).toBe('local\n')
+      expect(calls).toEqual([])
+    } finally {
+      await ws.close()
+    }
+  }, 120000)
 })

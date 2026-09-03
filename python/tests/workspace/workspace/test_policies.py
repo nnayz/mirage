@@ -21,7 +21,7 @@ from mirage.commands.errors import LimitExceededError
 from mirage.io import IOResult
 from mirage.policy import (CommandRule, ExecuteResultContext, OpsContext,
                            OpsResultContext, PolicyError)
-from mirage.policy.profile import SessionProfile
+from mirage.policy.profile import ProfilePolicy, SessionProfile
 from mirage.resource.ram import RAMResource
 from mirage.runtime.types import ScriptSource
 from mirage.types import Limit, MountMode, OnExceed, Refusal
@@ -864,35 +864,49 @@ async def test_a_bare_name_under_deny_refuses_with_the_default_reason():
 
 
 # A per-command judge: deny cat under /data/sealed/ with a computed
-# reason, take shred to the approval door, stay silent otherwise.
+# reason, take shred to the approval door, stay silent otherwise. A
+# policy defines the hook it answers at, and answers with return.
 JUDGE = """\
-c = ctx['command']
-hit = False
-for p in c['paths']:
-    if p.startswith('/data/sealed/'):
-        hit = True
-verdict = None
-if c['name'] == 'cat' and hit:
-    verdict = {'deny': 'sealed by ' + ctx['profile']}
-if c['name'] == 'shred':
-    verdict = {'ask': 'sign-off'}
-verdict
+def pre_command(ctx):
+    c = ctx['command']
+    for p in c['paths']:
+        if c['name'] == 'cat' and p.startswith('/data/sealed/'):
+            return {'deny': 'sealed by ' + ctx['profile']}
+    if c['name'] == 'shred':
+        return {'ask': 'sign-off'}
+    return None
+"""
+
+# A judge that reads what the operand holds, not what it is called:
+# the shape a content policy takes when it is a program.
+READER = """\
+def pre_command(ctx):
+    for p in ctx['command']['paths']:
+        try:
+            body = open(p).read()
+        except OSError:
+            continue
+        if 'payload' in body:
+            return {'ask': 'sign-off on payload'}
+    return None
 """
 
 
 def _scripted(source: str = JUDGE,
               runtime: str = "monty") -> dict[str, dict[str, object]]:
-    """One scripted profile named release: the per-command program and
-    nothing else, so what runs is purely the script's decision.
+    """One profile named release with a policy and nothing else, so
+    what runs is purely the policy's decision.
 
     Args:
-        source (str): the program evaluated per command.
+        source (str): the policy program called per command.
         runtime (str): the engine it runs on.
     """
     return {
         "release": {
-            "script": ScriptSource(source),
-            "runtime": runtime,
+            "policy": {
+                "script": ScriptSource(source),
+                "runtime": runtime,
+            },
         }
     }
 
@@ -984,6 +998,33 @@ async def test_an_ask_it_computed_takes_the_approval_door():
 
 
 @pytest.mark.asyncio
+async def test_a_profile_script_reads_what_the_line_names():
+    # Content, not names: the script opens each operand through the
+    # same door an agent's program would, so it can ask about what a
+    # file holds. A directory operand is not its business, and a file
+    # without the marker runs.
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(READER))
+    try:
+        await ws.execute("mkdir -p /data/in && "
+                         "printf 'subject: invoice\\n\\na payload\\n' "
+                         "> /data/in/mail.txt && "
+                         "echo plain > /data/in/note.txt")
+        ws.create_session("s", profile="release")
+        held = await ws.execute("cat /data/in/mail.txt", session_id="s")
+        assert held.exit_code == 126
+        assert held.refusal is not None
+        assert (held.refusal.kind,
+                held.refusal.reason) == ("pending", "sign-off on payload")
+        plain = await ws.execute("cat /data/in/note.txt", session_id="s")
+        assert plain.exit_code == 0
+        assert (await ws.execute("ls /data/in", session_id="s")).exit_code == 0
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_a_scripted_profile_leaves_other_sessions_alone():
     ws = Workspace({"/data/": RAMResource()},
                    mode=MountMode.WRITE,
@@ -1038,16 +1079,18 @@ async def test_a_profile_script_runs_in_a_world_with_no_evaluator():
 async def test_a_broken_script_fails_closed_per_command():
     # Silence on failure would run exactly the commands the script
     # existed to judge.
-    ws = Workspace({"/data/": RAMResource()},
-                   mode=MountMode.WRITE,
-                   profiles=_scripted(source="raise ValueError('boom')"))
+    ws = Workspace(
+        {"/data/": RAMResource()},
+        mode=MountMode.WRITE,
+        profiles=_scripted(
+            source="def pre_command(ctx):\n    raise ValueError('boom')"))
     try:
         ws.create_session("s", profile="release")
         refused = await ws.execute("echo hi", session_id="s")
         assert refused.exit_code == 126
         assert refused.stderr == b"echo: Permission denied\n"
         assert refused.refusal is not None
-        assert "profile 'release' script failed" in refused.refusal.reason
+        assert "profile 'release' policy failed" in refused.refusal.reason
         assert (await ws.execute("echo hi")).exit_code == 0
     finally:
         await ws.close()
@@ -1070,22 +1113,160 @@ async def test_an_engine_that_cannot_evaluate_fails_closed():
 
 
 @pytest.mark.asyncio
-async def test_a_profile_script_states_its_runtime():
-    with pytest.raises(ValueError, match="set runtime beside script"):
+async def test_a_profile_policy_states_its_runtime():
+    with pytest.raises(ValueError, match="runtime"):
+        Workspace(
+            {"/data/": RAMResource()},
+            mode=MountMode.WRITE,
+            profiles={"release": {
+                "policy": {
+                    "script": ScriptSource(JUDGE)
+                }
+            }})
+
+
+def test_the_old_script_and_runtime_keys_are_told_the_new_block():
+    # Shipped first as `script` with `runtime` beside it, a word for
+    # what the file is rather than what it does and an engine that read
+    # as the profile's own; the refusal says where they went.
+    with pytest.raises(ValueError, match="now one policy block"):
         Workspace({"/data/": RAMResource()},
                   mode=MountMode.WRITE,
-                  profiles={"release": {
-                      "script": ScriptSource(JUDGE)
-                  }})
+                  profiles={
+                      "release": {
+                          "script": ScriptSource(JUDGE),
+                          "runtime": "monty",
+                      }
+                  })
 
 
 @pytest.mark.asyncio
-async def test_an_inline_document_may_not_add_a_script():
+async def test_a_policy_defining_no_hook_fails_closed():
+    # A verdict as a bare last expression was the old contract; a policy
+    # defines the hooks it answers at, and a program defining none is
+    # refused at every door rather than read for a value it never meant.
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(source="None"))
+    try:
+        ws.create_session("s", profile="release")
+        refused = await ws.execute("echo hi", session_id="s")
+        assert refused.exit_code == 126
+        assert refused.refusal is not None
+        assert refused.refusal.reason == (
+            "profile 'release' policy defines no hook: pre_command, pre_ops "
+            "or pre_session")
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_an_inline_document_may_not_add_a_policy():
     ws = Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE)
     try:
-        with pytest.raises(PolicyError, match="not a script"):
-            ws.create_session("s",
-                              permissions=SessionProfile(
-                                  script=ScriptSource(JUDGE), runtime="monty"))
+        with pytest.raises(PolicyError, match="not a policy"):
+            ws.create_session(
+                "s",
+                permissions=SessionProfile(policy=ProfilePolicy(
+                    script=ScriptSource(JUDGE), runtime="monty")))
+    finally:
+        await ws.close()
+
+
+# A program at the op and session doors and nowhere else: writes under
+# /data/frozen are refused, so is an AWS_* variable, and a command is
+# never judged.
+GATES = """\
+def pre_ops(ctx):
+    op = ctx['op']
+    if op['write'] and op['path'].startswith('/data/frozen/'):
+        return {'deny': 'frozen by ' + ctx['profile']}
+    return None
+
+def pre_session(ctx):
+    if ctx['write']['key'].startswith('AWS_'):
+        return {'deny': 'credentials are set by the operator'}
+    return None
+"""
+
+# The content judge with an op hook beside it: its own reads have to
+# pass the door its pre_ops guards.
+READER_AND_GATE = READER + """
+def pre_ops(ctx):
+    op = ctx['op']
+    if op['write'] and op['path'].startswith('/data/frozen/'):
+        return {'deny': 'frozen'}
+    return None
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_profile_policy_judges_the_op_door():
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(GATES))
+    try:
+        await ws.execute("mkdir -p /data/frozen && echo keep > /data/frozen/k")
+        ws.create_session("s", profile="release")
+        # No command hook, so a command is silence; a read is not a write.
+        assert (await ws.execute("echo hi", session_id="s")).exit_code == 0
+        read = await ws.execute("cat /data/frozen/k", session_id="s")
+        assert read.exit_code == 0
+        assert read.stdout == b"keep\n"
+        refused = await ws.execute("echo x > /data/frozen/f", session_id="s")
+        assert refused.exit_code == 1
+        assert b"Permission denied" in refused.stderr
+        removed = await ws.execute("rm /data/frozen/k", session_id="s")
+        assert removed.exit_code == 1
+        assert b"Permission denied" in removed.stderr
+        assert (await ws.execute("cat /data/frozen/k")).stdout == b"keep\n"
+        # Another session is not judged by it.
+        assert (await ws.execute("echo x > /data/frozen/f")).exit_code == 0
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_profile_policy_judges_the_session_door():
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(GATES))
+    try:
+        ws.create_session("s", profile="release")
+        refused = await ws.execute("export AWS_SECRET=x", session_id="s")
+        assert refused.exit_code == 1
+        assert refused.stderr == b"credentials are set by the operator\n"
+        landed = await ws.execute("export SAFE=1 && echo $SAFE",
+                                  session_id="s")
+        assert landed.exit_code == 0
+        assert landed.stdout == b"1\n"
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_policys_own_read_passes_the_door_its_op_hook_guards():
+    # pre_command opens the operand through the workspace's door while
+    # pre_ops stands at it: the read is the policy's own and is let
+    # through rather than re-entering the evaluation waiting on it, so
+    # the content verdict lands and the op hook still refuses a write.
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(READER_AND_GATE))
+    try:
+        await ws.execute("mkdir -p /data/in && printf 'subject: invoice\\n\\n"
+                         "a payload\\n' > /data/in/mail.txt && "
+                         "echo plain > /data/in/note.txt")
+        ws.create_session("s", profile="release")
+        held = await ws.execute("cat /data/in/mail.txt", session_id="s")
+        assert held.exit_code == 126
+        assert held.refusal is not None
+        assert held.refusal.kind == "pending"
+        assert held.refusal.reason == "sign-off on payload"
+        assert (await ws.execute("cat /data/in/note.txt",
+                                 session_id="s")).exit_code == 0
+        refused = await ws.execute("echo x > /data/frozen/f", session_id="s")
+        assert refused.exit_code == 1
+        assert b"Permission denied" in refused.stderr
     finally:
         await ws.close()

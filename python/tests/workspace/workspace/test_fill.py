@@ -30,7 +30,7 @@ from mirage.policy.types import Decision, Scope
 from mirage.resource.ram import RAMResource
 from mirage.runtime.base import Runtime
 from mirage.runtime.mixin import LineExecutorMixin
-from mirage.runtime.types import RunResult
+from mirage.runtime.types import RunResult, ScriptSource
 from mirage.secrets import registry
 from mirage.secrets.errors import SecretsError
 from mirage.secrets.registry import register_secrets
@@ -2107,5 +2107,65 @@ async def test_a_bad_instance_config_fails_the_lines_that_read_it():
         out = await ws.execute('echo "$TOKEN"')
         assert out.exit_code == 1
         assert b"secrets.prod" in out.stderr
+    finally:
+        await ws.close()
+
+
+# A profile policy at the session door and one away from it: only the
+# first is a session-write gate, and only for the sessions under its
+# profile.
+SESSION_GATE = """\
+def pre_session(ctx):
+    if ctx['write']['key'].startswith('AWS_'):
+        return 'deny'
+    return None
+"""
+
+COMMAND_JUDGE = """\
+def pre_command(ctx):
+    return None
+"""
+
+
+def _scripted_ws(env, source: str) -> Workspace:
+    return _ws(env,
+               profiles={
+                   "release": {
+                       "policy": {
+                           "script": ScriptSource(source),
+                           "runtime": "monty",
+                       }
+                   }
+               },
+               profile="release")
+
+
+@pytest.mark.asyncio
+async def test_a_profile_policy_at_the_session_door_drops_the_masks():
+    # Its pre_session may refuse the assignment mid-line, so the standing
+    # value is fetched, as under a coded pre_session policy.
+    calls, fetch = counting_source({"TOKEN": "t0"})
+    register_secrets("fake", FakeConfig, fetch)
+    ws = _scripted_ws({"TOKEN": {"from": "fake", "ref": "r"}}, SESSION_GATE)
+    try:
+        io = await ws.execute("TOKEN=local; printenv TOKEN")
+        assert (await io.stdout_str()) == "local\n"
+        assert calls == ["r"]
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_profile_policy_away_from_the_session_door_keeps_the_masks():
+    # The script policy stands at every door of every workspace, but this
+    # program says nothing at the session door, so the fill's masks hold
+    # and no source is contacted.
+    calls, fetch = counting_source({"TOKEN": "t0"})
+    register_secrets("fake", FakeConfig, fetch)
+    ws = _scripted_ws({"TOKEN": {"from": "fake", "ref": "r"}}, COMMAND_JUDGE)
+    try:
+        io = await ws.execute("TOKEN=local; printenv TOKEN")
+        assert (await io.stdout_str()) == "local\n"
+        assert calls == []
     finally:
         await ws.close()

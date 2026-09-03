@@ -1112,14 +1112,61 @@ describe('CLI to daemon round trip', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('rebases a profile script path onto the config dir before loading it', async () => {
-    // The check door validates the profile without reading its script:
+  it('rebases a profile policy path onto the config dir before loading it', async () => {
+    // The check door validates the profile without reading its policy:
     // reading at validation resolved `roles/x.js` against the process
     // cwd (this test's cwd is the package, not the config dir), so
     // checking a file config from anywhere else failed with ENOENT.
-    const dir = mkdtempSync(join(tmpdir(), 'mirage-profile-script-'))
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-profile-policy-'))
     mkdirSync(join(dir, 'roles'))
-    writeFileSync(join(dir, 'roles', 'x.js'), 'null\n')
+    writeFileSync(join(dir, 'roles', 'x.js'), 'function preCommand() { return null }\n')
+    const file = join(dir, 'w.yaml')
+    writeFileSync(
+      file,
+      [
+        'mounts:',
+        '  /data:',
+        '    resource: ram',
+        'profiles:',
+        '  release: {policy: {script: roles/x.js, runtime: quickjs}}',
+        '',
+      ].join('\n'),
+    )
+    const wire = checkWorkspaceConfigFile(file)
+    const profiles = wire.profiles as Record<string, { policy: Record<string, unknown> }>
+    expect(profiles.release?.policy.script).toBe(join(dir, 'roles', 'x.js'))
+    const args = await configToWorkspaceArgs(loadWorkspaceConfigFile(file))
+    const release = args.options.profiles?.release
+    expect(release?.policy?.script).toBeInstanceOf(ScriptSource)
+    expect((release?.policy?.script as ScriptSource).source).toBe(
+      'function preCommand() { return null }\n',
+    )
+    expect(release?.policy?.runtime).toBe('quickjs')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('refuses a profile policy that states no runtime', () => {
+    // There is no default engine: a policy the config does not pin to
+    // an engine is refused at load, not guessed at the gate.
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-profile-policy-'))
+    const file = join(dir, 'w.yaml')
+    writeFileSync(
+      file,
+      [
+        'mounts:',
+        '  /data:',
+        '    resource: ram',
+        'profiles:',
+        '  release: {policy: {script: roles/x.js}}',
+        '',
+      ].join('\n'),
+    )
+    expect(() => checkWorkspaceConfigFile(file)).toThrow(/runtime names the engine the policy/)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('tells a profile written with script and runtime where the keys went', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-profile-policy-'))
     const file = join(dir, 'w.yaml')
     writeFileSync(
       file,
@@ -1132,34 +1179,7 @@ describe('CLI to daemon round trip', () => {
         '',
       ].join('\n'),
     )
-    const wire = checkWorkspaceConfigFile(file)
-    const profiles = wire.profiles as Record<string, Record<string, unknown>>
-    expect(profiles.release?.script).toBe(join(dir, 'roles', 'x.js'))
-    const args = await configToWorkspaceArgs(loadWorkspaceConfigFile(file))
-    const release = args.options.profiles?.release
-    expect(release?.script).toBeInstanceOf(ScriptSource)
-    expect((release?.script as ScriptSource).source).toBe('null\n')
-    expect(release?.runtime).toBe('quickjs')
-    rmSync(dir, { recursive: true, force: true })
-  })
-
-  it('refuses a profile script that states no runtime', () => {
-    // There is no default engine: a script the config does not pin to
-    // an engine is refused at load, not guessed at the gate.
-    const dir = mkdtempSync(join(tmpdir(), 'mirage-profile-script-'))
-    const file = join(dir, 'w.yaml')
-    writeFileSync(
-      file,
-      [
-        'mounts:',
-        '  /data:',
-        '    resource: ram',
-        'profiles:',
-        '  release: {script: roles/x.js}',
-        '',
-      ].join('\n'),
-    )
-    expect(() => checkWorkspaceConfigFile(file)).toThrow(/set runtime beside script/)
+    expect(() => checkWorkspaceConfigFile(file)).toThrow(/now one policy block/)
     rmSync(dir, { recursive: true, force: true })
   })
 })

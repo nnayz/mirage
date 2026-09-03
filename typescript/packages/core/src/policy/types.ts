@@ -312,13 +312,14 @@ export interface SessionCommandsQuery {
 }
 
 /**
- * One profile's script, as a session carries it: the program, the
- * engine it runs on, and the profile it speaks for. Compiled off
- * `SessionProfile.script` beside the admission rules, and evaluated per
- * command by `ScriptPolicy` with the command's facts as `ctx`; its
- * answer is allow (no opinion), deny or ask. `profile` is the
- * profile's name, which the script reads as `ctx.profile`; empty for a
- * profile document passed to `createSession` without a name.
+ * One profile's policy, as a session carries it: the program, the
+ * engine it runs on, and the profile it speaks for. Compiled off the
+ * profile's policy block beside the admission rules; `ScriptPolicy`
+ * calls the admission hooks it defines (`preCommand`, `preOps`,
+ * `preSession`) with the door's facts, and a hook returns allow (no
+ * opinion), deny, or at the command gate ask. `profile` is
+ * the profile's name, which the policy reads as `ctx.profile`; empty
+ * for a profile document passed to `createSession` without a name.
  */
 export interface ProfileScript {
   readonly profile: string
@@ -395,13 +396,21 @@ export interface CommandContext {
  * door (the dispatcher every access routes through, FUSE included),
  * before any backend or cache I/O. `sessionId` is the session the door
  * serves, set from the session it already resolves for hides and
- * modes; empty for the unbound host view. */
+ * modes; empty for the unbound host view. `issuer` is the token the op
+ * arrived with, when its caller stamped one: a policy whose own engine
+ * reads through the door stamps those reads, and recognizes its token
+ * here so the read an evaluation is waiting on is not judged by the
+ * hook that is waiting. It travels with the op as an argument, never
+ * through ambient context, so no concurrent op can be taken for it;
+ * python marks the same read with a task-local ContextVar, which a
+ * browser has no twin of. */
 export interface OpsContext {
   op: string
   path: PathSpec
   write: boolean
   prefix: string
   sessionId?: string
+  issuer?: symbol
 }
 
 /** One completed VFS op, as postOps hooks see it; a Deny suppresses
@@ -453,6 +462,9 @@ export const VALIDITY: Readonly<
   postExecute: new Set(['limit']),
   preSession: new Set(['deny']),
 }
+
+/** The name of one Policy hook, as the interface spells it. */
+export type PolicyHook = keyof typeof VALIDITY
 
 /**
  * What one command of a line would do, without doing it.

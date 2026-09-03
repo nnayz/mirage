@@ -209,14 +209,23 @@ class Workspace:
         # built-ins the registry seeds: the profile's admission rules
         # (PermissionsPolicy, reading each session's compiled rules
         # from the manager by the id the door puts in the context), the
-        # profile's script (ScriptPolicy, evaluated per command through
-        # the same manager), then Policy instances, then anything added
+        # profile's policy (ScriptPolicy, calling its hook per command
+        # through the same manager), then Policy instances, then anything added
         # later through ws.policies.add(). The route policy
         # (route_policy=) is the line-level counterpart until it is
         # absorbed as a hook.
         self._registry.policies.add(PermissionsPolicy(self._session_mgr))
+        # The doors the runtime world attaches (below), so a profile
+        # script reads the mounts an agent's program would, and through
+        # the same gate. The link source is a lambda because the
+        # namespace is built after this and read only at run time.
+        self._sandbox_resolver = PrefixResolver(
+            self._sandbox_visible_mounts,
+            lambda directory: self._namespace.link_names_under(directory))
         self._script_policy = ScriptPolicy(self._session_mgr,
-                                           self._mount_prefixes)
+                                           self._mount_prefixes,
+                                           dispatch=self.dispatch,
+                                           resolver=self._sandbox_resolver)
         self._registry.policies.add(self._script_policy)
         for entry in policies or []:
             self._registry.policies.add(entry)
@@ -281,9 +290,7 @@ class Workspace:
         self._vfs_loop: asyncio.AbstractEventLoop | None = None
 
         self._runtimes, self._router = wire_runtime_world(
-            self._registry, self.dispatch,
-            PrefixResolver(self._sandbox_visible_mounts,
-                           self._namespace.link_names_under), runtimes)
+            self._registry, self.dispatch, self._sandbox_resolver, runtimes)
         reject_config_script("route_policy", route_policy)
         self._route_policy = route_policy
 
@@ -954,7 +961,7 @@ class Workspace:
         return ""
 
     def _mount_prefixes(self) -> list[str]:
-        """The mount prefixes a profile script reads as
+        """The mount prefixes a profile policy reads as
         ``ctx["mounts"]``, read per evaluation so a later mount shows.
         """
         return [entry.prefix for entry in self._registry.mounts()]

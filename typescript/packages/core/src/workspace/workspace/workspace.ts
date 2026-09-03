@@ -79,7 +79,11 @@ import { DEFAULT_PROFILE } from '../session/constants.ts'
 import { SessionManager } from '../session/manager.ts'
 import type { WorkspaceFields, WorkspaceStateStore } from '../store/base.ts'
 import { varsFromEntries, type Session } from '../session/session.ts'
-import { parseProfileMounts, type SessionProfile } from '../../policy/profile.ts'
+import {
+  parseProfileMounts,
+  parseProfilePolicy,
+  type SessionProfile,
+} from '../../policy/profile.ts'
 import { applyProfile, compileProfile, resolveProfile, withInline } from '../session/resolve.ts'
 import { ScriptPolicy } from '../../policy/script.ts'
 import { newSessionId, newWorkspaceId } from '../../utils/ids.ts'
@@ -261,30 +265,35 @@ export class Workspace {
     // does not pass that door, and the python host refuses the same
     // profiles at construction.
     for (const [name, profile] of Object.entries(this.profiles)) {
-      if (profile.script != null && profile.runtime == null) {
+      // A typed caller does not pass the parser, so this door repeats
+      // its two checks: the old keys are told where they went, and a
+      // policy block is whole.
+      const legacy = profile as { script?: unknown; runtime?: unknown }
+      if (legacy.script !== undefined || legacy.runtime !== undefined) {
         throw new PolicyError(
-          `profile '${name}': a profile script states the engine it runs on; ` +
-            `set runtime beside script`,
+          `profile '${name}': script and runtime are now one policy block, ` +
+            `policy: {script: <file>, runtime: <engine>}; its program defines ` +
+            `pre_command(ctx) and answers with return`,
         )
       }
-      if (profile.script == null && profile.runtime != null) {
-        throw new PolicyError(
-          `profile '${name}': runtime names the engine a script runs on, ` +
-            `and this profile states no script`,
-        )
-      }
+      if (profile.policy != null) parseProfilePolicy(profile.policy, `profile '${name}' policy`)
     }
     // Admission policies, consulted in registration order after the
     // built-ins the registry seeds: the document's command tiers
     // (PermissionsPolicy, reading each session's compiled layers from
     // the manager by the id the door puts in the context), the
-    // profile's script (ScriptPolicy, evaluated per command through the
-    // same manager), then Policy instances, then anything added later
+    // profile's policy (ScriptPolicy, calling its hook per command through
+    // the same manager), then Policy instances, then anything added later
     // through ws.policies.add(). The runtime policy (policy option) is
     // the line-level counterpart until it is absorbed as a hook.
     this.registry.policies.add(new PermissionsPolicy(this.sessionManager))
-    this.scriptPolicy = new ScriptPolicy(this.sessionManager, () =>
-      this.mounts().map((entry) => entry.prefix),
+    this.scriptPolicy = new ScriptPolicy(
+      this.sessionManager,
+      () => this.mounts().map((entry) => entry.prefix),
+      // The doors the runtime world attaches, so a profile policy reads
+      // the mounts an agent's program would, and through the same gate,
+      // with its ops stamped as its own for its `preOps` to recognize.
+      { bridge: (issuer) => this.buildWorkspaceBridge(issuer), resolver: sandboxResolver },
     )
     this.registry.policies.add(this.scriptPolicy)
     for (const entry of options.policies ?? []) this.registry.policies.add(entry)
@@ -466,24 +475,40 @@ export class Workspace {
   // the same path as shell commands — cache read-through on
   // reads, post-write invalidation, and mount-mode enforcement narrowed
   // by the current session all come from the Dispatcher. Reads are raw
-  // bytes (no filetype rendering), matching the Python WasmVFS.
-  private buildWorkspaceBridge(): BridgeDispatchFn {
+  // bytes (no filetype rendering), matching the Python WasmVFS. An
+  // `issuer` rides every op as the `issuer` kwarg, which the dispatcher
+  // lifts onto the op door's context and never forwards to a backend:
+  // it is how a profile policy's own reads reach its `preOps` marked as
+  // its own, as an argument rather than ambient state.
+  private buildWorkspaceBridge(issuer?: symbol): BridgeDispatchFn {
+    const dispatch = (
+      opName: string,
+      path: string,
+      args: readonly unknown[] = [],
+      kwargs: OpKwargs = {},
+    ): Promise<unknown> =>
+      this.dispatchInternal(
+        opName,
+        path,
+        args,
+        issuer === undefined ? kwargs : { ...kwargs, issuer },
+      )
     return async (op, path, bytes, dst, attrs) => {
       switch (op) {
         case 'read':
-          return (await this.dispatchInternal('read', path)) as Uint8Array
+          return (await dispatch('read', path)) as Uint8Array
         case 'write': {
           if (bytes === undefined) throw new Error('write op requires bytes')
           const buf =
             bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayLike<number>)
-          await this.dispatchInternal('write', path, [buf])
+          await dispatch('write', path, [buf])
           return undefined
         }
         case 'append': {
           if (bytes === undefined) throw new Error('append op requires bytes')
           const buf =
             bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayLike<number>)
-          await this.dispatchInternal('append', path, [buf])
+          await dispatch('append', path, [buf])
           return undefined
         }
         case 'stat':
@@ -492,37 +517,32 @@ export class Workspace {
           // tiers cannot drift into two translations of one fact.
           // `nofollow` is the only attrs field a stat carries, and it
           // is the caller's lstat; the dispatcher consumes it.
-          return await this.dispatchInternal(
+          return await dispatch(
             'stat',
             path,
             [],
             attrs?.nofollow === true ? { nofollow: true } : undefined,
           )
         case 'create':
-          await this.dispatchInternal('create', path)
+          await dispatch('create', path)
           return undefined
         case 'truncate':
-          await this.dispatchInternal('truncate', path, [0])
+          await dispatch('truncate', path, [0])
           return undefined
         case 'unlink':
-          await this.dispatchInternal('unlink', path)
+          await dispatch('unlink', path)
           return undefined
         case 'mkdir':
           // `parents` is pathlib's mkdir(parents=True), riding to the
           // backend op as a kwarg the way python's dispatch carries it.
-          await this.dispatchInternal(
-            'mkdir',
-            path,
-            [],
-            attrs?.parents === true ? { parents: true } : {},
-          )
+          await dispatch('mkdir', path, [], attrs?.parents === true ? { parents: true } : {})
           return undefined
         case 'rmdir':
-          await this.dispatchInternal('rmdir', path)
+          await dispatch('rmdir', path)
           return undefined
         case 'rename': {
           if (dst === undefined) throw new Error('rename op requires dst')
-          await this.dispatchInternal('rename', path, [PathSpec.fromStrPath(dst)])
+          await dispatch('rename', path, [PathSpec.fromStrPath(dst)])
           return undefined
         }
         case 'symlink': {
@@ -530,14 +550,14 @@ export class Workspace {
           // relative or dangling, and resolving it here would record a
           // different link than the guest asked for.
           if (dst === undefined) throw new Error('symlink op requires dst')
-          await this.dispatchInternal('symlink', path, [], { target: dst })
+          await dispatch('symlink', path, [], { target: dst })
           return undefined
         }
         case 'readlink':
-          return (await this.dispatchInternal('readlink', path)) as string
+          return (await dispatch('readlink', path)) as string
         case 'setattr': {
           if (attrs === undefined) throw new Error('setattr op requires attrs')
-          await this.dispatchInternal('setattr', path, [], attrs as Record<string, unknown>)
+          await dispatch('setattr', path, [], attrs as Record<string, unknown>)
           return undefined
         }
         case 'readdir':
@@ -545,7 +565,7 @@ export class Workspace {
           // runtime door (`RuntimeVFS.readdir`) stats each entry and
           // marks the links, so a row is built in one tier and in one
           // shape in both languages.
-          return ((await this.dispatchInternal('readdir', path)) as string[] | null) ?? []
+          return ((await dispatch('readdir', path)) as string[] | null) ?? []
       }
     }
   }

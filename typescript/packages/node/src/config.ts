@@ -555,7 +555,7 @@ function parseProfiles(raw: unknown): Record<string, SessionProfile> {
 }
 
 /**
- * Load each profile's path-form script into a ScriptSource.
+ * Load each profile's path-form policy into a ScriptSource.
  *
  * By this door the path is absolute for a file config (the check door
  * rebased it onto the config file's directory); an object config's
@@ -567,9 +567,10 @@ function loadProfileScripts(
 ): Record<string, SessionProfile> {
   const out: Record<string, SessionProfile> = {}
   for (const [name, profile] of Object.entries(profiles)) {
+    const policy = profile.policy
     out[name] =
-      typeof profile.script === 'string'
-        ? { ...profile, script: loadScriptSource(profile.script) }
+      policy != null && typeof policy.script === 'string'
+        ? { ...profile, policy: { ...policy, script: loadScriptSource(policy.script) } }
         : profile
   }
   return out
@@ -860,12 +861,16 @@ export function absolutizeScripts(raw: Record<string, unknown>, base: string): v
   }
   if (isPlainObject(raw.profiles)) {
     for (const block of Object.values(raw.profiles)) {
-      if (isPlainObject(block)) absolutizeScriptKey(block, base)
+      // A profile's policy block carries its program the way a clis
+      // entry does, so its `script` rebases the same way.
+      if (isPlainObject(block) && isPlainObject(block.policy)) {
+        absolutizeScriptKey(block.policy, base)
+      }
     }
   }
 }
 
-/** Rebase one runtimes/clis entry's relative `script` path onto `base`. */
+/** Rebase one runtimes/clis/policy entry's relative `script` path onto `base`. */
 function absolutizeScriptKey(entry: Record<string, unknown>, base: string): void {
   const script = entry.script
   if (typeof script === 'string' && isScriptPath(script) && !isAbsolute(script.trim())) {

@@ -166,10 +166,54 @@ profiles:
 ```
 
 A profile may also state `cwd` and `env` (seeded and exported at session
-creation), and a `script` with its `runtime`: a program evaluated at the
-gate for every command, whose last expression answers allow, deny or ask,
-for the conditions a declarative rule cannot express. Like every rule,
-a script can only restrict, never grant past a deny.
+creation), and a `policy`: a program that defines the admission hooks it
+answers at, the way a coded [Policy](/home/policy-engine) does, and the
+engine that runs it. `pre_command(ctx)` judges a command before it runs
+and returns `None` or `"allow"` for no opinion, `"deny"` or
+`{"deny": reason}`, `"ask"` or `{"ask": reason}`. `pre_ops(ctx)` judges
+one VFS op (`ctx["op"]`: `name`, `path`, `write`, `prefix`) and
+`pre_session(ctx)` one env write (`ctx["write"]`: `key`, `value`,
+`verb`); both answer allow or deny only. JavaScript spells them
+`preCommand`, `preOps`, `preSession`. Like every rule, a policy can only
+restrict, never grant past a deny.
+
+The hook is told the line's facts as `ctx` (the command, its resolved
+paths, the session, the mounts), and its engine is attached to the
+workspace the way an agent's runtime is: a python policy may `open()` a
+file the line names and judge what it holds, not only what it is called.
+The read clears the op door like any other.
+
+```yaml
+profiles:
+  reviewer:
+    policy:
+      script: ask_curl.py
+      runtime: monty
+```
+
+```python ask_curl.py
+# Ask before a command reads a file that mentions curl.
+def pre_command(ctx):
+    for path in ctx["command"]["paths"]:
+        if "curl" in contents(path):
+            return {"ask": "approve before a command reads it"}
+    return None
+
+def contents(path):
+    try:
+        return open(path).read()
+    except OSError:
+        return ""
+```
+
+A policy file defines any of the three admission hooks and nothing
+else; the output doors stay coded hooks. A hook the file leaves out is
+silence at that door, and a file defining none fails closed. `pre_ops`
+fires per op, thousands under one recursive command, so keep it cheap;
+the policy's own reads are not judged by it. One policy per profile: a
+file holds as many checks as it needs, and it stands in the chain beside
+the document's own rules and every coded policy, under the one rule that
+the first deny wins and an ask is kept only while nothing refuses.
 
 ## Asks
 
@@ -263,3 +307,16 @@ filesystems, one line per rule interaction:
 [typescript](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/permissions.ts).
 Its printed table is pinned in CI, so the behaviors this page describes
 are the behaviors the build enforces.
+
+The policy example puts a coded `Policy` beside a profile's `policy`
+block in code, then loads the same block from a document:
+[policy.py](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/policy.py),
+[policy.ts](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/policy.ts);
+[workspace.yaml](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/workspace.yaml)
+with its program in
+[guard.py](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/guard.py),
+loaded by
+[policy_yaml.py](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/policy_yaml.py)
+and
+[policy_yaml.ts](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/policy_yaml.ts).
+Both tables are pinned the same way.

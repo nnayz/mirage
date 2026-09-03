@@ -22,7 +22,9 @@ from mirage.policy import (Action, Ask, CommandContext, CommandRule, Deny,
                            Policy, PolicyError, describe_refusal,
                            post_execute_gate, post_ops_gate, pre_ops_gate,
                            refusal_of, render_deny, render_pending, says_why)
+from mirage.policy.mixin import SessionScopedMixin
 from mirage.policy.rule import RulePolicy
+from mirage.policy.types import SessionContext
 from mirage.resource.ram import RAMResource
 from mirage.types import Limit, MountMode, PathSpec, Producer, Refusal
 from mirage.workspace.mount import MountRegistry
@@ -417,3 +419,34 @@ def test_says_why_needs_the_operand_diagnostic_itself():
     assert not says_why(
         "cat: \n", Refusal(kind="deny", reason="", policy="P",
                            scope="operand"))
+
+
+class ForSomeSessions(Policy, SessionScopedMixin):
+    """Overrides the session door, but speaks only for session ``a``."""
+
+    async def pre_session(self, ctx: SessionContext) -> Action | None:
+        return None
+
+    async def wants_for(self, hook: str, session_id: str) -> bool:
+        return session_id == "a"
+
+
+class ForEveryone(Policy):
+
+    async def pre_session(self, ctx: SessionContext) -> Action | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_wants_for_refines_wants_per_session():
+    # The static answer is yes as soon as any policy overrides the hook,
+    # and the doors keep gating on it; the per-session answer asks a
+    # session-scoped policy whether this session is one of its.
+    scoped = Policies([ForSomeSessions()])
+    assert scoped.wants("pre_session")
+    assert await scoped.wants_for("pre_session", "a") is True
+    assert await scoped.wants_for("pre_session", "b") is False
+    assert await scoped.wants_for("pre_ops", "a") is False
+    # A policy speaking for every session settles it, wherever it stands.
+    both = Policies([ForSomeSessions(), ForEveryone()])
+    assert await both.wants_for("pre_session", "b") is True

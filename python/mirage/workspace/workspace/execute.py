@@ -307,8 +307,8 @@ async def execute_line(
             # expansion is what consumes the values.
             nodes = line_nodes(ast, effective_session)
             policies = ws._registry.policies
-            writes_gated = (policies is not None
-                            and policies.wants("pre_session"))
+            writes_gated = (policies is not None and await policies.wants_for(
+                "pre_session", effective_session.session_id))
 
             def plan_names(
                     subset: Sequence[tree_sitter.Node]) -> frozenset[str]:
