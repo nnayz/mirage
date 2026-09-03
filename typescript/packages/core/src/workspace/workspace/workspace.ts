@@ -291,8 +291,9 @@ export class Workspace {
       this.sessionManager,
       () => this.mounts().map((entry) => entry.prefix),
       // The doors the runtime world attaches, so a profile policy reads
-      // the mounts an agent's program would, and through the same gate.
-      { bridge: () => this.buildWorkspaceBridge(), resolver: sandboxResolver },
+      // the mounts an agent's program would, and through the same gate,
+      // with its ops stamped as its own for its `preOps` to recognize.
+      { bridge: (issuer) => this.buildWorkspaceBridge(issuer), resolver: sandboxResolver },
     )
     this.registry.policies.add(this.scriptPolicy)
     for (const entry of options.policies ?? []) this.registry.policies.add(entry)
@@ -474,24 +475,40 @@ export class Workspace {
   // the same path as shell commands — cache read-through on
   // reads, post-write invalidation, and mount-mode enforcement narrowed
   // by the current session all come from the Dispatcher. Reads are raw
-  // bytes (no filetype rendering), matching the Python WasmVFS.
-  private buildWorkspaceBridge(): BridgeDispatchFn {
+  // bytes (no filetype rendering), matching the Python WasmVFS. An
+  // `issuer` rides every op as the `issuer` kwarg, which the dispatcher
+  // lifts onto the op door's context and never forwards to a backend:
+  // it is how a profile policy's own reads reach its `preOps` marked as
+  // its own, as an argument rather than ambient state.
+  private buildWorkspaceBridge(issuer?: symbol): BridgeDispatchFn {
+    const dispatch = (
+      opName: string,
+      path: string,
+      args: readonly unknown[] = [],
+      kwargs: OpKwargs = {},
+    ): Promise<unknown> =>
+      this.dispatchInternal(
+        opName,
+        path,
+        args,
+        issuer === undefined ? kwargs : { ...kwargs, issuer },
+      )
     return async (op, path, bytes, dst, attrs) => {
       switch (op) {
         case 'read':
-          return (await this.dispatchInternal('read', path)) as Uint8Array
+          return (await dispatch('read', path)) as Uint8Array
         case 'write': {
           if (bytes === undefined) throw new Error('write op requires bytes')
           const buf =
             bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayLike<number>)
-          await this.dispatchInternal('write', path, [buf])
+          await dispatch('write', path, [buf])
           return undefined
         }
         case 'append': {
           if (bytes === undefined) throw new Error('append op requires bytes')
           const buf =
             bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as ArrayLike<number>)
-          await this.dispatchInternal('append', path, [buf])
+          await dispatch('append', path, [buf])
           return undefined
         }
         case 'stat':
@@ -500,37 +517,32 @@ export class Workspace {
           // tiers cannot drift into two translations of one fact.
           // `nofollow` is the only attrs field a stat carries, and it
           // is the caller's lstat; the dispatcher consumes it.
-          return await this.dispatchInternal(
+          return await dispatch(
             'stat',
             path,
             [],
             attrs?.nofollow === true ? { nofollow: true } : undefined,
           )
         case 'create':
-          await this.dispatchInternal('create', path)
+          await dispatch('create', path)
           return undefined
         case 'truncate':
-          await this.dispatchInternal('truncate', path, [0])
+          await dispatch('truncate', path, [0])
           return undefined
         case 'unlink':
-          await this.dispatchInternal('unlink', path)
+          await dispatch('unlink', path)
           return undefined
         case 'mkdir':
           // `parents` is pathlib's mkdir(parents=True), riding to the
           // backend op as a kwarg the way python's dispatch carries it.
-          await this.dispatchInternal(
-            'mkdir',
-            path,
-            [],
-            attrs?.parents === true ? { parents: true } : {},
-          )
+          await dispatch('mkdir', path, [], attrs?.parents === true ? { parents: true } : {})
           return undefined
         case 'rmdir':
-          await this.dispatchInternal('rmdir', path)
+          await dispatch('rmdir', path)
           return undefined
         case 'rename': {
           if (dst === undefined) throw new Error('rename op requires dst')
-          await this.dispatchInternal('rename', path, [PathSpec.fromStrPath(dst)])
+          await dispatch('rename', path, [PathSpec.fromStrPath(dst)])
           return undefined
         }
         case 'symlink': {
@@ -538,14 +550,14 @@ export class Workspace {
           // relative or dangling, and resolving it here would record a
           // different link than the guest asked for.
           if (dst === undefined) throw new Error('symlink op requires dst')
-          await this.dispatchInternal('symlink', path, [], { target: dst })
+          await dispatch('symlink', path, [], { target: dst })
           return undefined
         }
         case 'readlink':
-          return (await this.dispatchInternal('readlink', path)) as string
+          return (await dispatch('readlink', path)) as string
         case 'setattr': {
           if (attrs === undefined) throw new Error('setattr op requires attrs')
-          await this.dispatchInternal('setattr', path, [], attrs as Record<string, unknown>)
+          await dispatch('setattr', path, [], attrs as Record<string, unknown>)
           return undefined
         }
         case 'readdir':
@@ -553,7 +565,7 @@ export class Workspace {
           // runtime door (`RuntimeVFS.readdir`) stats each entry and
           // marks the links, so a row is built in one tier and in one
           // shape in both languages.
-          return ((await this.dispatchInternal('readdir', path)) as string[] | null) ?? []
+          return ((await dispatch('readdir', path)) as string[] | null) ?? []
       }
     }
   }

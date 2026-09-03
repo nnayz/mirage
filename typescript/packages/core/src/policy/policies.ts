@@ -135,9 +135,17 @@ export async function preOpsGate(
   write: boolean,
   prefix: string,
   sessionId = '',
+  issuer?: symbol,
 ): Promise<void> {
   if (!policies.wants('preOps')) return
-  const deny = await policies.preOps({ op, path, write, prefix, sessionId })
+  const deny = await policies.preOps({
+    op,
+    path,
+    write,
+    prefix,
+    sessionId,
+    ...(issuer !== undefined ? { issuer } : {}),
+  })
   if (deny !== null) {
     throw new PolicyDenied(deny.reason, path.virtual)
   }

@@ -21,7 +21,6 @@ import type { MountResolver } from '../runtime/resolver.ts'
 import type { ScriptSource } from '../runtime/routing/types.ts'
 import { evalWithCtx, scriptEngine } from '../runtime/script.ts'
 import type { BridgeDispatchFn, EvalValue } from '../runtime/types.ts'
-import { asyncContextIsolatesTasks, createAsyncContext } from '../utils/async_context.ts'
 import type { Policy } from './base.ts'
 import {
   DEFAULT_ASK_REASON,
@@ -57,40 +56,6 @@ export const HOOKS: Readonly<Record<ScriptHook, string>> = {
 }
 
 const SCRIPT_HOOKS = Object.keys(HOOKS) as readonly ScriptHook[]
-
-/** One op the policy's own engine has in flight: what it asked, of which path. */
-interface PolicyRead {
-  op: string
-  virtual: string
-}
-
-// Bound for the duration of one op the policy's own engine dispatches,
-// so the policy's `preOps` lets the read through: the policy is the one
-// asking, and judging its own read would re-enter the evaluation that is
-// waiting on it.
-const policyReads = createAsyncContext<PolicyRead>()
-
-/**
- * Whether `ctx` is an op the policy's own engine dispatched.
- *
- * On an isolating runtime the store is this task's alone, so a bound
- * frame is the answer. The fallback storage (a browser with no
- * `AsyncLocalStorage`) holds every concurrently live read in one stack,
- * and trusting its top would exempt whatever op another task dispatches
- * while a policy read is in flight; there the op has to match a read
- * the engine actually issued, by name and by the path the bridge
- * spelled, which is the spelling the dispatcher gates it under. What
- * one stack cannot tell apart is another task's identical op on that
- * same path inside the window, the narrowest exemption it can offer. A
- * read the dispatcher gates under a followed link's name misses the
- * match and is judged, which fails closed rather than open.
- */
-function isPolicyRead(ctx: OpsContext): boolean {
-  if (asyncContextIsolatesTasks) return policyReads.getStore() !== undefined
-  return policyReads
-    .liveStores()
-    .some((read) => read.op === ctx.op && read.virtual === ctx.path.virtual)
-}
 
 /**
  * What a profile's script is told about one command: the
@@ -214,11 +179,15 @@ export function scriptAction(value: EvalValue, hook: ScriptHook = 'preCommand'):
  * attached with these exactly as `Runtimes` attaches an agent's, so
  * the policy's `open()` reads the mounts through the same door an
  * agent's program would, and a read from a policy clears the op door
- * like any other. The workspace supplies them; a bare ScriptPolicy
- * (outside a workspace) has none, and its programs see no file.
+ * like any other. The bridge is built for one `issuer`, the policy's
+ * own token: every op it dispatches carries the token to the op door
+ * (`OpsContext.issuer`), which is how the policy's `preOps` tells its
+ * own read from anyone else's. The workspace supplies them; a bare
+ * ScriptPolicy (outside a workspace) has none, and its programs see no
+ * file.
  */
 export interface ScriptWiring {
-  bridge: () => BridgeDispatchFn
+  bridge: (issuer: symbol) => BridgeDispatchFn
   resolver: MountResolver
 }
 
@@ -308,7 +277,10 @@ export function definedHooks(script: ScriptSource, value: EvalValue): ReadonlySe
  * content, not only its name. A read from a policy clears the op door
  * like any other, except this policy's own `preOps`: the policy is the
  * one asking, and judging its own read would re-enter the evaluation
- * waiting on it.
+ * waiting on it. It knows its own read by `issuer`, a token only its
+ * bridge stamps and that rides each op as an argument: a mark kept in
+ * ambient context would be whatever op another task dispatched while
+ * a read was in flight on a runtime with no task isolation.
  *
  * Every failure fails closed: a policy that threw, timed out, answered
  * with the wrong shape, defines no hook, or names an engine that cannot
@@ -328,6 +300,10 @@ export class ScriptPolicy implements Policy, SessionScoped {
   private readonly wiring: ScriptWiring | null
   private readonly engines = new Map<string, Runtime & Evaluator>()
   private readonly defined = new Map<string, ReadonlySet<ScriptHook>>()
+  // The mark on every op this policy's own engines dispatch, and
+  // nothing else's: unexported, so only the bridge built for it can
+  // stamp it.
+  private readonly issuer = Symbol('policy read')
   private queue: Promise<unknown> = Promise.resolve()
 
   constructor(
@@ -347,7 +323,7 @@ export class ScriptPolicy implements Policy, SessionScoped {
   }
 
   async preOps(ctx: OpsContext): Promise<Action | null> {
-    if (isPolicyRead(ctx)) return null
+    if (ctx.issuer === this.issuer) return null
     return this.judge('preOps', ctx.sessionId ?? '', (entry) =>
       opsScriptContext(entry.profile, ctx, this.mounts()),
     )
@@ -454,8 +430,10 @@ export class ScriptPolicy implements Policy, SessionScoped {
         // Attached before the first eval, as `Runtimes` attaches an
         // agent's engine: the script's `open()` then reads the mounts
         // through the same door, and an unattached engine sees no file.
+        // The bridge is built for this policy's token, so every op the
+        // engine dispatches reaches `preOps` above as the policy's own.
         if (this.wiring !== null && engine instanceof LanguageRuntime) {
-          engine.attach(reading(this.wiring.bridge()), this.wiring.resolver)
+          engine.attach(this.wiring.bridge(this.issuer), this.wiring.resolver)
         }
         this.engines.set(entry.runtime, engine)
       }
@@ -470,17 +448,6 @@ export class ScriptPolicy implements Policy, SessionScoped {
     this.queue = run.catch(() => undefined)
     return run
   }
-}
-
-/**
- * The bridge with every op marked as the policy's own for as long as it
- * runs, so the policy's `preOps` lets it through.
- */
-function reading(bridge: BridgeDispatchFn): BridgeDispatchFn {
-  return (op, path, bytes, dst, attrs) =>
-    Promise.resolve(
-      policyReads.run({ op, virtual: path }, () => bridge(op, path, bytes, dst, attrs)),
-    )
 }
 
 /** The fail-closed refusal: one wording however the policy broke. */

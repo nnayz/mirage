@@ -452,3 +452,100 @@ describe('wantsFor', () => {
     )
   })
 })
+
+// A program that reads at the command door and refuses at the op door,
+// so its own read is exactly what its op hook would deadlock on.
+const READER_AND_GATE_PY = `\
+def pre_command(ctx):
+    try:
+        open('/repo/a').read()
+    except OSError:
+        pass
+    return None
+
+def pre_ops(ctx):
+    return {'deny': 'judged ' + ctx['op']['path']}
+`
+
+interface HeldDoor {
+  door: BridgeDispatchFn
+  /** Settles when the engine's read of `/repo/a` reaches the door. */
+  arrived: Promise<void>
+  /** Lets that read answer. */
+  release: () => void
+}
+
+/**
+ * A door over one file, `/repo/a`, whose read waits until the test
+ * releases it: the window in which the policy's own read is in flight.
+ */
+function heldDoor(): HeldDoor {
+  let arrive!: () => void
+  let release!: () => void
+  const arrived = new Promise<void>((resolve) => {
+    arrive = resolve
+  })
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const body = new TextEncoder().encode('hello')
+  const door: BridgeDispatchFn = async (op, p) => {
+    if (op === 'readdir') return ['/repo/a']
+    if (p !== '/repo/a') throw Object.assign(new Error(p), { code: 'ENOENT' })
+    if (op === 'stat') {
+      return new FileStat({
+        name: p,
+        size: body.length,
+        type: FileType.FILE,
+        content: ContentType.TEXT,
+      })
+    }
+    if (op === 'read') {
+      arrive()
+      await held
+      return body
+    }
+    throw Object.assign(new Error(`${op} ${p}`), { code: 'EROFS' })
+  }
+  return { door, arrived, release }
+}
+
+describe("a policy's own reads at its op door", () => {
+  it('lets through an op carrying its token and judges every other', async () => {
+    // The token is what the bridge built for this policy stamps on each
+    // op, and what the dispatcher hands back on the op's context. Another
+    // caller's identical op (same name, same path) inside the read's
+    // window is not the policy's and is judged: it waits for the
+    // evaluation the read belongs to, then gets the hook's answer. So is
+    // an op carrying a token from anywhere else.
+    const stamped: symbol[] = []
+    const { door, arrived, release } = heldDoor()
+    const policy = track(
+      new ScriptPolicy(
+        { scriptOf: () => entry(READER_AND_GATE_PY, 'monty', 'python') },
+        () => ['/repo/'],
+        {
+          bridge: (issuer) => {
+            stamped.push(issuer)
+            return door
+          },
+          resolver: new PrefixResolver(() => ['/repo/']),
+        },
+      ),
+    )
+    const judging = policy.preCommand(ctx('cat'))
+    await arrived
+    const [token] = stamped
+    if (token === undefined) throw new Error('the bridge was never built')
+    expect(await policy.preOps({ ...opsCtx('read', '/repo/a', false), issuer: token })).toBeNull()
+    const other = policy.preOps(opsCtx('read', '/repo/a', false))
+    const forged = policy.preOps({
+      ...opsCtx('read', '/repo/a', false),
+      issuer: Symbol('policy read'),
+    })
+    release()
+    expect(await judging).toBeNull()
+    expect(await other).toEqual({ kind: 'deny', reason: 'judged /repo/a' })
+    expect(await forged).toEqual({ kind: 'deny', reason: 'judged /repo/a' })
+  }, 60_000)
+})

@@ -396,13 +396,21 @@ export interface CommandContext {
  * door (the dispatcher every access routes through, FUSE included),
  * before any backend or cache I/O. `sessionId` is the session the door
  * serves, set from the session it already resolves for hides and
- * modes; empty for the unbound host view. */
+ * modes; empty for the unbound host view. `issuer` is the token the op
+ * arrived with, when its caller stamped one: a policy whose own engine
+ * reads through the door stamps those reads, and recognizes its token
+ * here so the read an evaluation is waiting on is not judged by the
+ * hook that is waiting. It travels with the op as an argument, never
+ * through ambient context, so no concurrent op can be taken for it;
+ * python marks the same read with a task-local ContextVar, which a
+ * browser has no twin of. */
 export interface OpsContext {
   op: string
   path: PathSpec
   write: boolean
   prefix: string
   sessionId?: string
+  issuer?: symbol
 }
 
 /** One completed VFS op, as postOps hooks see it; a Deny suppresses

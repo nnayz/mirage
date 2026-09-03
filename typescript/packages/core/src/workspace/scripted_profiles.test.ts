@@ -362,3 +362,43 @@ describe('profile policies at the op and session doors', () => {
     }
   }, 120000)
 })
+
+// A judge that reads one fixed file and refuses when it can, so what it
+// sees is what the session it judges for may see.
+const PEEK_PY = `\
+def pre_command(ctx):
+    try:
+        body = open('/data/secret/k').read()
+    except OSError:
+        return None
+    return {'deny': 'saw ' + body.strip()}
+`
+
+describe('a profile policy reads as the session it judges for', () => {
+  it('cannot see what the session cannot, at admission as at the gate', async () => {
+    // A compound line is judged whole at admission, before its tree
+    // runs, and that pass runs bound to the line's session the way
+    // python binds it before parsing: a path the profile hides is hidden
+    // from its own policy's open() too, so the policy has nothing to
+    // refuse on. The same program under a profile without the hide reads
+    // the file and refuses.
+    const policy = { script: new ScriptSource(PEEK_PY, 'python'), runtime: 'monty' }
+    const ws = await build({
+      blind: { policy, paths: { hide: ['/data/secret'] } },
+      sighted: { policy },
+    })
+    try {
+      await ws.execute('mkdir -p /data/secret && echo k > /data/secret/k')
+      ws.createSession('b', { profile: 'blind' })
+      ws.createSession('s', { profile: 'sighted' })
+      const ran = await ws.execute('echo hi && echo there', { sessionId: 'b' })
+      expect(ran.exitCode).toBe(0)
+      expect(ran.stdoutText).toBe('hi\nthere\n')
+      const denied = await ws.execute('echo hi && echo there', { sessionId: 's' })
+      expect(denied.exitCode).toBe(126)
+      expect(denied.refusal).toMatchObject({ kind: 'deny', reason: 'saw k' })
+    } finally {
+      await ws.close()
+    }
+  }, 120000)
+})

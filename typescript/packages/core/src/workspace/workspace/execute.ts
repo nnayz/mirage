@@ -313,17 +313,30 @@ async function runLine(
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
     ...(options.sink !== undefined ? { sink: options.sink } : {}),
   }
+  // The line runs as its own fork of the session, and everything that
+  // judges it runs bound to that fork: admission and the policies it
+  // consults (a profile policy reads the mounts as the session it judges
+  // for, so a path the session cannot see is one its policy cannot read
+  // either), a whole-line runtime, and the tree. Python binds the
+  // effective session the same way before it parses.
+  const effectiveSession = forkForCall(targetSession, options.cwd, options.env)
   try {
-    return await runParsedLine(
-      env,
-      command,
-      options,
-      rootNode,
-      deps,
-      targetSession,
-      stdin,
-      (line) => parser.parse(line),
-      nested,
+    return await runWithSession(
+      effectiveSession,
+      () =>
+        runParsedLine(
+          env,
+          command,
+          options,
+          rootNode,
+          deps,
+          targetSession,
+          effectiveSession,
+          stdin,
+          (line) => parser.parse(line),
+          nested,
+        ),
+      env.sessions,
     )
   } finally {
     // Durable session fields (cwd, env, grants) flush at the end of
@@ -339,12 +352,12 @@ async function runParsedLine(
   rootNode: TSNodeLike,
   deps: ExecuteNodeDeps,
   targetSession: Session,
+  effectiveSession: Session,
   stdin: ByteSource | null,
   reparse: (line: string) => TSNodeLike,
   nested: NestedRefusal,
 ): Promise<ExecuteResult> {
   const callAgentId = options.agentId ?? env.agentId ?? ''
-  const effectiveSession = forkForCall(targetSession, options.cwd, options.env)
   // The line-reader decision (GNU: history is appended where the typed
   // line is read, never inside the evaluator). Internal evaluations run
   // with record:false: no new recording scope, so their ops land in the
@@ -536,11 +549,7 @@ async function runParsedLine(
     if (filled !== null) return filled
   }
   const runBody = (): Promise<[ByteSource | null, IOResult, ExecutionNode]> =>
-    runWithSession(
-      effectiveSession,
-      () => runCommandTree(deps, rootNode, effectiveSession, stdin),
-      env.sessions,
-    )
+    runCommandTree(deps, rootNode, effectiveSession, stdin)
   let execResult: [[ByteSource | null, IOResult, ExecutionNode], OpRecord[]]
   try {
     execResult = isLine ? await runWithRecording(runBody) : [await runBody(), []]
