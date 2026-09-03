@@ -23,25 +23,50 @@ def decode(value: bytes | None) -> str:
     return value.decode("utf-8", errors="replace")
 
 
-def with_refusal(text: str, refusal: Refusal | None) -> str:
-    """Append the refusal's reason as one more line after the shell's
-    own output, for a surface that hands the agent text.
+def refusal_line(refusal: Refusal | None) -> str:
+    """The one line a text surface appends for a refusal, newline
+    included, or the empty string when there is nothing to add.
 
     Only a command-scoped refusal is described: its stderr is bash's
     bare ``Permission denied``, which says nothing. An operand-scoped
     one already names the reason on the line, GNU-style.
 
     Args:
+        refusal (Refusal | None): the record off the result.
+    """
+    if refusal is None or refusal.scope == "operand":
+        return ""
+    return describe_refusal(refusal) + "\n"
+
+
+def with_refusal(text: str, refusal: Refusal | None) -> str:
+    """Append the refusal's reason as one more line after the shell's
+    own output, for a surface that hands the agent text.
+
+    Args:
         text (str): the joined stdout and stderr.
         refusal (Refusal | None): the record off the result; None
             returns the text unchanged.
     """
-    if refusal is None or refusal.scope == "operand":
-        return text
-    line = describe_refusal(refusal) + "\n"
-    if not text:
-        return line
+    line = refusal_line(refusal)
+    if not line or not text:
+        return text or line
     return text + line if text.endswith("\n") else f"{text}\n{line}"
+
+
+def with_refusal_bytes(data: bytes, refusal: Refusal | None) -> bytes:
+    """``with_refusal`` for a surface that hands the agent raw stderr
+    bytes; the bytes themselves are never decoded.
+
+    Args:
+        data (bytes): the shell's stderr.
+        refusal (Refusal | None): the record off the result; None
+            returns the bytes unchanged.
+    """
+    line = refusal_line(refusal).encode("utf-8")
+    if not line or not data:
+        return data or line
+    return data + line if data.endswith(b"\n") else data + b"\n" + line
 
 
 def io_to_str(io: IOResult) -> str:

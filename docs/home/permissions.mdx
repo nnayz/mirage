@@ -115,7 +115,8 @@ with the reason on the line and the record's `scope` set to `operand`.
 An `ask` refuses at 126 the same way, with a `pending` record naming the
 ask id, until a host answers; see [Asks](#asks) below. A surface that
 hands the agent plain text rather than a record (the LangChain,
-pydantic-ai and OpenAI adapters) appends the record as one line after
+pydantic-ai, OpenAI, OpenHands and CAMEL adapters, and the MCP and
+Claude Agent SDK tool servers) appends the record as one line after
 stderr, `policy denied: <reason>` or
 `requires approval: <reason> (ask <id>)`, so the reason is never lost.
 

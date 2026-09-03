@@ -265,10 +265,13 @@ async function runLine(
     // path carries `echo hi | bash -c 'cat'` into the inner line.
     if (opts.stdin !== undefined && opts.stdin !== null) innerOpts.stdin = opts.stdin
     const res = await env.execute(cmd, innerOpts)
+    // The record rides back with the streams: a refusal the inner line
+    // earned is the outer line's to report.
     return new IOResult({
       exitCode: res.exitCode,
       stdout: res.stdout,
       stderr: res.stderr,
+      refusal: res.refusal,
     })
   }
 

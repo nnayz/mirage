@@ -1,4 +1,4 @@
-from mirage.agents.io_text import decode, io_to_str
+from mirage.agents.io_text import decode, io_to_str, with_refusal_bytes
 from mirage.io.types import IOResult
 from mirage.types import Refusal
 
@@ -64,3 +64,31 @@ def test_io_to_str_leaves_an_operand_refusal_alone():
                                   policy="RulePolicy",
                                   scope="operand"))
     assert io_to_str(io) == "rm: cannot remove 'x': keys\n"
+
+
+def test_with_refusal_bytes_appends_after_stderr():
+    denied = Refusal(kind="deny", reason="no deletes", policy="RulePolicy")
+    assert with_refusal_bytes(
+        b"rm: Permission denied\n",
+        denied) == b"rm: Permission denied\npolicy denied: no deletes\n"
+
+
+def test_with_refusal_bytes_starts_a_line_when_needed():
+    pending = Refusal(kind="pending", reason="sign-off", ask_id="a1")
+    assert with_refusal_bytes(
+        b"partial",
+        pending) == b"partial\nrequires approval: sign-off (ask a1)\n"
+    assert with_refusal_bytes(
+        b"", pending) == b"requires approval: sign-off (ask a1)\n"
+
+
+def test_with_refusal_bytes_leaves_the_bytes_alone_otherwise():
+    # No record, or an operand-scoped one whose line already names the
+    # reason: the bytes pass through untouched, invalid UTF-8 included.
+    assert with_refusal_bytes(b"\xff raw", None) == b"\xff raw"
+    operand = Refusal(kind="deny",
+                      reason="cannot remove 'x': keys",
+                      policy="RulePolicy",
+                      scope="operand")
+    assert with_refusal_bytes(b"rm: cannot remove 'x': keys\n",
+                              operand) == b"rm: cannot remove 'x': keys\n"

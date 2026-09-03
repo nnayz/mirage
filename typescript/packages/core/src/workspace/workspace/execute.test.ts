@@ -18,7 +18,8 @@ import { CommandSpec } from '../../commands/spec/types.ts'
 import { IOResult } from '../../io/types.ts'
 import { RAMResource } from '../../resource/ram/ram.ts'
 import { MountMode, ResourceName } from '../../types.ts'
-import { getTestParser, stdoutStr } from '../fixtures/workspace_fixture.ts'
+import type { Action, CommandContext, Policy } from '../../policy/index.ts'
+import { getTestParser, stderrStr, stdoutStr } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from './workspace.ts'
 
 const ENC = new TextEncoder()
@@ -213,5 +214,47 @@ describe('the ambient session is scoped to its workspace', () => {
     ws.registry.mountForPrefix('/ram/').register(rc)
     await ws.execute('policyprobe', { cwd: '/ram/subdir' })
     expect(seen).toEqual(['/ram/subdir', '/ram/subdir'])
+  })
+})
+
+// A nested line ($(), eval, `command NAME`) re-enters execute and comes
+// back as an ExecuteResult; the refusal it earned has to survive the
+// trip back into the IOResult the tree reads, or the outer line says
+// `Permission denied` beside a null record.
+describe('a nested line carries its refusal out', () => {
+  class DenySecret implements Policy {
+    preCommand(ctx: CommandContext): Action | null {
+      if (ctx.command === 'echo' && ctx.argv.includes('secret')) {
+        return { kind: 'deny', reason: 'secrets stay put' }
+      }
+      return null
+    }
+  }
+
+  async function policedWs(): Promise<Workspace> {
+    const parser = await getTestParser()
+    const r = new RAMResource()
+    r.store.dirs.add('/')
+    const ws = new Workspace(
+      { '/ram/': r },
+      { mode: MountMode.WRITE, shellParser: parser, policies: [new DenySecret()] },
+    )
+    open.push(ws)
+    return ws
+  }
+
+  it('command NAME keeps the record the inner line earned', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; command echo "$V"')
+    expect(io.exitCode).toBe(126)
+    expect(stderrStr(io)).toBe('echo: Permission denied\n')
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+
+  it('eval keeps it too', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; eval "echo $V"')
+    expect(io.exitCode).toBe(126)
+    expect(io.refusal?.reason).toBe('secrets stay put')
   })
 })

@@ -18,6 +18,7 @@ from mirage import MountMode, Workspace
 from mirage.commands.registry import command
 from mirage.commands.spec import CommandSpec
 from mirage.io.types import IOResult
+from mirage.policy import Action, CommandContext, Deny, Policy
 from mirage.resource.ram import RAMResource
 
 
@@ -215,3 +216,41 @@ async def test_policy_reads_the_ambient_sessions_cwd():
     _register(ws, "/ram/", policyprobe)
     await ws.execute("policyprobe", cwd="/ram/subdir")
     assert seen == ["/ram/subdir", "/ram/subdir"]
+
+
+class _DenySecret(Policy):
+
+    async def pre_command(self, ctx: CommandContext) -> Action | None:
+        if ctx.command == "echo" and "secret" in ctx.argv:
+            return Deny(reason="secrets stay put")
+        return None
+
+
+def _policed_ws() -> Workspace:
+    resource = RAMResource()
+    resource._store.dirs.add("/")
+    return Workspace({"/ram/": resource},
+                     mode=MountMode.WRITE,
+                     policies=[_DenySecret()])
+
+
+# A nested line ($(), eval, `command NAME`) re-enters execute; the
+# refusal it earns has to reach the outer line's result, or the line
+# says `Permission denied` beside no record.
+@pytest.mark.asyncio
+async def test_command_name_keeps_the_record_the_inner_line_earned():
+    ws = _policed_ws()
+    io = await ws.execute('V=secret; command echo "$V"')
+    assert io.exit_code == 126
+    assert io.stderr == b"echo: Permission denied\n"
+    assert io.refusal is not None
+    assert io.refusal.reason == "secrets stay put"
+
+
+@pytest.mark.asyncio
+async def test_eval_keeps_the_record_the_inner_line_earned():
+    ws = _policed_ws()
+    io = await ws.execute('V=secret; eval "echo $V"')
+    assert io.exit_code == 126
+    assert io.refusal is not None
+    assert io.refusal.reason == "secrets stay put"
