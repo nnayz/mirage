@@ -773,7 +773,7 @@ describe('Ask in the chain', () => {
     ).toBe('policy Raising failed')
   })
 
-  it('saysWhy reads the reason off the text, not the scope', () => {
+  it('saysWhy needs the operand diagnostic itself', () => {
     const operand: Refusal = {
       kind: 'deny',
       reason: '/protected: frozen',
@@ -781,8 +781,15 @@ describe('Ask in the chain', () => {
       scope: 'operand',
       askId: null,
     }
+    // The GNU line, wherever a redirect landed it.
     expect(saysWhy('cat: /protected: frozen\n', operand)).toBe(true)
+    expect(saysWhy('partial\ncat: /protected: frozen\n', operand)).toBe(true)
     expect(saysWhy('', operand)).toBe(false)
+    // The reason quoted inside other output is not the diagnostic.
+    expect(saysWhy('note: /protected: frozen for now\n', operand)).toBe(false)
+    // A command-scoped refusal's stderr is bash's bare line; output that
+    // happens to carry the reason (or was left when 2>/dev/null took the
+    // line away) has not said why.
     const denied: Refusal = {
       kind: 'deny',
       reason: 'no deletes',
@@ -791,16 +798,11 @@ describe('Ask in the chain', () => {
       askId: null,
     }
     expect(saysWhy('rm: Permission denied\n', denied)).toBe(false)
-    expect(saysWhy('rm: Permission denied\nno deletes\n', denied)).toBe(true)
+    expect(saysWhy('rm: Permission denied\nno deletes\n', denied)).toBe(false)
+    expect(saysWhy('printf: no deletes\n', denied)).toBe(false)
     // An empty reason says nothing, so no text can already have said it.
     expect(
-      saysWhy('anything', {
-        kind: 'pending',
-        reason: '',
-        policy: '',
-        scope: 'command',
-        askId: 'a1',
-      }),
+      saysWhy('cat: \n', { kind: 'deny', reason: '', policy: 'P', scope: 'operand', askId: null }),
     ).toBe(false)
   })
 })

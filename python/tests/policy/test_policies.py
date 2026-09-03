@@ -395,16 +395,25 @@ def test_describe_refusal_carries_the_reason_the_stderr_line_dropped():
                 policy="Raising")) == "policy Raising failed"
 
 
-def test_says_why_reads_the_reason_off_the_text_not_the_scope():
+def test_says_why_needs_the_operand_diagnostic_itself():
     operand = Refusal(kind="deny",
                       reason="/protected: frozen",
                       policy="Frozen",
                       scope="operand")
+    # The GNU line, wherever a redirect landed it.
     assert says_why("cat: /protected: frozen\n", operand)
+    assert says_why("partial\ncat: /protected: frozen\n", operand)
     assert not says_why("", operand)
+    # The reason quoted inside other output is not the diagnostic.
+    assert not says_why("note: /protected: frozen for now\n", operand)
+    # A command-scoped refusal's stderr is bash's bare line; output that
+    # happens to carry the reason (or was left when 2>/dev/null took the
+    # line away) has not said why.
     denied = Refusal(kind="deny", reason="no deletes", policy="RulePolicy")
     assert not says_why("rm: Permission denied\n", denied)
-    assert says_why("rm: Permission denied\nno deletes\n", denied)
+    assert not says_why("rm: Permission denied\nno deletes\n", denied)
+    assert not says_why("printf: no deletes\n", denied)
     # An empty reason says nothing, so no text can already have said it.
-    assert not says_why("anything",
-                        Refusal(kind="pending", reason="", ask_id="a1"))
+    assert not says_why(
+        "cat: \n", Refusal(kind="deny", reason="", policy="P",
+                           scope="operand"))

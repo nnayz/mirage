@@ -97,21 +97,28 @@ def describe_refusal(refusal: Refusal) -> str:
 
 
 def says_why(text: str, refusal: Refusal) -> bool:
-    """Whether ``text`` already says why the line was refused.
+    """Whether ``text`` already carries the line that says why the
+    command was refused.
 
-    An operand-scoped denial's own GNU line carries the reason
-    verbatim, wherever a redirect landed it, so a surface that
-    describes the record after the text tests the text rather than
-    the scope: ``2>/dev/null`` takes the line away and the record is
-    the only reason left, ``2>&1`` moves it onto stdout and nothing
-    needs repeating. An empty reason says nothing, so no text can
-    already have said it.
+    Only an operand-scoped denial has one: its GNU diagnostic
+    ``<command>: <reason>`` is the reason, wherever a redirect landed
+    it, so a surface that describes the record after the text looks
+    for that line rather than for the scope (``2>/dev/null`` takes the
+    line away and the record is the only reason left, ``2>&1`` moves it
+    onto stdout and nothing needs repeating) and rather than for the
+    reason as a substring, since output that happens to quote the words
+    has refused nothing. A command-scoped refusal's stderr is bash's
+    bare ``Permission denied``, which never says why. An empty reason
+    says nothing, so no text can already have said it.
 
     Args:
         text (str): what the surface is about to hand over.
         refusal (Refusal): the record off the result.
     """
-    return bool(refusal.reason) and refusal.reason in text
+    if refusal.scope != "operand" or not refusal.reason:
+        return False
+    tail = f": {refusal.reason}"
+    return any(line.endswith(tail) for line in text.split("\n"))
 
 
 async def pre_ops_gate(policies: "Policies",

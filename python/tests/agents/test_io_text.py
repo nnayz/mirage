@@ -107,6 +107,31 @@ def test_with_refusal_describes_an_operand_refusal_whose_line_is_gone():
         b"", operand) == b"policy denied: /protected: frozen\n"
 
 
+def test_with_refusal_describes_a_command_refusal_the_output_quotes():
+    # `V=secret; printf 'secrets stay put'; echo "$V" 2>/dev/null`: the
+    # bare `Permission denied` was redirected away and the earlier
+    # output carries the reason by coincidence; a command-scoped record
+    # is never already said, so the line is still appended.
+    denied = Refusal(kind="deny",
+                     reason="secrets stay put",
+                     policy="DenySecret")
+    assert io_to_str(
+        IOResult(stdout=b"secrets stay put", exit_code=126, refusal=denied)
+    ) == "secrets stay put\npolicy denied: secrets stay put\n"
+
+
+def test_with_refusal_describes_an_operand_refusal_the_output_only_quotes():
+    operand = Refusal(kind="deny",
+                      reason="/protected: frozen",
+                      policy="Frozen",
+                      scope="operand")
+    io = IOResult(stdout=b"note: /protected: frozen for now\n",
+                  exit_code=1,
+                  refusal=operand)
+    assert io_to_str(io) == ("note: /protected: frozen for now\n"
+                             "policy denied: /protected: frozen\n")
+
+
 def test_with_refusal_trusts_the_reason_wherever_the_line_landed():
     # `2>&1` moved the GNU line onto stdout; the text still says why,
     # so nothing is repeated.

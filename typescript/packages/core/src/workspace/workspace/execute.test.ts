@@ -217,32 +217,32 @@ describe('the ambient session is scoped to its workspace', () => {
   })
 })
 
+class DenySecret implements Policy {
+  preCommand(ctx: CommandContext): Action | null {
+    if (ctx.command === 'echo' && ctx.argv.includes('secret')) {
+      return { kind: 'deny', reason: 'secrets stay put' }
+    }
+    return null
+  }
+}
+
+async function policedWs(): Promise<Workspace> {
+  const parser = await getTestParser()
+  const r = new RAMResource()
+  r.store.dirs.add('/')
+  const ws = new Workspace(
+    { '/ram/': r },
+    { mode: MountMode.WRITE, shellParser: parser, policies: [new DenySecret()] },
+  )
+  open.push(ws)
+  return ws
+}
+
 // A nested line ($(), eval, `command NAME`) re-enters execute and comes
 // back as an ExecuteResult; the refusal it earned has to survive the
 // trip back into the IOResult the tree reads, or the outer line says
 // `Permission denied` beside a null record.
 describe('a nested line carries its refusal out', () => {
-  class DenySecret implements Policy {
-    preCommand(ctx: CommandContext): Action | null {
-      if (ctx.command === 'echo' && ctx.argv.includes('secret')) {
-        return { kind: 'deny', reason: 'secrets stay put' }
-      }
-      return null
-    }
-  }
-
-  async function policedWs(): Promise<Workspace> {
-    const parser = await getTestParser()
-    const r = new RAMResource()
-    r.store.dirs.add('/')
-    const ws = new Workspace(
-      { '/ram/': r },
-      { mode: MountMode.WRITE, shellParser: parser, policies: [new DenySecret()] },
-    )
-    open.push(ws)
-    return ws
-  }
-
   it('command NAME keeps the record the inner line earned', async () => {
     const ws = await policedWs()
     const io = await ws.execute('V=secret; command echo "$V"')
@@ -272,6 +272,26 @@ describe('a nested line carries its refusal out', () => {
     const io = await ws.execute('V=secret; echo "[$(echo "$V")]"')
     expect(io.exitCode).toBe(0)
     expect(stdoutStr(io)).toBe('[]\n')
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+})
+
+// `!` negates the status, so a refused command reads as success (bash
+// does the same for a command it may not run); the record of what was
+// refused still has to ride the result.
+describe('a negated command keeps its refusal', () => {
+  it('for one command', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; ! echo "$V"')
+    expect(io.exitCode).toBe(0)
+    expect(stderrStr(io)).toBe('echo: Permission denied\n')
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+
+  it('for a pipeline', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; ! true | echo "$V"')
+    expect(io.exitCode).toBe(0)
     expect(io.refusal?.reason).toBe('secrets stay put')
   })
 })

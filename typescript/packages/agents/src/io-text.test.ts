@@ -109,6 +109,36 @@ describe('ioToStr with a refusal', () => {
     expect(withRefusal('', operand)).toBe('policy denied: /protected: frozen\n')
   })
 
+  it('describes a command refusal the output happens to quote', () => {
+    // `V=secret; printf 'secrets stay put'; echo "$V" 2>/dev/null`: the
+    // bare `Permission denied` was redirected away and the earlier
+    // output carries the reason by coincidence; a command-scoped record
+    // is never already said, so the line is still appended.
+    const quoted: Refusal = {
+      kind: 'deny',
+      reason: 'secrets stay put',
+      policy: 'DenySecret',
+      scope: 'command',
+      askId: null,
+    }
+    expect(ioToStr(new ExecuteResult(enc('secrets stay put'), enc(''), 126, quoted))).toBe(
+      'secrets stay put\npolicy denied: secrets stay put\n',
+    )
+  })
+
+  it('describes an operand refusal the output only quotes', () => {
+    const operand: Refusal = {
+      kind: 'deny',
+      reason: '/protected: frozen',
+      policy: 'Frozen',
+      scope: 'operand',
+      askId: null,
+    }
+    expect(
+      ioToStr(new ExecuteResult(enc('note: /protected: frozen for now\n'), enc(''), 1, operand)),
+    ).toBe('note: /protected: frozen for now\npolicy denied: /protected: frozen\n')
+  })
+
   it('trusts the reason wherever the line landed', () => {
     // `2>&1` moved the GNU line onto stdout; the text still says why.
     const operand: Refusal = {

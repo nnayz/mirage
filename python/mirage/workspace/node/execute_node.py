@@ -385,6 +385,7 @@ async def execute_node(
                 reads=io.reads,
                 writes=io.writes,
                 cache=io.cache,
+                refusal=io.refusal,
             )
             exec_node.exit_code = io.exit_code
             session.errexit_immune = True
@@ -671,6 +672,7 @@ async def execute_node(
             reads=io.reads,
             writes=io.writes,
             cache=io.cache,
+            refusal=io.refusal,
         )
         exec_node.exit_code = io.exit_code
         session.errexit_immune = True

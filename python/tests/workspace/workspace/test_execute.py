@@ -275,3 +275,25 @@ async def test_an_unrefused_outer_command_still_reports_the_inner_record():
     assert io.stdout == b"[]\n"
     assert io.refusal is not None
     assert io.refusal.reason == "secrets stay put"
+
+
+# `!` negates the status, so a refused command reads as success (bash
+# does the same for a command it may not run); the record of what was
+# refused still has to ride the result.
+@pytest.mark.asyncio
+async def test_a_negated_command_keeps_its_refusal():
+    ws = _policed_ws()
+    io = await ws.execute('V=secret; ! echo "$V"')
+    assert io.exit_code == 0
+    assert io.stderr == b"echo: Permission denied\n"
+    assert io.refusal is not None
+    assert io.refusal.reason == "secrets stay put"
+
+
+@pytest.mark.asyncio
+async def test_a_negated_pipeline_keeps_its_refusal():
+    ws = _policed_ws()
+    io = await ws.execute('V=secret; ! true | echo "$V"')
+    assert io.exit_code == 0
+    assert io.refusal is not None
+    assert io.refusal.reason == "secrets stay put"

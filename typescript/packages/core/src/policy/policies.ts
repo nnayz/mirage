@@ -92,16 +92,22 @@ export function describeRefusal(refusal: Refusal): string {
 }
 
 /**
- * Whether `text` already says why the line was refused. An
- * operand-scoped denial's own GNU line carries the reason verbatim,
- * wherever a redirect landed it, so a surface that describes the record
- * after the text tests the text rather than the scope: `2>/dev/null`
- * takes the line away and the record is the only reason left, `2>&1`
- * moves it onto stdout and nothing needs repeating. An empty reason says
+ * Whether `text` already carries the line that says why the command was
+ * refused. Only an operand-scoped denial has one: its GNU diagnostic
+ * `<command>: <reason>` is the reason, wherever a redirect landed it, so
+ * a surface that describes the record after the text looks for that
+ * line rather than for the scope (`2>/dev/null` takes the line away and
+ * the record is the only reason left, `2>&1` moves it onto stdout and
+ * nothing needs repeating) and rather than for the reason as a
+ * substring, since output that happens to quote the words has refused
+ * nothing. A command-scoped refusal's stderr is bash's bare
+ * `Permission denied`, which never says why. An empty reason says
  * nothing, so no text can already have said it.
  */
 export function saysWhy(text: string, refusal: Refusal): boolean {
-  return refusal.reason !== '' && text.includes(refusal.reason)
+  if (refusal.scope !== 'operand' || refusal.reason === '') return false
+  const tail = `: ${refusal.reason}`
+  return text.split('\n').some((line) => line.endsWith(tail))
 }
 
 /**
