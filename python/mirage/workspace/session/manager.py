@@ -163,7 +163,7 @@ class SessionManager:
 
         The default profile's rules for an id this manager does not know,
         the empty id of an unbound door included (FUSE, the host's own
-        ``ws.ops``), so a door that names no session is judged like a
+        ``ws.fs``), so a door that names no session is judged like a
         session that named no profile rather than judged not at all.
 
         Args:

@@ -12,18 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { defineConfig } from 'tsup'
+// `tsc` overwrites but never deletes, so a module removed from src would
+// keep shipping from a stale dist entry. tsup did this with `clean: true`;
+// this is that step, kept portable rather than shelling out to `rm -rf`.
+import { rmSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-export default defineConfig({
-  entry: ['src/index.ts'],
-  format: ['esm'],
-  dts: {
-    compilerOptions: {
-      ignoreDeprecations: '6.0',
-    },
-  },
-  sourcemap: true,
-  clean: true,
-  target: 'es2022',
-  platform: 'browser',
-})
+const here = dirname(fileURLToPath(import.meta.url))
+rmSync(resolve(here, '..', 'dist'), { recursive: true, force: true })

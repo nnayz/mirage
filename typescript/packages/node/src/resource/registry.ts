@@ -21,6 +21,7 @@ import type { LanceDBConfig } from '@struktoai/mirage-core/resource/lancedb/conf
 import type { QdrantConfig } from '@struktoai/mirage-core/resource/qdrant/config'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
+import { recordResourceRef } from '@struktoai/mirage-core/resource/base'
 import { loadAttr } from './loader.ts'
 
 /**
@@ -410,7 +411,17 @@ export async function buildResource(
   // does no I/O.
   const resolved = await resolveConfigSecrets(config, sources, `mounts.${name}.config`)
   const factory = REGISTRY[name] ?? CUSTOM[name]
-  if (factory !== undefined) return factory(resolved)
-  if (name.includes(':')) return buildFromRef(name, resolved)
-  throw new Error(`unknown resource ${JSON.stringify(name)}; known: ${knownResources().join(', ')}`)
+  const built =
+    factory !== undefined
+      ? await factory(resolved)
+      : name.includes(':')
+        ? await buildFromRef(name, resolved)
+        : null
+  if (built === null) {
+    throw new Error(
+      `unknown resource ${JSON.stringify(name)}; known: ${knownResources().join(', ')}`,
+    )
+  }
+  recordResourceRef(built, name)
+  return built
 }

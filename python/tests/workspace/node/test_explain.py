@@ -52,9 +52,9 @@ async def ws():
                           mode=MountMode.WRITE,
                           profiles={"r": PROFILE})
     await workspace.execute("mkdir -p /data/prod")
-    await workspace.ops.write("/data/prod/x.txt", b"x\n")
-    await workspace.ops.write("/data/a.txt", b"a\n")
-    await workspace.ops.write("/data/secret.txt", b"s\n")
+    await workspace.fs.write("/data/prod/x.txt", b"x\n")
+    await workspace.fs.write("/data/a.txt", b"a\n")
+    await workspace.fs.write("/data/secret.txt", b"s\n")
     workspace.create_session("s", profile="r")
     yield workspace
     await workspace.close()
@@ -120,7 +120,7 @@ async def test_explain_spends_nothing(ws):
     assert ws.decisions.pending() == ()
     assert ws.get_session("s").decisions == ()
     await ws.explain("rm /data/prod/x.txt", "s")
-    assert sorted(await ws.ops.readdir("/data")) == [
+    assert sorted(await ws.fs.readdir("/data")) == [
         "/data/a.txt", "/data/prod", "/data/secret.txt"
     ]
 
@@ -136,7 +136,7 @@ async def test_a_denied_command_stops_the_whole_line(ws):
     assert ran.exit_code == 1
     assert ran.stderr == (
         b"rm: /data/prod/x.txt: production data is protected\n")
-    assert "/data/a.txt" in await ws.ops.readdir("/data")
+    assert "/data/a.txt" in await ws.fs.readdir("/data")
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_a_word_the_session_cannot_see_leaves_the_line_alone(ws):
     ran = await ws.execute("rm /data/a.txt && gerp x", session_id="s")
     assert ran.exit_code == 127
     assert ran.stderr == b"gerp: command not found\n"
-    assert "/data/a.txt" not in await ws.ops.readdir("/data")
+    assert "/data/a.txt" not in await ws.fs.readdir("/data")
 
 
 @pytest.mark.asyncio
@@ -156,7 +156,7 @@ async def test_an_asked_command_holds_the_line_until_it_is_answered(ws):
     line = "rm /data/a.txt && cat /data/secret.txt"
     ran = await ws.execute(line, session_id="s")
     assert ran.exit_code == 126
-    assert "/data/a.txt" in await ws.ops.readdir("/data")
+    assert "/data/a.txt" in await ws.fs.readdir("/data")
     # Exactly one request, from the one pass that judged the line.
     pending, = ws.decisions.pending()
     await ws.decisions.answer(pending.id, Outcome.ALLOW, Scope.ONCE)
@@ -165,7 +165,7 @@ async def test_an_asked_command_holds_the_line_until_it_is_answered(ws):
     # though two passes now read it.
     again = await ws.execute(line, session_id="s")
     assert again.exit_code == 0
-    assert "/data/a.txt" not in await ws.ops.readdir("/data")
+    assert "/data/a.txt" not in await ws.fs.readdir("/data")
     assert ws.decisions.pending() == ()
 
 
@@ -203,7 +203,7 @@ async def test_the_hold_reaches_only_as_far_as_the_text_does(ws):
     ran = await ws.execute("S=/data/secret.txt; rm /data/a.txt && cat $S",
                            session_id="s")
     assert ran.exit_code == 126
-    assert "/data/a.txt" not in await ws.ops.readdir("/data")
+    assert "/data/a.txt" not in await ws.fs.readdir("/data")
     assert len(ws.decisions.pending()) == 1
 
 
@@ -214,7 +214,7 @@ async def test_a_cd_in_a_subshell_does_not_move_later_commands(ws):
     ran = await ws.execute("(cd /data/prod && ls) && rm x.txt", session_id="s")
     assert ran.exit_code == 1
     assert b"production data is protected" not in (ran.stderr or b"")
-    assert "/data/prod/x.txt" in await ws.ops.readdir("/data/prod")
+    assert "/data/prod/x.txt" in await ws.fs.readdir("/data/prod")
 
 
 @pytest.mark.asyncio
@@ -248,8 +248,8 @@ async def sealed():
                           mode=MountMode.WRITE,
                           profiles={"r": SEALED})
     await workspace.execute("mkdir -p /data/prod")
-    await workspace.ops.write("/data/prod/x.txt", b"x\n")
-    await workspace.ops.write("/data/a.txt", b"a\n")
+    await workspace.fs.write("/data/prod/x.txt", b"x\n")
+    await workspace.fs.write("/data/a.txt", b"a\n")
     workspace.create_session("s", profile="r")
     yield workspace
     await workspace.close()
@@ -272,7 +272,7 @@ async def test_a_rule_on_a_redirect_target_holds_the_whole_line(sealed):
                                session_id="s")
     assert ran.exit_code != 0
     assert b"sealed until review" in (ran.stderr or b"")
-    assert "/data/a.txt" in await sealed.ops.readdir("/data")
+    assert "/data/a.txt" in await sealed.fs.readdir("/data")
 
 
 class _NoCat(Policy):
@@ -292,8 +292,8 @@ async def coded():
     workspace = Workspace({"/data/": RAMResource()},
                           mode=MountMode.WRITE,
                           policies=[_NoCat()])
-    await workspace.ops.write("/data/a.txt", b"a\n")
-    await workspace.ops.write("/data/b.txt", b"b\n")
+    await workspace.fs.write("/data/a.txt", b"a\n")
+    await workspace.fs.write("/data/b.txt", b"b\n")
     yield workspace
     await workspace.close()
 
@@ -310,7 +310,7 @@ async def test_a_coded_policy_holds_the_line_without_a_document(coded):
     assert ran.stderr == b"cat: Permission denied\n"
     assert ran.refusal is not None
     assert ran.refusal.reason == "cat is refused by policy"
-    assert "/data/a.txt" in await coded.ops.readdir("/data")
+    assert "/data/a.txt" in await coded.fs.readdir("/data")
 
 
 async def _allow_once(record):
@@ -330,8 +330,8 @@ async def inline():
                           profiles={"r": PROFILE},
                           on_ask=_allow_once)
     await workspace.execute("mkdir -p /data/prod")
-    await workspace.ops.write("/data/prod/x.txt", b"x\n")
-    await workspace.ops.write("/data/secret.txt", b"s\n")
+    await workspace.fs.write("/data/prod/x.txt", b"x\n")
+    await workspace.fs.write("/data/secret.txt", b"s\n")
     workspace.create_session("s", profile="r")
     yield workspace
     await workspace.close()
@@ -349,7 +349,7 @@ async def test_an_answered_ask_does_not_end_the_scan(inline):
     assert ran.exit_code != 0
     assert b"production data is protected" in (ran.stderr or b"")
     assert b"s\n" not in (ran.stdout or b"")
-    assert "/data/prod/x.txt" in await inline.ops.readdir("/data/prod")
+    assert "/data/prod/x.txt" in await inline.fs.readdir("/data/prod")
 
 
 @pytest.mark.asyncio
@@ -361,7 +361,7 @@ async def test_a_cd_in_a_subshell_moves_the_commands_inside_it(ws):
     ran = await ws.execute("(cd /data/prod && rm x.txt)", session_id="s")
     assert ran.exit_code == 1
     assert ran.stderr == b"rm: x.txt: production data is protected\n"
-    assert "/data/prod/x.txt" in await ws.ops.readdir("/data/prod")
+    assert "/data/prod/x.txt" in await ws.fs.readdir("/data/prod")
 
 
 @pytest.mark.asyncio

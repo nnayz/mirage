@@ -30,7 +30,7 @@ class Ops:
     """The typed op facade FUSE and programmatic callers use.
 
     Every op delegates to the workspace dispatcher, so FUSE and
-    ``ws.ops`` walk the same pipeline as a shell command: link follow,
+    ``ws.fs`` walk the same pipeline as a shell command: link follow,
     session grants, admission policies, cache read-through, namespace
     structure, and write invalidation all fire once, at that one door.
     The facade keeps only what is its own: the typed surface, op

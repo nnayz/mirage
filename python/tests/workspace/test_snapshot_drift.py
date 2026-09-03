@@ -108,7 +108,7 @@ def test_strict_load_checks_drift_before_an_ops_write(tmp_path):
 
         dst = _load(snap, resources={"/s3": S3Resource(_config())})
         with pytest.raises(ContentDriftError):
-            asyncio.run(dst.ops.write("/s3/data.csv", b"CLOBBERED\n"))
+            asyncio.run(dst.fs.write("/s3/data.csv", b"CLOBBERED\n"))
         assert store["data.csv"] == b"VERSION 2 DRIFTED\n"
 
 

@@ -43,9 +43,10 @@ import {
   buildMountArgs,
   type CLIOverrides,
   toStateDict,
+  withRebuiltResources,
 } from '../snapshot/state.ts'
 import { readSnapshotTar } from '../snapshot/tar_io.ts'
-import type { WorkspaceStateDict } from '../snapshot/types.ts'
+import type { WorkspaceStateDict, MountSnapshot } from '../snapshot/types.ts'
 import type { FileEvent } from '../../types.ts'
 import { ConsistencyPolicy, DriftPolicy, MountMode, PathSpec } from '../../types.ts'
 import type { Explanation, Policies } from '../../policy/index.ts'
@@ -1184,6 +1185,18 @@ export class Workspace {
     return ws
   }
 
+  /**
+   * Build the resource a saved mount names, or null when this package
+   * cannot. Core holds no resource registry, so it never can; the node
+   * and browser workspaces answer through theirs (`buildResource`), which
+   * is what lets `load` rebuild a registered custom backend from its
+   * `type` the way Python's loader does, instead of substituting an
+   * empty RAMResource.
+   */
+  protected static buildSavedResource(_entry: MountSnapshot): Promise<Resource | null> {
+    return Promise.resolve(null)
+  }
+
   protected static async _fromState<T extends typeof Workspace>(
     this: T,
     state: WorkspaceStateDict,
@@ -1191,7 +1204,8 @@ export class Workspace {
     overrides: Record<string, Resource> = {},
     cliOverrides: CLIOverrides = {},
   ): Promise<InstanceType<T>> {
-    const args = buildMountArgs(state, overrides, cliOverrides)
+    const rebuilt = await withRebuiltResources(state, overrides, (m) => this.buildSavedResource(m))
+    const args = buildMountArgs(state, rebuilt, cliOverrides)
     const resources: Record<string, MountSpec> = {}
     for (const [prefix, [resource, mode]] of Object.entries(args.mountArgs)) {
       resources[prefix] = [resource, mode]

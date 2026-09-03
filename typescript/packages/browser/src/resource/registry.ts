@@ -20,6 +20,7 @@ import type { DifyConfig } from '@struktoai/mirage-core/resource/dify/config'
 import type { QdrantConfig } from '@struktoai/mirage-core/resource/qdrant/config'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
+import { recordResourceRef } from '@struktoai/mirage-core/resource/base'
 
 /**
  * Construct a resource by registry name in the browser runtime.
@@ -289,5 +290,7 @@ export async function buildResource(
       `unknown resource ${JSON.stringify(name)}; known: ${knownResources().join(', ')}`,
     )
   }
-  return factory(resolved)
+  const built = await factory(resolved)
+  recordResourceRef(built, name)
+  return built
 }

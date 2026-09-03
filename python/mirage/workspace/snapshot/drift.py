@@ -206,10 +206,16 @@ def live_only_mount_prefixes(ws: "Workspace", ) -> list[str]:
     These mounts will serve current state at load time with no drift
     detection. Surfaced in the snapshot manifest so the load layer can
     log them and so users can audit which paths are non-replayable.
+
+    The implicit scratch root is not one of them: nobody mounted it, so
+    a load has nothing to warn the user about, and TypeScript, which
+    keeps that anchor out of its mount table altogether, never lists it.
     """
     out: list[str] = []
     for m in ws._registry.mounts():
         if m.prefix in {"/dev/", "/.bash_history/"}:
+            continue
+        if ws._implicit_root and m.prefix == "/":
             continue
         if not getattr(m.resource, "SUPPORTS_SNAPSHOT", False):
             out.append(m.prefix)

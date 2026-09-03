@@ -1334,7 +1334,7 @@ describe('command permissions end to end', () => {
   async function commandsWs(): Promise<Workspace> {
     const parser = await getTestParser()
     // The frozen subtree is seeded on the resource: the pure path rule
-    // holds at every op door, the host's `ws.ops` included.
+    // holds at every op door, the host's `ws.fs` included.
     const repo = new RAMResource()
     repo.store.dirs.add('/locked')
     repo.store.files.set('/locked/y', ENC.encode('y\n'))

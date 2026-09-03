@@ -71,11 +71,12 @@ class FileType(str, Enum):
     FileStat.content. Distinct from ContentType, which is only a
     rendering hint for a FILE.
 
-    The full POSIX set is enumerated so the model is comprehensive. Only
-    DIRECTORY, FILE and SYMLINK are produced today; CHAR_DEVICE,
-    BLOCK_DEVICE, FIFO and SOCKET are declared but not yet emitted, and
-    the render/derivation tables (find letter, st_mode bits, ls char)
-    grow a row for one the moment a backend starts producing it.
+    The full POSIX set is enumerated so the model is comprehensive.
+    DIRECTORY, FILE, SYMLINK and CHAR_DEVICE (the /dev mount) are
+    produced today; BLOCK_DEVICE, FIFO and SOCKET are declared but not
+    yet emitted, and the render/derivation tables (find letter, st_mode
+    bits, ls char) grow a row for one the moment a backend starts
+    producing it.
     """
     DIRECTORY = "directory"
     FILE = "file"

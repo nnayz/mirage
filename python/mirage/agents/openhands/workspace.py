@@ -181,7 +181,7 @@ class MirageWorkspace(LocalWorkspace):
             parent = str(Path(dst).parent)
             if parent and parent not in (".", "/"):
                 self._ensure_parent(parent)
-            self._bridge.run(self._ws.ops.write(dst, data))
+            self._bridge.run(self._ws.fs.write(dst, data))
             return FileOperationResult(
                 success=True,
                 source_path=str(src),
@@ -205,7 +205,7 @@ class MirageWorkspace(LocalWorkspace):
         src = str(source_path)
         dst = Path(destination_path)
         try:
-            data = self._bridge.run(self._ws.ops.read(src))
+            data = self._bridge.run(self._ws.fs.read(src))
             if isinstance(data, str):
                 data = data.encode("utf-8")
             dst.parent.mkdir(parents=True, exist_ok=True)

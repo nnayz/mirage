@@ -12,33 +12,47 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import mirage.sdk as sdk
+import mirage
 
 
 def test_all_names_resolve():
-    missing = [name for name in sdk.__all__ if not hasattr(sdk, name)]
+    missing = [name for name in mirage.__all__ if not hasattr(mirage, name)]
     assert missing == []
 
 
-def test_blessed_surface_is_stable():
-    # The SDK is the public contract for out-of-tree backends; removing
-    # a name is a breaking change and must be deliberate.
-    assert set(sdk.__all__) >= {
+def test_authoring_surface_is_stable():
+    # The root is the public contract for an out-of-tree resource, CLI,
+    # policy, runtime or secrets source, the way @struktoai/mirage-core's
+    # index.ts is; removing a name is a breaking change and must be
+    # deliberate.
+    assert set(mirage.__all__) >= {
         "Accessor",
         "BaseResource",
+        "CLISpec",
         "CommandIO",
         "CommandSpec",
         "FileStat",
         "FlagView",
         "GenericResource",
         "IOResult",
+        "Mount",
         "PathSpec",
+        "Policy",
+        "Runtime",
         "SPECS",
+        "Workspace",
         "build_resource",
         "command",
         "known_resources",
+        "known_runtimes",
+        "known_sources",
         "make_generic_commands",
+        "make_generic_ops",
         "make_resolve_glob",
         "op",
+        "register_cli_spec",
         "register_resource",
+        "register_runtime",
+        "register_secrets",
+        "stream_from_bytes",
     }

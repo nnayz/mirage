@@ -9,7 +9,7 @@
   },
   "exit": 0,
   "lines": [
-    "Workspace.from_state: 2 mount(s) opt out of snapshot replay; reads against them will serve current state with no drift detection: ['/data/', '/']",
+    "Workspace.from_state: 1 mount(s) opt out of snapshot replay; reads against them will serve current state with no drift detection: ['/data/']",
     "=== tee (create files) ===",
     "=== ls /data/ ===",
     "hello.txt",
@@ -144,7 +144,7 @@
     {
       "volatile": "  saved → /var/folders/4d/s_lrmhbd7xb9jglnmy13sz_w0000gn/T/tmpkfj1d4zs.tar (20480 bytes)"
     },
-    "  ✓ load() w/o resources raises: Workspace.load: resources= must include overrides for: ['/data/']. The…",
+    "  ✓ load() w/o resources raises: Workspace.load: resources= must include overrides for: ['/data/']. A l…",
     "  loaded ws ls /data: dup.txt",
     "hello.txt",
     "reports",

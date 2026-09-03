@@ -72,9 +72,8 @@ def _perm_triplet(bits: int, special: str | None = None) -> str:
 
 
 def ls_mode_string(s: FileStat) -> str:
-    type_char = TYPE_CHARS.get(s.type, "-") if s.type is not None else "-"
-    default = DEFAULT_MODES.get(s.type, 0o644) if s.type is not None else 0o644
-    mode = s.mode if s.mode is not None else default
+    type_char = TYPE_CHARS.get(s.type, "-")
+    mode = s.mode if s.mode is not None else DEFAULT_MODES.get(s.type, 0o644)
     perms = (_perm_triplet(mode >> 6, "s" if mode & 0o4000 else None) +
              _perm_triplet(mode >> 3, "s" if mode & 0o2000 else None) +
              _perm_triplet(mode, "t" if mode & 0o1000 else None))

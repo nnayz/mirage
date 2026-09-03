@@ -259,7 +259,7 @@ def resolve_class(ref: str | type) -> type:
     return ref if isinstance(ref, type) else load_backend_class(ref)
 
 
-def _resolve_entry(name: str) -> ResourceEntry | None:
+def resolve_entry(name: str) -> ResourceEntry | None:
     """Find the entry a mount's ``resource`` value names, or None.
 
     Four rungs, in the order ``commands.cli.specs.cli_spec_for`` uses for
@@ -334,13 +334,13 @@ def build_resource(name: str,
     then a colon reference naming a class directly
     (``./wiki.py:WikiResource`` or ``mypkg.backends:WikiResource``), then
     ``mirage.resources`` entry points from installed packages. See
-    :func:`_resolve_entry`.
+    :func:`resolve_entry`.
 
     **Synchronous on purpose. Do not make this async.** It is the door
     every caller who describes a mount as data comes through: the YAML
     loader (:meth:`mirage.config.WorkspaceConfig.to_workspace_kwargs`),
     the daemon's create/load routes, ``clone``, and every embedder
-    reaching it through ``mirage.sdk``. 0.0.5 made it async to let one
+    reaching it through the ``mirage`` root. 0.0.5 made it async to let one
     backend fetch over the network at build time; that broke every
     out-of-tree caller, and because nothing validated the return value
     the failure surfaced as ``'coroutine' object has no attribute
@@ -370,7 +370,7 @@ def build_resource(name: str,
         KeyError: ``name`` is neither builtin, registered, a colon
             reference, nor installed.
     """
-    entry = _resolve_entry(name)
+    entry = resolve_entry(name)
     if entry is None:
         raise KeyError(
             f"unknown resource {name!r}; known: {known_resources()}")
@@ -396,4 +396,5 @@ def build_resource(name: str,
         defect = _resource_defect(built)
         if defect is not None:
             raise TypeError(f"resource ref {name!r} {defect}")
+    built.resource_ref = name
     return built

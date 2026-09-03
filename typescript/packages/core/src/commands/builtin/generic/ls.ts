@@ -116,7 +116,7 @@ const CLASSIFY_SUFFIX: Partial<Record<FileType, string>> = {
 }
 
 function formatShort(s: FileStat, classify: boolean): string {
-  const suffix = (classify && s.type != null ? CLASSIFY_SUFFIX[s.type] : undefined) ?? ''
+  const suffix = (classify ? CLASSIFY_SUFFIX[s.type] : undefined) ?? ''
   return `${s.name}${suffix}`
 }
 

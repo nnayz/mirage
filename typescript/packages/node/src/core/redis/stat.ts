@@ -16,7 +16,7 @@ import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
 import { FileStat, FileType } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/utils/errors'
-import { guessType } from '@struktoai/mirage-core/utils/filetype'
+import { contentTypeForPath } from '@struktoai/mirage-core/utils/filetype'
 import type { RedisAccessor } from '../../accessor/redis.ts'
 import { basename, norm } from './utils.ts'
 
@@ -62,7 +62,8 @@ export async function stat(
       name: basename(p),
       size,
       modified: await store.getModified(p),
-      type: guessType(p),
+      type: FileType.FILE,
+      content: contentTypeForPath(p),
       mode: attrs.mode ?? null,
       uid: attrs.uid ?? null,
       gid: attrs.gid ?? null,

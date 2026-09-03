@@ -24,7 +24,7 @@ import { BaseResource, type Resource } from '../resource/base.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { splitManifestAndBlobs } from './snapshot/manifest.ts'
 import { writeSnapshotTar } from './snapshot/tar_io.ts'
-import { DriftPolicy, FileStat, FileType, MountMode, type PathSpec } from '../types.ts'
+import { ContentType, DriftPolicy, FileStat, FileType, MountMode, type PathSpec } from '../types.ts'
 import { ContentDriftError } from './snapshot/drift.ts'
 import { toStateDict } from './snapshot/state.ts'
 import { Workspace } from './workspace/workspace.ts'
@@ -98,7 +98,8 @@ class FakeRemoteResource extends BaseResource implements Resource {
       new FileStat({
         name: p.virtual.split('/').pop() ?? p.virtual,
         size: entry.bytes.byteLength,
-        type: FileType.TEXT,
+        type: FileType.FILE,
+        content: ContentType.TEXT,
         fingerprint: entry.fingerprint,
         revision: entry.revision,
       }),
@@ -160,7 +161,8 @@ const statOp: RegisteredOp = {
       new FileStat({
         name: scope.virtual.split('/').pop() ?? scope.virtual,
         size: entry.bytes.byteLength,
-        type: FileType.TEXT,
+        type: FileType.FILE,
+        content: ContentType.TEXT,
         fingerprint: entry.fingerprint,
         revision: entry.revision,
       }),

@@ -28,6 +28,7 @@ from mirage.cache.file.config import CacheConfig, RedisCacheConfig
 from mirage.cache.index.config import IndexConfig, RedisIndexConfig
 from mirage.commands.cli.types import CLISpec
 from mirage.policy.profile import SessionProfile
+from mirage.resource.loader import load_attr
 from mirage.resource.registry import build_resource
 from mirage.runtime.base import Runtime
 from mirage.runtime.table import build_runtime
@@ -402,9 +403,12 @@ def _absolutize_scripts(raw: dict[str, Any], base: Path) -> None:
         raw["route_policy"] = str(base / policy.strip())
     runtimes = raw.get("runtimes")
     if isinstance(runtimes, list):
-        for entry in runtimes:
+        for i, entry in enumerate(runtimes):
             if isinstance(entry, dict):
                 _absolutize_script_key(entry, base)
+                _absolutize_code_ref(entry, "name", base)
+            elif isinstance(entry, str):
+                runtimes[i] = _rebase_code_ref(entry, base)
     clis = raw.get("clis")
     if isinstance(clis, dict):
         for block in clis.values():
@@ -440,30 +444,69 @@ def _absolutize_script_key(entry: dict[str, Any], base: Path) -> None:
 def _absolutize_code_ref(entry: dict[str, Any], key: str, base: Path) -> None:
     """Rebase a path-form colon reference under ``key``.
 
-    ``cli: ./tool.py:TREE`` and ``resource: ./wiki.py:WikiResource`` both
-    mean "next to the config file", the same build-context rule
-    ``script:`` follows; without this the pointer reaches ``load_attr``
-    relative and resolves against the server process's cwd. A module
-    dotpath (``pkg.mod:TREE``) is left alone: importlib resolves it, not
-    the filesystem. The split matches ``load_attr``'s own test, so the
-    two cannot disagree about what a path is.
+    ``cli: ./tool.py:TREE``, ``resource: ./wiki.py:WikiResource`` and a
+    runtime entry's ``name: ./box.py:EchoBox`` all mean "next to the
+    config file", the same build-context rule ``script:`` follows;
+    without this the pointer reaches ``load_attr`` relative and resolves
+    against the server process's cwd. A module dotpath (``pkg.mod:TREE``)
+    is left alone: importlib resolves it, not the filesystem. The split
+    matches ``load_attr``'s own test, so the two cannot disagree about
+    what a path is.
 
     Args:
-        entry (dict[str, Any]): a ``clis`` or ``mounts`` mapping entry,
-            mutated in place.
-        key (str): the field holding the reference, ``cli`` or
-            ``resource``.
+        entry (dict[str, Any]): a ``clis``, ``mounts`` or ``runtimes``
+            mapping entry, mutated in place.
+        key (str): the field holding the reference, ``cli``,
+            ``resource`` or ``name``.
         base (Path): directory containing the config file.
     """
     ref = entry.get(key)
-    if not isinstance(ref, str) or ":" not in ref:
-        return
+    if isinstance(ref, str):
+        entry[key] = _rebase_code_ref(ref, base)
+
+
+def _rebase_code_ref(ref: str, base: Path) -> str:
+    """``ref`` with a relative path-form source rebased onto ``base``.
+
+    Anything that is not a relative path-form reference (a bare name, a
+    module dotpath, an absolute path) comes back unchanged, so the bare
+    string runtime entry (``- ./box.py:EchoBox`` beside ``- monty``) reads
+    the same way the keyed forms do.
+
+    Args:
+        ref (str): a config value that may be a ``source:attr`` reference.
+        base (Path): directory containing the config file.
+    """
+    if ":" not in ref:
+        return ref
     source, attr = ref.rsplit(":", 1)
     if "/" not in source and not source.endswith(".py"):
-        return
+        return ref
     if Path(source).is_absolute():
-        return
-    entry[key] = f"{base / source}:{attr}"
+        return ref
+    return f"{base / source}:{attr}"
+
+
+def _runtime_class(ref: str) -> type[Runtime]:
+    """Load the ``Runtime`` subclass a ``source:Class`` reference names.
+
+    The runtime twin of the ``resource:`` and ``cli:`` reference forms:
+    a deployment ships a runtime as a file and names it from yaml with no
+    host program calling ``register_runtime``. The class is constructed
+    with the uniform ``(captures, config, script)`` options like a
+    builtin, so the entry's other keys reach it unchanged.
+
+    Args:
+        ref (str): ``./box.py:EchoBox`` or ``pkg.mod:EchoBox``.
+
+    Raises:
+        ValueError: the reference does not load, or names something
+            that is not a ``Runtime`` subclass.
+    """
+    loaded = load_attr(ref)
+    if not (isinstance(loaded, type) and issubclass(loaded, Runtime)):
+        raise ValueError(f"{ref!r} is not a Runtime subclass")
+    return loaded
 
 
 def _build_runtime_entries(
@@ -471,17 +514,19 @@ def _build_runtime_entries(
     """Turn config runtime entries into workspace runtime entries.
 
     Args:
-        entries (list[str | dict[str, Any]]): name strings, or maps
-            carrying a name plus the uniform runtime options
-            (``captures``, ``config``, ``script``).
+        entries (list[str | dict[str, Any]]): names, or maps carrying a
+            name plus the uniform runtime options (``captures``,
+            ``config``, ``script``). A name is a registered runtime or a
+            ``source:Class`` reference to a ``Runtime`` subclass.
 
     Raises:
-        ValueError: a map entry without a name, or a non-path script.
+        ValueError: a map entry without a name, a non-path script, or a
+            reference that is not a ``Runtime`` subclass.
     """
     out: list[Runtime | str] = []
     for entry in entries:
         if isinstance(entry, str):
-            out.append(entry)
+            out.append(_runtime_class(entry)() if ":" in entry else entry)
             continue
         options = dict(entry)
         name = options.pop("name", None)
@@ -493,6 +538,9 @@ def _build_runtime_entries(
                 "a runtime entry script must be a .py path string")
         if script is not None:
             options["script"] = _load_script_source(script)
+        if ":" in name:
+            out.append(_runtime_class(name)(**options))
+            continue
         out.append(build_runtime(name, **options))
     return out
 

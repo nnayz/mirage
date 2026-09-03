@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { CLISpec } from '@struktoai/mirage-core/commands/cli/types'
+import { Runtime } from '@struktoai/mirage-core/runtime/base'
 import { ScriptSource } from '@struktoai/mirage-core/runtime/routing/index'
 import { MountMode } from '@struktoai/mirage-core/types'
 import { RAMNamespaceStore } from '@struktoai/mirage-core/workspace/mount/namespace/ram'
@@ -31,6 +32,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  absolutizeScripts,
   checkWorkspaceConfigFile,
   interpolateEnv,
   loadWorkspaceConfig,
@@ -50,6 +52,48 @@ describe('interpolateEnv', () => {
 
   it('throws listing all missing vars', () => {
     expect(() => interpolateEnv('${A} ${B}', {})).toThrow(/missing.*A.*B/)
+  })
+})
+
+describe('absolutizeScripts', () => {
+  // The CLI applies this to a `load`/`clone` override on its own, since an
+  // override is read without validation; a relative code ref there has to
+  // mean "next to the file" exactly as it does at create time.
+  it('rebases relative resource and cli refs onto the config dir, not dotpaths', () => {
+    const raw: Record<string, unknown> = {
+      mounts: {
+        '/wiki': { resource: './backends/wiki.mjs:WikiResource' },
+        '/pkg': { resource: 'my-pkg/backends:WikiResource' },
+        '/ram': { resource: 'ram' },
+      },
+      clis: { tally: { cli: '../tools/tally.mjs:TALLY' } },
+    }
+    absolutizeScripts(raw, '/srv/deploy')
+    const mounts = raw.mounts as Record<string, { resource: string }>
+    const clis = raw.clis as Record<string, { cli: string }>
+    expect(mounts['/wiki']?.resource).toBe('/srv/deploy/backends/wiki.mjs:WikiResource')
+    expect(mounts['/pkg']?.resource).toBe('my-pkg/backends:WikiResource')
+    expect(mounts['/ram']?.resource).toBe('ram')
+    expect(clis.tally?.cli).toBe('/srv/tools/tally.mjs:TALLY')
+  })
+
+  it('rebases a runtime entry name that is a code ref, not a registered name', () => {
+    const raw: Record<string, unknown> = {
+      runtimes: [
+        { name: './box.mjs:EchoBox', captures: ['nvidia-smi'] },
+        { name: 'monty' },
+        '../box.mjs:EchoBox',
+        'my-runtimes:EchoBox',
+        'vfs',
+      ],
+    }
+    absolutizeScripts(raw, '/srv/deploy')
+    const runtimes = raw.runtimes as ({ name: string } | string)[]
+    expect(runtimes[0]).toEqual({ name: '/srv/deploy/box.mjs:EchoBox', captures: ['nvidia-smi'] })
+    expect(runtimes[1]).toEqual({ name: 'monty' })
+    expect(runtimes[2]).toBe('/srv/box.mjs:EchoBox')
+    expect(runtimes[3]).toBe('my-runtimes:EchoBox')
+    expect(runtimes[4]).toBe('vfs')
   })
 })
 
@@ -748,6 +792,84 @@ describe('clis section', () => {
       clis: { pager: { script: 'pager.py', config: { verbose: true } } },
     })
     expect(cfg.clis?.pager?.config).toEqual({ verbose: true })
+  })
+})
+
+// Mirrors python/tests/config/test_loader.py's runtimes `name:` cases. A
+// runtime entry name carrying a colon names a Runtime subclass the way
+// `resource:` names a backend, so a deployment ships a runtime as a file
+// with no host program calling registerRuntime.
+describe('runtimes name: reference', () => {
+  const CORE = pathToFileURL(
+    resolve(fileURLToPath(import.meta.url), '../../../core/dist/index.js'),
+  ).href
+  const BOX =
+    `import {LINE_EXECUTOR, Runtime} from ${JSON.stringify(CORE)}\n` +
+    'export class EchoBox extends Runtime {\n' +
+    '  [LINE_EXECUTOR] = true\n' +
+    "  name = 'echobox'\n" +
+    "  constructor(options = {}) { super(options, ['nvidia-smi'], []) }\n" +
+    '  runLine(line) { return Promise.resolve({ stdout: new TextEncoder().encode(`box:${line}\\n`), stderr: null, exitCode: 0 }) }\n' +
+    '}\n' +
+    "export const NOT_A_RUNTIME = { name: 'nope' }\n"
+
+  it('builds a runtime out of a file next to the config, with the entry options', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-rt-'))
+    writeFileSync(join(dir, 'box.mjs'), BOX)
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    resource: ram\n' +
+        'runtimes:\n  - name: ./box.mjs:EchoBox\n    captures: [nvidia-smi, rocm-smi]\n  - vfs\n',
+    )
+    const cfg = loadWorkspaceConfigFile(join(dir, 'ws.yaml'))
+    expect(cfg.runtimes?.[0]).toEqual({
+      name: `${join(dir, 'box.mjs')}:EchoBox`,
+      captures: ['nvidia-smi', 'rocm-smi'],
+    })
+    const args = await configToWorkspaceArgs(cfg)
+    const [box, vfs] = args.options.runtimes ?? []
+    expect(box).toBeInstanceOf(Runtime)
+    expect((box as Runtime).name).toBe('echobox')
+    expect((box as Runtime).captures).toEqual(['nvidia-smi', 'rocm-smi'])
+    expect((vfs as Runtime).name).toBe('vfs')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('checks the entry keys of a referenced runtime the way a named one is checked', async () => {
+    // The base constructor ignores a key it does not read, so without
+    // the check `captuers:` would leave EchoBox on its class captures;
+    // Python refuses the same entry through `**options`.
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-rt-'))
+    writeFileSync(join(dir, 'box.mjs'), BOX)
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    resource: ram\n' +
+        'runtimes:\n  - name: ./box.mjs:EchoBox\n    captuers: [nvidia-smi, rocm-smi]\n  - vfs\n',
+    )
+    await expect(
+      configToWorkspaceArgs(loadWorkspaceConfigFile(join(dir, 'ws.yaml'))),
+    ).rejects.toThrow(/unknown .*box\.mjs:EchoBox runtime option 'captuers'/)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('refuses a ref that is not a Runtime subclass, and one that does not load', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-rt-'))
+    writeFileSync(join(dir, 'box.mjs'), BOX)
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    resource: ram\nruntimes:\n  - ./box.mjs:NOT_A_RUNTIME\n',
+    )
+    await expect(
+      configToWorkspaceArgs(loadWorkspaceConfigFile(join(dir, 'ws.yaml'))),
+    ).rejects.toThrow('is not a Runtime subclass')
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    resource: ram\nruntimes:\n  - name: ./missing.mjs:EchoBox\n',
+    )
+    await expect(
+      configToWorkspaceArgs(loadWorkspaceConfigFile(join(dir, 'ws.yaml'))),
+    ).rejects.toThrow('cannot load script')
+    rmSync(dir, { recursive: true, force: true })
   })
 })
 

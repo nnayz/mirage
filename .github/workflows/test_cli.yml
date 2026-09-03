@@ -41,7 +41,11 @@ jobs:
               - 'integ/cli_config.sh'
               - 'integ/cli_env.sh'
               - 'integ/cli_ref.sh'
+              - 'integ/resource_ref.sh'
+              - 'integ/runtime_ref.sh'
               - 'integ/fixtures/cli/**'
+              - 'integ/fixtures/resource/**'
+              - 'integ/fixtures/runtime/**'
               - '.github/workflows/test_cli.yml'
 
   typescript-build:
@@ -765,6 +769,18 @@ jobs:
       - name: Run CLI ref battery (a program tree installed from a file)
         run: |
           bash integ/cli_ref.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
+      - name: Run resource ref battery (a backend mounted from a file, snapshotted and reloaded)
+        run: |
+          bash integ/resource_ref.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
+      - name: Run runtime ref battery (a runtime loaded from a file, both tiers)
+        run: |
+          bash integ/runtime_ref.sh \
             "python/.venv/bin/mirage" \
             "node typescript/packages/cli/dist/bin/mirage.js"
 

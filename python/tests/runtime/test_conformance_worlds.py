@@ -196,7 +196,7 @@ async def test_fuse_readdir_merges_child_mount_and_link():
     ws = structure_world("monty")
     try:
         assert (await _sh(ws, "ln -s /base/inner /base/lnk"))[0] == 0
-        core = MountCore(ws.ops)
+        core = MountCore(ws.fs)
         names = core.readdir("/base")
         assert "a.txt" in names and "inner" in names and "lnk" in names
         assert core.getattr("/base/inner")["st_mode"] & 0o040000
@@ -294,7 +294,7 @@ async def test_door_stats_structure_only_directory():
     """
     ws = structure_world("monty")
     try:
-        st = await ws.ops.stat("/base/inner")
+        st = await ws.fs.stat("/base/inner")
         assert st.type.value == "directory"
         code, out, err = await _sh(
             ws, "python3 -c \"from pathlib import Path; "
@@ -317,7 +317,7 @@ async def test_link_ancestors_synthesize_on_every_surface():
     ws = structure_world("monty")
     try:
         assert (await _sh(ws, "ln -s /base/a.txt /ghost/deep/lnk"))[0] == 0
-        st = await ws.ops.stat("/ghost")
+        st = await ws.fs.stat("/ghost")
         assert st.type.value == "directory"
         code, out, _ = await _sh(ws, "ls /")
         assert code == 0
@@ -400,7 +400,7 @@ async def test_fuse_core_confines_a_hidden_mount():
     ws = scoped_world("monty")
     try:
         sess = ws.get_session("agent")
-        core = MountCore(ws.ops, session=sess)
+        core = MountCore(ws.fs, session=sess)
         with pytest.raises(FileNotFoundError):
             core.readdir("/closed")
         with pytest.raises(FileNotFoundError):
@@ -475,7 +475,7 @@ async def test_scoped_walk_reaches_a_child_below_hidden_content():
     ws = granted_child_world("monty")
     try:
         sess = ws.get_session("agent")
-        core = MountCore(ws.ops, session=sess)
+        core = MountCore(ws.fs, session=sess)
         names = core.readdir("/base")
         assert "inner" in names
         assert "a.txt" not in names

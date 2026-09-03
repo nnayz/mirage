@@ -262,7 +262,7 @@ class Workspace:
                              HistoryViewResource(self.observer),
                              MountMode.READ)
         # The facade delegates every op to the dispatcher, so FUSE and
-        # programmatic ws.ops walk the same pipeline as a shell command
+        # programmatic ws.fs walk the same pipeline as a shell command
         # and the policy gates fire exactly once, at that door.
         self._ops = Ops(self._registry.ops_mounts(),
                         observer=self.observer,
@@ -403,7 +403,13 @@ class Workspace:
         return self._session_mgr.has_managed_env
 
     @property
-    def ops(self) -> Ops:
+    def fs(self) -> Ops:
+        """The op facade: read/write/stat/readdir/... against the mounts.
+
+        Named as TypeScript names it (`ws.fs`), so one host API reads the
+        same in both languages; the `Ops` class name stays, since it is
+        the op vocabulary the dispatcher speaks, not a filesystem.
+        """
         return self._ops
 
     @property

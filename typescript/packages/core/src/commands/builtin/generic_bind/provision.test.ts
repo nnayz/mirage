@@ -18,7 +18,7 @@ import { IndexEntry } from '../../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../../cache/index/ram.ts'
 import type { ProvisionResult } from '../../../provision/types.ts'
 import { Precision } from '../../../provision/types.ts'
-import { FileStat, FileType, PathSpec } from '../../../types.ts'
+import { ContentType, FileStat, FileType, PathSpec } from '../../../types.ts'
 import { mountKey } from '../../../utils/key_prefix.ts'
 import type { CommandOpts } from '../../config.ts'
 import { BUILTIN_SPECS } from '../../spec/builtins.ts'
@@ -67,7 +67,8 @@ const stat = (_accessor: Accessor, p: PathSpec): Promise<FileStat> =>
       : new FileStat({
           name: p.virtual.split('/').pop() ?? '',
           size: SIZES[p.virtual] ?? null,
-          type: FileType.TEXT,
+          type: FileType.FILE,
+          content: ContentType.TEXT,
         }),
   )
 

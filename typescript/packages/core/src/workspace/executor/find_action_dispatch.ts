@@ -73,7 +73,7 @@ export async function applyFindActions(
       try {
         // -delete is find's own action, not an `rm` line, so no command
         // rule sees it; it is a removal all the same, so it clears the
-        // op door a path rule guards (the same gate `ws.ops`, FUSE and a
+        // op door a path rule guards (the same gate `ws.fs`, FUSE and a
         // redirect clear), by the session the line runs under, and a
         // refusal reports in find's voice. The delegated rm's own slots
         // are suspended for the call, so the deletion admits exactly

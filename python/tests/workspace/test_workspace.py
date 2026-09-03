@@ -1926,10 +1926,10 @@ def test_cache_hit_serves_from_ram():
     ws = _ws()
     io1 = _exec(ws, "cat /s3/data.txt")
     assert _stdout(io1) == b"hello from s3\n"
-    records_after_first = list(ws.ops.records)
+    records_after_first = list(ws.fs.records)
     io2 = _exec(ws, "cat /s3/data.txt")
     assert _stdout(io2) == b"hello from s3\n"
-    new_records = ws.ops.records[len(records_after_first):]
+    new_records = ws.fs.records[len(records_after_first):]
     sources = [r.source for r in new_records if r.op == "read"]
     assert all(s == "ram" for s in sources)
 
@@ -1938,7 +1938,7 @@ def test_cache_miss_reads_from_resource():
     ws = _ws()
     io = _exec(ws, "cat /s3/data.txt")
     assert _stdout(io) == b"hello from s3\n"
-    sources = [r.source for r in ws.ops.records if r.op == "read"]
+    sources = [r.source for r in ws.fs.records if r.op == "read"]
     assert sources[0] == "ram"
 
 
@@ -1955,10 +1955,10 @@ def test_cache_invalidation_after_write():
 def test_grep_uses_cache():
     ws = _ws()
     _exec(ws, "cat /s3/report.csv")
-    records_before = len(ws.ops.records)
+    records_before = len(ws.fs.records)
     io = _exec(ws, "grep alice /s3/report.csv")
     assert b"alice" in _stdout(io)
-    new_records = ws.ops.records[records_before:]
+    new_records = ws.fs.records[records_before:]
     sources = [r.source for r in new_records if r.op == "read"]
     assert all(s == "ram" for s in sources)
 

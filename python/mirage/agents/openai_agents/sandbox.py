@@ -64,7 +64,7 @@ class MirageSandboxSession(BaseSandboxSession):
         *,
         user: str | User | None = None,
     ) -> io.IOBase:
-        data = await self._ws.ops.read(str(path))
+        data = await self._ws.fs.read(str(path))
         return io.BytesIO(data)
 
     async def write(
@@ -80,11 +80,11 @@ class MirageSandboxSession(BaseSandboxSession):
         parent = str(path.parent)
         if parent and parent != ".":
             try:
-                await self._ws.ops.mkdir(parent)
+                await self._ws.fs.mkdir(parent)
             except (FileExistsError, ValueError):
                 # mkdir -p semantics: an existing parent is success
                 pass
-        await self._ws.ops.write(str(path), content)
+        await self._ws.fs.write(str(path), content)
 
     def _prepare_exec_command(
         self,

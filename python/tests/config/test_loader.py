@@ -21,7 +21,7 @@ from mirage import MountBackend, MountMode, Workspace
 from mirage.cache.file.config import CacheConfig, RedisCacheConfig
 from mirage.config import (DiskStoreBlock, RamCacheBlock, RedisCacheBlock,
                            RedisStoreBlock, S3StoreBlock, WorkspaceConfig,
-                           load_config)
+                           _build_runtime_entries, load_config)
 from mirage.policy import DEFAULT_DENY_REASON, CommandRule
 from mirage.resource.ram import RAMResource
 from mirage.resource.s3 import S3Resource
@@ -758,6 +758,78 @@ mounts:
 """)
     cfg = load_config(cfg_file)
     assert cfg.mounts["/wiki"].resource == "mypkg.backends:WikiResource"
+
+
+BOX_RUNTIME = """\
+from mirage import LineExecutorMixin, RunResult, Runtime
+
+
+class EchoBox(Runtime, LineExecutorMixin):
+    name = "echobox"
+    captures = ("nvidia-smi", )
+
+    async def run_line(self, line, stdin, env, cwd):
+        return RunResult(stdout=f"box:{line}\\n".encode(), stderr=None,
+                         exit_code=0)
+
+
+NOT_A_RUNTIME = {"name": "nope"}
+"""
+
+
+def test_runtimes_path_form_reference_rebases_and_builds(
+        tmp_path, monkeypatch):
+    # A runtime entry's `name: ./box.py:EchoBox` reads the way `resource:`
+    # and `cli:` do: rebased onto the config dir, then constructed with
+    # the entry's uniform options, so a deployment ships a runtime as a
+    # file with no host program calling register_runtime.
+    (tmp_path / "box.py").write_text(BOX_RUNTIME)
+    cfg_file = tmp_path / "ws.yaml"
+    cfg_file.write_text("""\
+mounts:
+  /data:
+    resource: ram
+runtimes:
+  - name: ./box.py:EchoBox
+    captures: [nvidia-smi, rocm-smi]
+  - ./box.py:EchoBox
+  - vfs
+""")
+    monkeypatch.chdir(tmp_path.parent)
+    cfg = load_config(cfg_file)
+    assert cfg.runtimes is not None
+    # Both spellings rebase: the keyed entry and the bare string beside
+    # a bare builtin name.
+    assert cfg.runtimes[0]["name"] == f"{tmp_path / 'box.py'}:EchoBox"
+    assert cfg.runtimes[1] == f"{tmp_path / 'box.py'}:EchoBox"
+    box, bare, vfs = cfg.to_workspace_kwargs()["runtimes"]
+    assert type(box).__name__ == "EchoBox"
+    assert box.name == "echobox"
+    assert box.captures == ("nvidia-smi", "rocm-smi")
+    assert type(bare).__name__ == "EchoBox"
+    assert bare.captures == ("nvidia-smi", )
+    assert vfs == "vfs"
+
+
+def test_runtimes_reference_must_name_a_runtime_subclass(tmp_path):
+    (tmp_path / "box.py").write_text(BOX_RUNTIME)
+    ref = f"{tmp_path / 'box.py'}:NOT_A_RUNTIME"
+    with pytest.raises(ValueError, match="is not a Runtime subclass"):
+        _build_runtime_entries([{"name": ref}])
+    with pytest.raises(ValueError, match="cannot load script"):
+        _build_runtime_entries([f"{tmp_path / 'missing.py'}:EchoBox"])
+
+
+def test_runtimes_reference_refuses_an_unknown_entry_key(tmp_path):
+    # A referenced class is constructed with the entry's keys as kwargs,
+    # so a typo fails the way it does for a builtin name instead of
+    # leaving the runtime on its class defaults; TypeScript's loader runs
+    # the same check by hand (checkRuntimeOptions).
+    (tmp_path / "box.py").write_text(BOX_RUNTIME)
+    ref = f"{tmp_path / 'box.py'}:EchoBox"
+    with pytest.raises(TypeError,
+                       match="unexpected keyword argument 'captuers'"):
+        _build_runtime_entries([{"name": ref, "captuers": ["nvidia-smi"]}])
 
 
 @pytest.mark.asyncio

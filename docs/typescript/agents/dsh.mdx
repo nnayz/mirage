@@ -212,7 +212,7 @@ result.refusal
 This is deliberate: the document says `ask`, and silently rewriting that as `deny` would change what the operator wrote. The question is real and answerable, through `ctx.mirage.decisions`:
 
 ```ts
-import { Outcome, Scope } from '@struktoai/mirage-core/policy/types'
+import { Outcome, Scope } from '@struktoai/mirage-core'
 
 const [waiting] = ctx.mirage.decisions.pending('agent')
 await ctx.mirage.decisions.answer(waiting.id, Outcome.ALLOW, Scope.SESSION)

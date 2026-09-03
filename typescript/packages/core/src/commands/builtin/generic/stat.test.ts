@@ -19,6 +19,7 @@ import { parseSessionProfile } from '../../../policy/profile.ts'
 import { RAMResource } from '../../../resource/ram/ram.ts'
 import { type CommandOpts } from '../../config.ts'
 import {
+  ContentType,
   DEVICE_NUMBERS_KEY,
   FileStat,
   type FileStatInit,
@@ -36,11 +37,16 @@ const MTIME_EPOCH = '1767367845'
 const DEC = new TextDecoder()
 
 function fs(overrides: Partial<FileStatInit> = {}): FileStat {
+  // A content shape rides only on a regular file; an override that picks
+  // another kind drops it, the way a backend never reports one for a
+  // directory or link.
+  const type = overrides.type ?? FileType.FILE
   return new FileStat({
     name: 'f.txt',
     size: 6,
     modified: MTIME,
-    type: FileType.TEXT,
+    type,
+    ...(type === FileType.FILE ? { content: ContentType.TEXT } : {}),
     ...overrides,
   })
 }

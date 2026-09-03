@@ -40,6 +40,9 @@ export const TYPE_CHARS: Partial<Record<FileType, string>> = {
   [FileType.DIRECTORY]: 'd',
   [FileType.SYMLINK]: 'l',
   [FileType.CHAR_DEVICE]: 'c',
+  [FileType.BLOCK_DEVICE]: 'b',
+  [FileType.FIFO]: 'p',
+  [FileType.SOCKET]: 's',
 }
 
 // A symlink has no permission bits of its own on Linux: the mode is

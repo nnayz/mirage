@@ -9,7 +9,7 @@
   },
   "exit": 0,
   "lines": [
-    "Workspace.from_state: 2 mount(s) opt out of snapshot replay; reads against them will serve current state with no drift detection: ['/data/', '/']",
+    "Workspace.from_state: 1 mount(s) opt out of snapshot replay; reads against them will serve current state with no drift detection: ['/data/']",
     "=== tee (create files) ===",
     "=== ls /data/ ===",
     "hello.txt",

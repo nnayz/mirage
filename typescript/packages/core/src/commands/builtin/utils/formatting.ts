@@ -81,8 +81,8 @@ function permTriplet(bits: number, special?: string): string {
 }
 
 export function lsModeString(s: FileStat): string {
-  const typeChar = (s.type != null ? TYPE_CHARS[s.type] : undefined) ?? '-'
-  const mode = s.mode ?? (s.type != null ? (DEFAULT_MODES[s.type] ?? 0o644) : 0o644)
+  const typeChar = TYPE_CHARS[s.type] ?? '-'
+  const mode = s.mode ?? DEFAULT_MODES[s.type] ?? 0o644
   return (
     typeChar +
     permTriplet(mode >> 6, mode & 0o4000 ? 's' : undefined) +

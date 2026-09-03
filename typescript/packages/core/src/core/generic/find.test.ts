@@ -51,7 +51,7 @@ function makeDeps(
           name,
           size: entry.size ?? null,
           modified: entry.modified ?? null,
-          type: entry.size === undefined ? FileType.DIRECTORY : FileType.TEXT,
+          type: entry.size === undefined ? FileType.DIRECTORY : FileType.FILE,
         }),
       )
     },
@@ -247,6 +247,9 @@ function makeSearchDeps(keys: string[]): SearchFindDeps<unknown> & { resolveCall
       Promise.resolve(
         new FileStat({
           name: spec.mountPath.split('/').pop() ?? '',
+          type: SEARCH_DIRS.has(rstripSlash(spec.mountPath) || '/')
+            ? FileType.DIRECTORY
+            : FileType.FILE,
           size: SEARCH_SIZES[spec.mountPath] ?? null,
         }),
       ),

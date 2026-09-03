@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import errno
+import inspect
 import logging
 from dataclasses import replace
 from typing import Any
@@ -231,6 +232,11 @@ class Policies:
     policy that returns something the hook may not return (VALIDITY)
     raises PolicyError: that is a programming error, not a refusal.
 
+    A hook may be ``async def`` or a plain ``def``; the seam awaits
+    whatever it returns, the way the TypeScript seam accepts a value
+    or a promise. Without that a plain ``def`` raised inside the
+    fail-closed arm and every command read ``policy X failed``.
+
     Args:
         policies (list[Policy] | None): initial policies, consulted in
             order before anything registered later through add().
@@ -294,7 +300,9 @@ class Policies:
                 continue
             name = type(policy).__name__
             try:
-                action = await getattr(policy, hook)(ctx)
+                action = getattr(policy, hook)(ctx)
+                if inspect.isawaitable(action):
+                    action = await action
             except Exception as exc:
                 # The agent reads which policy broke, never what it
                 # raised: the exception text is the deployment's to

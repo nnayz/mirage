@@ -176,6 +176,15 @@ async def load_workspace(req: LoadWorkspaceRequest,
         # these declarations; a container the constructor will reject
         # is left for it to reject.
         resources = await build_override_resources(req.override, secrets)
+    except (KeyError, TypeError, ValueError, SecretsError) as e:
+        # An override naming a resource the daemon cannot build (an
+        # unknown name, an unloadable ref, a ref that is not a resource,
+        # a secrets source it cannot resolve) is the caller's mistake,
+        # the answer the TypeScript daemon gives too; it used to escape
+        # as a 500.
+        raise HTTPException(status_code=400,
+                            detail=f"override build failed: {e}")
+    try:
         ws = await Workspace.load(str(safe_path),
                                   resources=resources,
                                   secrets=secrets)

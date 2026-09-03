@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { DEVICE_NUMBERS_KEY, FileStat, FileType } from '../../../types.ts'
+import { ContentType, DEVICE_NUMBERS_KEY, FileStat, FileType } from '../../../types.ts'
 import { formatLsLong, humanSize } from './formatting.ts'
 import { readStdinAsync, resolveSource, wrapBytes } from './stream.ts'
 
@@ -69,7 +69,8 @@ describe('formatLsLong', () => {
     const stat = new FileStat({
       name: 'file.txt',
       size: 5,
-      type: FileType.TEXT,
+      type: FileType.FILE,
+      content: ContentType.TEXT,
       modified: '2026-01-01T00:00:00Z',
     })
     const [line] = formatLsLong([stat])
@@ -80,7 +81,8 @@ describe('formatLsLong', () => {
     const stat = new FileStat({
       name: 'file.txt',
       size: 5,
-      type: FileType.TEXT,
+      type: FileType.FILE,
+      content: ContentType.TEXT,
       modified: '2026-01-01T00:00:00Z',
     })
     const identity = { user: 'alice', profile: 'admin' }
@@ -134,11 +136,18 @@ describe('formatLsLong', () => {
 
   it('right-aligns sizes to common width', () => {
     const stats = [
-      new FileStat({ name: 'a', size: 5, type: FileType.TEXT, modified: '2026-01-01T00:00:00Z' }),
+      new FileStat({
+        name: 'a',
+        size: 5,
+        type: FileType.FILE,
+        content: ContentType.TEXT,
+        modified: '2026-01-01T00:00:00Z',
+      }),
       new FileStat({
         name: 'b',
         size: 1234,
-        type: FileType.TEXT,
+        type: FileType.FILE,
+        content: ContentType.TEXT,
         modified: '2026-01-01T00:00:00Z',
       }),
     ]
@@ -151,7 +160,8 @@ describe('formatLsLong', () => {
     const stat = new FileStat({
       name: 'big',
       size: 2048,
-      type: FileType.TEXT,
+      type: FileType.FILE,
+      content: ContentType.TEXT,
       modified: '2026-01-01T00:00:00Z',
     })
     const [line] = formatLsLong([stat], { human: true })
@@ -160,7 +170,13 @@ describe('formatLsLong', () => {
   })
 
   it('falls back to placeholder when modified is missing', () => {
-    const stat = new FileStat({ name: 'x', size: 0, type: FileType.TEXT, modified: null })
+    const stat = new FileStat({
+      name: 'x',
+      size: 0,
+      type: FileType.FILE,
+      content: ContentType.TEXT,
+      modified: null,
+    })
     const [line] = formatLsLong([stat])
     expect(line).toContain('Jan  1 00:00')
   })

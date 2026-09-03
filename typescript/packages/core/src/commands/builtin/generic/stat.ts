@@ -33,18 +33,21 @@ import { formatRecords } from '../utils/output.ts'
 
 const ENC = new TextEncoder()
 
-const TYPE_LABELS: Record<string, string> = {
+const TYPE_LABELS: Partial<Record<FileType, string>> = {
   [FileType.DIRECTORY]: 'directory',
   [FileType.SYMLINK]: 'symbolic link',
   [FileType.CHAR_DEVICE]: 'character special file',
-  [FileType.TEXT]: 'regular file',
-  [FileType.BINARY]: 'regular file',
-  [FileType.JSON]: 'regular file',
-  [FileType.CSV]: 'regular file',
+  [FileType.FILE]: 'regular file',
 }
 
 function typeLabel(s: FileStat): string {
-  return s.type ? (TYPE_LABELS[s.type] ?? 'regular file') : 'regular file'
+  return TYPE_LABELS[s.type] ?? 'regular file'
+}
+
+// The default record's type= shows a regular file's content shape and a
+// non-regular node's kind, so one field reads the way it always has.
+function shownType(s: FileStat): string {
+  return s.type === FileType.FILE && s.content !== null ? s.content : s.type
 }
 
 function effectiveMode(s: FileStat): number {
@@ -336,7 +339,7 @@ export async function statGeneric(
         const sizeStr = linked.size === null ? 'None' : String(linked.size)
         const modStr = linked.modified ?? 'None'
         lines.push(
-          `name=${linked.name} size=${sizeStr} modified=${modStr} type=${linked.type ?? 'None'}`,
+          `name=${linked.name} size=${sizeStr} modified=${modStr} type=${shownType(linked)}`,
         )
       }
       continue
@@ -355,8 +358,7 @@ export async function statGeneric(
     } else {
       const sizeStr = s.size === null ? 'None' : String(s.size)
       const modStr = s.modified ?? 'None'
-      const typeStr = s.type ?? 'None'
-      lines.push(`name=${s.name} size=${sizeStr} modified=${modStr} type=${typeStr}`)
+      lines.push(`name=${s.name} size=${sizeStr} modified=${modStr} type=${shownType(s)}`)
     }
   }
   const io = new IOResult({

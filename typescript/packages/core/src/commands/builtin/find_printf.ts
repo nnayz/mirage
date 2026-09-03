@@ -43,7 +43,7 @@ const KIND_TYPE: Record<PrintfKind, FileType> = {
   d: FileType.DIRECTORY,
   l: FileType.SYMLINK,
   c: FileType.CHAR_DEVICE,
-  f: FileType.TEXT,
+  f: FileType.FILE,
 }
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const MONTH_ABBR = [
