@@ -24,6 +24,7 @@ from openhands.sdk.workspace.local import LocalWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from pydantic import Field, PrivateAttr
 
+from mirage.agents.io_text import with_refusal
 from mirage.workspace.workspace import Workspace as MirageBackingWorkspace
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,9 @@ class MirageWorkspace(LocalWorkspace):
             io_result = self._bridge.run(
                 _execute_with_timeout(self._ws, full_command, timeout))
             stdout = self._coerce_text(getattr(io_result, "stdout", b""))
-            stderr = self._coerce_text(getattr(io_result, "stderr", b""))
+            stderr = with_refusal(
+                self._coerce_text(getattr(io_result, "stderr", b"")),
+                io_result.refusal)
             exit_code = int(getattr(io_result, "exit_code", 0) or 0)
             return CommandResult(
                 command=command,

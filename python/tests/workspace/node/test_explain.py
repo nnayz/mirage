@@ -307,7 +307,9 @@ async def test_a_coded_policy_holds_the_line_without_a_document(coded):
     # the pass exists to remove.
     ran = await coded.execute("rm /data/a.txt && cat /data/b.txt")
     assert ran.exit_code != 0
-    assert b"cat is refused by policy" in (ran.stderr or b"")
+    assert ran.stderr == b"cat: Permission denied\n"
+    assert ran.refusal is not None
+    assert ran.refusal.reason == "cat is refused by policy"
     assert "/data/a.txt" in await coded.fs.readdir("/data")
 
 

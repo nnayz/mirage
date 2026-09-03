@@ -19,12 +19,12 @@ import pytest
 from mirage.policy import (Action, Ask, CommandContext, CommandRule, Deny,
                            DenyScope, ExecuteResultContext, MountRootPolicy,
                            OpsContext, OpsResultContext, Pending, Policies,
-                           Policy, PolicyError, post_execute_gate,
-                           post_ops_gate, pre_ops_gate, render_deny,
-                           render_pending)
+                           Policy, PolicyError, describe_refusal,
+                           post_execute_gate, post_ops_gate, pre_ops_gate,
+                           refusal_of, render_deny, render_pending, says_why)
 from mirage.policy.rule import RulePolicy
 from mirage.resource.ram import RAMResource
-from mirage.types import Limit, MountMode, PathSpec, Producer
+from mirage.types import Limit, MountMode, PathSpec, Producer, Refusal
 from mirage.workspace.mount import MountRegistry
 
 
@@ -140,10 +140,10 @@ async def test_builtin_runs_first_then_user_policies_in_order():
     # Only the user rule matches `rm /data/x`.
     deny = await policies.pre_command(_ctx("rm", [_path("/data/x")]))
     assert deny is not None
-    assert deny == Deny("user rule")
+    assert deny == Deny("user rule", policy="RulePolicy")
     # The command plane renders a whole-command refusal at 126 and an
     # operand one in the GNU voice at 1, whoever produced it.
-    assert render_deny("rm", deny) == (b"rm: policy denied: user rule\n", 126)
+    assert render_deny("rm", deny) == (b"rm: Permission denied\n", 126)
     assert render_deny("rm",
                        Deny("cannot remove 'x'",
                             DenyScope.OPERAND)) == (b"rm: cannot remove 'x'\n",
@@ -160,7 +160,7 @@ async def test_policy_instances_and_unoverridden_hooks():
     policies.add(Silent())
     policies.add(DenyWeird())
     deny = await policies.pre_command(_ctx("weird"))
-    assert deny == Deny("nope")
+    assert deny == Deny("nope", policy="DenyWeird")
     assert await policies.pre_command(_ctx("normal")) is None
 
 
@@ -171,8 +171,9 @@ async def test_a_raising_policy_fails_closed():
     deny = await policies.pre_command(_ctx("ls"))
     assert deny is not None
     assert deny.scope is DenyScope.COMMAND
-    assert "Raising" in deny.reason
-    assert "boom" in deny.reason
+    assert deny.reason == "Raising failed"
+    assert deny.policy == "Raising"
+    assert deny.failed is True
 
 
 @pytest.mark.asyncio
@@ -222,7 +223,7 @@ async def test_pre_ops_first_deny_wins_and_wants_gates():
                      write=False,
                      prefix="/data/")
     deny = await policies.pre_ops(ctx)
-    assert deny == Deny("no reads")
+    assert deny == Deny("no reads", policy="DenyReadOps")
     write_ctx = OpsContext(op="write",
                            path=_path("/data/x"),
                            write=True,
@@ -338,7 +339,8 @@ async def test_a_deny_anywhere_in_the_chain_outranks_an_ask():
     # a refusal.
     for order in ([AskRm(), DenyRm()], [DenyRm(), AskRm()]):
         policies = Policies(order)
-        assert await policies.pre_command(_ctx("rm")) == Deny("no")
+        assert await policies.pre_command(_ctx("rm")) == Deny("no",
+                                                              policy="DenyRm")
     # With nothing refusing, the first Ask is the answer.
     policies = Policies([AskRm(), AskAll()])
     assert await policies.pre_command(_ctx("rm")) == Ask("sign-off")
@@ -358,5 +360,60 @@ async def test_an_ask_is_illegal_off_the_command_plane():
 
 def test_render_pending_names_the_approval():
     err, code = render_pending("git", Pending("abc123", "sign-off"))
-    assert err == b"git: requires approval: sign-off (ask abc123)\n"
+    assert err == b"git: Permission denied\n"
     assert code == 126
+
+
+def test_refusal_of_records_kind_policy_scope_and_ask():
+    assert refusal_of(Deny("user rule", policy="RulePolicy")) == Refusal(
+        kind="deny", reason="user rule", policy="RulePolicy")
+    assert refusal_of(
+        Deny("cannot remove 'x'", DenyScope.OPERAND,
+             policy="MountRootPolicy")) == Refusal(kind="deny",
+                                                   reason="cannot remove 'x'",
+                                                   policy="MountRootPolicy",
+                                                   scope="operand")
+    assert refusal_of(Deny("Raising failed", policy="Raising",
+                           failed=True)) == Refusal(kind="failed",
+                                                    reason="Raising failed",
+                                                    policy="Raising")
+    assert refusal_of(Pending("abc123",
+                              "sign-off")) == Refusal(kind="pending",
+                                                      reason="sign-off",
+                                                      ask_id="abc123")
+
+
+def test_describe_refusal_carries_the_reason_the_stderr_line_dropped():
+    assert describe_refusal(
+        Refusal(kind="deny", reason="user rule",
+                policy="RulePolicy")) == "policy denied: user rule"
+    assert describe_refusal(
+        Refusal(kind="pending", reason="sign-off",
+                ask_id="abc123")) == "requires approval: sign-off (ask abc123)"
+    assert describe_refusal(
+        Refusal(kind="failed", reason="Raising failed",
+                policy="Raising")) == "policy Raising failed"
+
+
+def test_says_why_needs_the_operand_diagnostic_itself():
+    operand = Refusal(kind="deny",
+                      reason="/protected: frozen",
+                      policy="Frozen",
+                      scope="operand")
+    # The GNU line, wherever a redirect landed it.
+    assert says_why("cat: /protected: frozen\n", operand)
+    assert says_why("partial\ncat: /protected: frozen\n", operand)
+    assert not says_why("", operand)
+    # The reason quoted inside other output is not the diagnostic.
+    assert not says_why("note: /protected: frozen for now\n", operand)
+    # A command-scoped refusal's stderr is bash's bare line; output that
+    # happens to carry the reason (or was left when 2>/dev/null took the
+    # line away) has not said why.
+    denied = Refusal(kind="deny", reason="no deletes", policy="RulePolicy")
+    assert not says_why("rm: Permission denied\n", denied)
+    assert not says_why("rm: Permission denied\nno deletes\n", denied)
+    assert not says_why("printf: no deletes\n", denied)
+    # An empty reason says nothing, so no text can already have said it.
+    assert not says_why(
+        "cat: \n", Refusal(kind="deny", reason="", policy="P",
+                           scope="operand"))

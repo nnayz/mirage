@@ -18,7 +18,8 @@ import { CommandSpec } from '../../commands/spec/types.ts'
 import { IOResult } from '../../io/types.ts'
 import { RAMResource } from '../../resource/ram/ram.ts'
 import { MountMode, ResourceName } from '../../types.ts'
-import { getTestParser, stdoutStr } from '../fixtures/workspace_fixture.ts'
+import type { Action, CommandContext, Policy } from '../../policy/index.ts'
+import { getTestParser, stderrStr, stdoutStr } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from './workspace.ts'
 
 const ENC = new TextEncoder()
@@ -213,5 +214,84 @@ describe('the ambient session is scoped to its workspace', () => {
     ws.registry.mountForPrefix('/ram/').register(rc)
     await ws.execute('policyprobe', { cwd: '/ram/subdir' })
     expect(seen).toEqual(['/ram/subdir', '/ram/subdir'])
+  })
+})
+
+class DenySecret implements Policy {
+  preCommand(ctx: CommandContext): Action | null {
+    if (ctx.command === 'echo' && ctx.argv.includes('secret')) {
+      return { kind: 'deny', reason: 'secrets stay put' }
+    }
+    return null
+  }
+}
+
+async function policedWs(): Promise<Workspace> {
+  const parser = await getTestParser()
+  const r = new RAMResource()
+  r.store.dirs.add('/')
+  const ws = new Workspace(
+    { '/ram/': r },
+    { mode: MountMode.WRITE, shellParser: parser, policies: [new DenySecret()] },
+  )
+  open.push(ws)
+  return ws
+}
+
+// A nested line ($(), eval, `command NAME`) re-enters execute and comes
+// back as an ExecuteResult; the refusal it earned has to survive the
+// trip back into the IOResult the tree reads, or the outer line says
+// `Permission denied` beside a null record.
+describe('a nested line carries its refusal out', () => {
+  it('command NAME keeps the record the inner line earned', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; command echo "$V"')
+    expect(io.exitCode).toBe(126)
+    expect(stderrStr(io)).toBe('echo: Permission denied\n')
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+
+  it('eval keeps it too', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; eval "echo $V"')
+    expect(io.exitCode).toBe(126)
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+
+  // A substitution keeps only the inner stdout, so its record has to
+  // reach the line through the door every nested line re-enters by.
+  it('a substitution keeps the record the inner line earned', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; X=$(echo "$V")')
+    expect(io.exitCode).toBe(126)
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+
+  it('an unrefused outer command still reports the inner record', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; echo "[$(echo "$V")]"')
+    expect(io.exitCode).toBe(0)
+    expect(stdoutStr(io)).toBe('[]\n')
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+})
+
+// `!` negates the status, so a refused command reads as success (bash
+// does the same for a command it may not run); the record of what was
+// refused still has to ride the result.
+describe('a negated command keeps its refusal', () => {
+  it('for one command', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; ! echo "$V"')
+    expect(io.exitCode).toBe(0)
+    expect(stderrStr(io)).toBe('echo: Permission denied\n')
+    expect(io.refusal?.reason).toBe('secrets stay put')
+  })
+
+  it('for a pipeline', async () => {
+    const ws = await policedWs()
+    const io = await ws.execute('V=secret; ! true | echo "$V"')
+    expect(io.exitCode).toBe(0)
+    expect(io.refusal?.reason).toBe('secrets stay put')
   })
 })

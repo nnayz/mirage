@@ -18,7 +18,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 
 from mirage.runtime.types import ScriptSource
-from mirage.types import Limit, PathSpec, Producer
+from mirage.types import Limit, PathSpec, Producer, Refusal
 
 
 class MountRootQuery(Protocol):
@@ -36,8 +36,10 @@ class MountRootQuery(Protocol):
 class DenyScope(StrEnum):
     """What a command-plane refusal is about, which picks its voice.
 
-    COMMAND refuses the whole line: ``<cmd>: policy denied: <reason>``,
-    exit 126. OPERAND refuses one operand and keeps the GNU voice
+    COMMAND refuses the whole line in bash's own words,
+    ``<cmd>: Permission denied``, exit 126, and the reason rides the
+    result's ``refusal`` record instead. OPERAND refuses one operand
+    and keeps the GNU voice
     ``<cmd>: <reason>`` (the reason names the operand, as
     ``rm: cannot remove 'x': ...`` does), exit 1, or the command's own
     fatal code where GNU differs (tar exits 2). The exit code and errno
@@ -56,8 +58,8 @@ class Outcome(StrEnum):
     ALLOW is silence as well as consent, since a line no rule speaks
     about runs. DENY covers both refusals, and ``Ruling.rule`` tells
     them apart: a rule refused it, or, with no rule, the allow list did.
-    Both exit 126; only the wording differs, because one has an
-    operator's reason to print and the other has none.
+    Both exit 126 and print the same line; the ``refusal`` record
+    carries the operator's reason when there is one.
     """
 
     ALLOW = "allow"
@@ -78,12 +80,18 @@ class Deny:
             trailing newline; the door adds both.
         scope (DenyScope): whole command or one operand; ignored off
             the command plane.
+        policy (str): the class name of the policy that spoke,
+            stamped by the chain so no policy names itself.
+        failed (bool): True when the chain refused on a policy's
+            behalf because it raised.
     """
 
     kind: ClassVar[str] = "deny"
 
     reason: str
     scope: DenyScope = DenyScope.COMMAND
+    policy: str = ""
+    failed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,6 +641,8 @@ class Explanation:
             the session's hides dropped what it cannot see.
         exit_code (int): what the line would exit with, 0 to run.
         stderr (str): what the agent would read, empty to run.
+        refusal (Refusal | None): the record the refused result
+            would carry, None when the line would run.
     """
 
     command: str
@@ -645,3 +655,4 @@ class Explanation:
     paths: tuple[str, ...] = ()
     exit_code: int = 0
     stderr: str = ""
+    refusal: Refusal | None = None

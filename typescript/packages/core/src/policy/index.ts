@@ -37,6 +37,9 @@ export {
   postOpsGate,
   preOpsGate,
   preSessionGate,
+  describeRefusal,
+  saysWhy,
+  refusalOf,
   renderDeny,
   renderPending,
 } from './policies.ts'

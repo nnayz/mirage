@@ -2846,13 +2846,13 @@ def test_background_does_not_block():
 
 
 def test_multiple_background():
-    """sleep 0 &; sleep 0 &; export DONE=yes."""
+    """sleep 0 & sleep 0 & export DONE=yes."""
     _, _, _, session, _, _ = _exec("sleep 0 & sleep 0 & export DONE=yes")
     assert session.env["DONE"] == "yes"
 
 
 def test_background_in_sequence():
-    """export A=1; sleep 0 &; export B=2."""
+    """export A=1; sleep 0 & export B=2."""
     _, _, _, session, _, _ = _exec("export A=1; sleep 0 & export B=2")
     assert session.env["A"] == "1"
     assert session.env["B"] == "2"

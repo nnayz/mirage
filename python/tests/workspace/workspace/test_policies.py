@@ -24,7 +24,7 @@ from mirage.policy import (CommandRule, ExecuteResultContext, OpsContext,
 from mirage.policy.profile import SessionProfile
 from mirage.resource.ram import RAMResource
 from mirage.runtime.types import ScriptSource
-from mirage.types import Limit, MountMode, OnExceed
+from mirage.types import Limit, MountMode, OnExceed, Refusal
 
 from mirage.policy.profile import (  # isort: skip
     CommandsBlock, PathsBlock)
@@ -84,8 +84,11 @@ async def test_policies_add_wins_over_runtime_placement():
         result = await ws.execute("python3 -c 'print(1)'")
         # A whole-command refusal is bash's "found but may not run".
         assert result.exit_code == 126
-        assert result.stderr == (
-            b"python3: policy denied: interpreters are off\n")
+        assert result.stderr == b"python3: Permission denied\n"
+        # The reason rides beside the GNU line, not inside it.
+        assert result.refusal == Refusal(kind="deny",
+                                         reason="interpreters are off",
+                                         policy="NoInterpreters")
     finally:
         await ws.close()
 
@@ -98,8 +101,7 @@ async def test_policies_constructor_param_accepts_instances():
     try:
         result = await ws.execute("python3 -c 'print(1)'")
         assert result.exit_code == 126
-        assert result.stderr == (
-            b"python3: policy denied: interpreters are off\n")
+        assert result.stderr == b"python3: Permission denied\n"
     finally:
         await ws.close()
 
@@ -122,7 +124,10 @@ async def test_guards_cover_shell_builtins_and_namespace_routes():
     try:
         result = await ws.execute("source /data/setup.sh")
         assert result.exit_code == 126
-        assert result.stderr == b"source: policy denied: disabled\n"
+        assert result.stderr == b"source: Permission denied\n"
+        assert result.refusal == Refusal(kind="deny",
+                                         reason="disabled",
+                                         policy="PermissionsPolicy")
         result = await ws.execute("touch /data/prod/x")
         assert result.exit_code == 1
         assert b"frozen" in result.stderr
@@ -740,7 +745,10 @@ async def test_a_raising_post_execute_policy_fails_the_line_closed():
         r = await ws.execute("echo hi")
         assert r.exit_code == 126
         err = await r.stderr_str()
-        assert err == "echo: policy denied: policy Boom failed: boom\n"
+        assert err == "echo: Permission denied\n"
+        assert r.refusal == Refusal(kind="failed",
+                                    reason="Boom failed",
+                                    policy="Boom")
         assert r.stdout is None or await r.stdout_str() == ""
     finally:
         await ws.close()
@@ -850,7 +858,7 @@ async def test_a_bare_name_under_deny_refuses_with_the_default_reason():
     try:
         result = await ws.execute("shred /data/x")
         assert result.exit_code == 126
-        assert result.stderr == b"shred: policy denied: denied by policy\n"
+        assert result.stderr == b"shred: Permission denied\n"
     finally:
         await ws.close()
 
@@ -900,7 +908,7 @@ async def test_a_profile_script_judges_each_command():
         assert (await ws.execute("echo hi", session_id="s")).exit_code == 0
         denied = await ws.execute("cat /data/sealed/k", session_id="s")
         assert denied.exit_code == 126
-        assert denied.stderr == b"cat: policy denied: sealed by release\n"
+        assert denied.stderr == b"cat: Permission denied\n"
     finally:
         await ws.close()
 
@@ -916,7 +924,7 @@ async def test_the_script_reads_resolved_paths_not_typed_words():
         ws.create_session("s", profile="release")
         denied = await ws.execute("cd /data && cat sealed/k", session_id="s")
         assert denied.exit_code == 126
-        assert denied.stderr == b"cat: policy denied: sealed by release\n"
+        assert denied.stderr == b"cat: Permission denied\n"
     finally:
         await ws.close()
 
@@ -951,7 +959,7 @@ async def test_a_document_may_ride_beside_the_script():
         assert hidden.exit_code == 127
         denied = await ws.execute("cat /data/sealed/k", session_id="s")
         assert denied.exit_code == 126
-        assert denied.stderr == b"cat: policy denied: sealed by release\n"
+        assert denied.stderr == b"cat: Permission denied\n"
     finally:
         await ws.close()
 
@@ -966,7 +974,11 @@ async def test_an_ask_it_computed_takes_the_approval_door():
         held = await ws.execute("shred /data/x", session_id="s")
         assert held.exit_code == 126
         assert held.stderr is not None
-        assert held.stderr.startswith(b"shred: requires approval: sign-off")
+        assert held.stderr == b"shred: Permission denied\n"
+        assert held.refusal is not None
+        assert (held.refusal.kind, held.refusal.reason) == ("pending",
+                                                            "sign-off")
+        assert held.refusal.ask_id
     finally:
         await ws.close()
 
@@ -996,7 +1008,7 @@ async def test_a_scripted_default_profile_shapes_the_default_session():
         assert (await ws.execute("echo hi")).exit_code == 0
         denied = await ws.execute("cat /data/sealed/k")
         assert denied.exit_code == 126
-        assert denied.stderr == b"cat: policy denied: sealed by release\n"
+        assert denied.stderr == b"cat: Permission denied\n"
     finally:
         await ws.close()
 
@@ -1017,7 +1029,7 @@ async def test_a_profile_script_runs_in_a_world_with_no_evaluator():
         ws.create_session("s", profile="release")
         denied = await ws.execute("cat /data/sealed/k", session_id="s")
         assert denied.exit_code == 126
-        assert denied.stderr == b"cat: policy denied: sealed by release\n"
+        assert denied.stderr == b"cat: Permission denied\n"
     finally:
         await ws.close()
 
@@ -1033,8 +1045,9 @@ async def test_a_broken_script_fails_closed_per_command():
         ws.create_session("s", profile="release")
         refused = await ws.execute("echo hi", session_id="s")
         assert refused.exit_code == 126
-        assert refused.stderr is not None
-        assert b"profile 'release' script failed" in refused.stderr
+        assert refused.stderr == b"echo: Permission denied\n"
+        assert refused.refusal is not None
+        assert "profile 'release' script failed" in refused.refusal.reason
         assert (await ws.execute("echo hi")).exit_code == 0
     finally:
         await ws.close()
@@ -1049,8 +1062,9 @@ async def test_an_engine_that_cannot_evaluate_fails_closed():
         ws.create_session("s", profile="release")
         refused = await ws.execute("echo hi", session_id="s")
         assert refused.exit_code == 126
-        assert refused.stderr is not None
-        assert b"cannot evaluate one" in refused.stderr
+        assert refused.stderr == b"echo: Permission denied\n"
+        assert refused.refusal is not None
+        assert "cannot evaluate one" in refused.refusal.reason
     finally:
         await ws.close()
 

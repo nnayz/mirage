@@ -104,12 +104,16 @@ The same patterns spell the `allow` list.
 
 A rule with `paths` and no command also reaches the VFS op door, so FUSE
 mounts and the cache cannot go around it. A whole-command `deny` refuses
-with `<command>: policy denied: <reason>` at exit 126; a `deny` matched
-through `paths` refuses the operand instead, in the GNU voice
-`<command>: <path>: <reason>` at the command's own operand exit code
-(`cat: /vault/aws.token: credentials are never read by hand`, exit 1).
-An `ask` refuses at 126, naming an ask id, until a host answers; see
-[Asks](#asks) below.
+in bash's own voice, `<command>: Permission denied` at exit 126, and the
+reason rides beside the output as the result's `refusal` record
+(`{"kind": "deny", "reason": ..., "policy": ..., "scope": "command"}`,
+`null` on a line that ran). A `deny` matched through `paths` refuses the
+operand instead, in the GNU voice `<command>: <path>: <reason>` at the
+command's own operand exit code
+(`cat: /vault/aws.token: credentials are never read by hand`, exit 1),
+with the reason on the line and the record's `scope` set to `operand`.
+An `ask` refuses at 126 the same way, with a `pending` record naming the
+ask id, until a host answers; see [Asks](#asks) below.
 
 ### `paths` and `vars`: hide and show
 
@@ -173,10 +177,18 @@ An `ask` rule guards a command instead of refusing it outright. When a
 session runs the guarded line, the line does not run; the agent reads
 
 ```
-rm: requires approval: removal needs sign-off (ask 5b25c31eb62e)
+rm: Permission denied
 ```
 
-at exit 126, and the ask lands in the workspace's decision ledger as a
+at exit 126 with a `pending` refusal record beside it,
+
+```json
+{"kind": "pending", "reason": "removal needs sign-off", "policy": "", "scope": "command", "ask_id": "5b25c31eb62e"}
+```
+
+(a text-only agent adapter renders that as
+`requires approval: removal needs sign-off (ask 5b25c31eb62e)` after
+stderr), and the ask lands in the workspace's decision ledger as a
 pending record carrying the session, command, argv, cwd, paths and the
 rule's reason. Decisions are session state, so they persist wherever the
 session store persists. A host answers **allow** or **deny**:
@@ -186,8 +198,8 @@ session store persists. A host answers **allow** or **deny**:
   used it.
 - `allow` with scope `session` answers every line the rule covers for
   that session, and stays.
-- `deny` answers once: the retry is refused in the deny voice
-  (`rm: policy denied: removal needs sign-off`), and running the line
+- `deny` answers once: the retry is refused (`rm: Permission denied`,
+  with a `deny` record carrying the same reason), and running the line
   again raises a new ask.
 
 ### From the CLI

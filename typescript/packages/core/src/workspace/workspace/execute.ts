@@ -33,6 +33,8 @@ import { makeAbortError, mergeSignals } from '../abort.ts'
 import type { Dispatcher } from '../dispatcher/index.ts'
 import type { DispatchFn } from '../../runtime/types.ts'
 import { RouteDeny, type RouteDecision } from '../../runtime/routing/index.ts'
+import { refusalOf, renderDeny, type Deny } from '../../policy/index.ts'
+import type { Refusal } from '../../types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import type { ExecuteFn } from '../expand/node.ts'
 import type { MountRegistry } from '../mount/registry.ts'
@@ -88,6 +90,19 @@ export interface ExecuteEnv {
   execute(cmd: string, options: ExecuteOptions): Promise<ExecuteResult>
 }
 
+/**
+ * The record the line's nested evaluations earned, latest kept. Every
+ * nested line re-enters execute through `executeFn`, and a substitution
+ * keeps only the inner stdout, so that door is the one place its record
+ * survives. The typed line reports it when its own tree earned none: the
+ * rightmost rule IOResult.merge applies, with the inner line standing
+ * left of the command that consumed its output. Mirrors Python's
+ * `NestedRefusal`.
+ */
+interface NestedRefusal {
+  latest: Refusal | null
+}
+
 function syntaxErrorResult(offending: string): ExecuteResult {
   const snippet = offending.trim()
   const errMsg =
@@ -102,7 +117,8 @@ function syntaxErrorResult(offending: string): ExecuteResult {
  * result the way a timeout does, never a throw. The typed line still
  * records and the session still flushes, mirroring Python's finally
  * path. The denied party is the command, so the message carries its
- * name like every per-command error.
+ * name like every per-command error, in bash's voice; the reason rides
+ * the result's `refusal` record.
  */
 async function deniedResult(
   env: ExecuteEnv,
@@ -112,12 +128,14 @@ async function deniedResult(
   reason: string,
 ): Promise<ExecuteResult> {
   const cmdName = commandName(command) || command
-  const msg = new TextEncoder().encode(`${cmdName}: policy denied: ${reason}\n`)
-  session.lastExitCode = 126
+  const deny: Deny = { kind: 'deny', reason, scope: 'command' }
+  const [msg, exitCode] = renderDeny(cmdName, deny)
+  const refusal = refusalOf(deny)
+  session.lastExitCode = exitCode
   if (options.record !== false) {
     await env.observer.logExecution(
       command,
-      new IOResult({ exitCode: 126, stderr: msg }),
+      new IOResult({ exitCode, stderr: msg, refusal }),
       [],
       options.agentId ?? env.agentId ?? '',
       session.sessionId,
@@ -125,7 +143,7 @@ async function deniedResult(
     )
   }
   await env.sessions.flush()
-  return new ExecuteResult(new Uint8Array(), msg, 126)
+  return new ExecuteResult(new Uint8Array(), msg, exitCode, refusal)
 }
 
 /**
@@ -147,7 +165,7 @@ async function drainToSink(sink: JobConsole, result: ExecuteResult): Promise<Exe
   if (result.stdout.byteLength === 0 && result.stderr.byteLength === 0) return result
   if (result.stdout.byteLength > 0) await sink.emit(Channel.STDOUT, result.stdout)
   if (result.stderr.byteLength > 0) await sink.emit(Channel.STDERR, result.stderr)
-  return new ExecuteResult(new Uint8Array(), new Uint8Array(), result.exitCode)
+  return new ExecuteResult(new Uint8Array(), new Uint8Array(), result.exitCode, result.refusal)
 }
 
 /**
@@ -240,6 +258,8 @@ async function runLine(
 
   const dispatch: DispatchFn = env.dispatcher.dispatch
 
+  const nested: NestedRefusal = { latest: null }
+
   const executeFn: ExecuteFn = async (cmd, opts) => {
     // The executor's internal evals ($(), eval, source, xargs) are
     // never a typed line: they must not record a history entry or open
@@ -261,10 +281,14 @@ async function runLine(
     // path carries `echo hi | bash -c 'cat'` into the inner line.
     if (opts.stdin !== undefined && opts.stdin !== null) innerOpts.stdin = opts.stdin
     const res = await env.execute(cmd, innerOpts)
+    // The record rides back with the streams: a refusal the inner line
+    // earned is the outer line's to report.
+    if (res.refusal !== null) nested.latest = res.refusal
     return new IOResult({
       exitCode: res.exitCode,
       stdout: res.stdout,
       stderr: res.stderr,
+      refusal: res.refusal,
     })
   }
 
@@ -299,6 +323,7 @@ async function runLine(
       targetSession,
       stdin,
       (line) => parser.parse(line),
+      nested,
     )
   } finally {
     // Durable session fields (cwd, env, grants) flush at the end of
@@ -316,6 +341,7 @@ async function runParsedLine(
   targetSession: Session,
   stdin: ByteSource | null,
   reparse: (line: string) => TSNodeLike,
+  nested: NestedRefusal,
 ): Promise<ExecuteResult> {
   const callAgentId = options.agentId ?? env.agentId ?? ''
   const effectiveSession = forkForCall(targetSession, options.cwd, options.env)
@@ -408,7 +434,7 @@ async function runParsedLine(
     // A whole line is a command like any other: the same visibility and
     // admission gate as the tree, per parsed command, before the
     // runtime sees a byte of it.
-    const refusal = await admitLine(
+    const refused = await admitLine(
       rootNode,
       effectiveSession,
       env.registry,
@@ -417,19 +443,23 @@ async function runParsedLine(
       reparse,
       killed,
     )
-    if (refusal !== null) {
-      targetSession.lastExitCode = refusal.exitCode
+    if (refused !== null) {
+      targetSession.lastExitCode = refused.exitCode
       if (isLine) {
         await env.observer.logExecution(
           command,
-          new IOResult({ exitCode: refusal.exitCode, stderr: refusal.stderr }),
+          new IOResult({
+            exitCode: refused.exitCode,
+            stderr: refused.stderr,
+            refusal: refused.refusal,
+          }),
           [],
           callAgentId,
           targetSession.sessionId,
           effectiveSession.cwd,
         )
       }
-      return new ExecuteResult(new Uint8Array(), refusal.stderr, refusal.exitCode)
+      return new ExecuteResult(new Uint8Array(), refused.stderr, refused.exitCode, refused.refusal)
     }
     if (env.sessions.hasManagedEnv) {
       // A whole-line program may read any name, so the walk is not
@@ -451,6 +481,7 @@ async function runParsedLine(
       const lineIo = new IOResult({
         exitCode: result.exitCode,
         stdout: result.stdout,
+        refusal: result.refusal,
         ...(result.stderr !== null ? { stderr: result.stderr } : {}),
       })
       await env.observer.logExecution(
@@ -462,7 +493,12 @@ async function runParsedLine(
         effectiveSession.cwd,
       )
     }
-    return new ExecuteResult(result.stdout, result.stderr ?? new Uint8Array(), result.exitCode)
+    return new ExecuteResult(
+      result.stdout,
+      result.stderr ?? new Uint8Array(),
+      result.exitCode,
+      result.refusal,
+    )
   }
   // The line is the unit a rule judges, so every command in it is
   // judged before any of it runs. Nothing here replaces the per-command
@@ -479,7 +515,12 @@ async function runParsedLine(
   )
   if (prejudged !== null) {
     targetSession.lastExitCode = prejudged.exitCode
-    return new ExecuteResult(new Uint8Array(), prejudged.stderr, prejudged.exitCode)
+    return new ExecuteResult(
+      new Uint8Array(),
+      prejudged.stderr,
+      prejudged.exitCode,
+      prejudged.refusal,
+    )
   }
   if (env.sessions.hasManagedEnv) {
     // The walked set carries stored function bodies and alias
@@ -515,6 +556,9 @@ async function runParsedLine(
     return new ExecuteResult(new Uint8Array(), failed.stderr, failed.exitCode)
   }
   const [[materialized, io], opRecords] = execResult
+  // A record a nested line earned is the line's to report when its own
+  // tree earned none (see NestedRefusal).
+  io.refusal ??= nested.latest
   targetSession.lastExitCode = io.exitCode
   let stdoutBytes: Uint8Array
   try {
@@ -557,5 +601,5 @@ async function runParsedLine(
     )
   }
 
-  return new ExecuteResult(stdoutBytes, stderrBytes, io.exitCode)
+  return new ExecuteResult(stdoutBytes, stderrBytes, io.exitCode, io.refusal)
 }

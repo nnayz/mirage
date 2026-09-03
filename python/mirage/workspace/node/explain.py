@@ -17,7 +17,7 @@ from collections.abc import Generator, Iterator, Sequence
 from typing import Any
 
 from mirage.policy import (Abandoned, Ask, CommandContext, Deny, Explanation,
-                           Pending, render_deny, render_pending)
+                           Pending, refusal_of, render_deny, render_pending)
 from mirage.policy.match import Outcome, decide
 from mirage.shell import parse
 from mirage.shell.helpers import (get_parts, get_text, literal_word,
@@ -29,7 +29,7 @@ from mirage.utils.path import resolve_path
 from mirage.workspace.abort import MirageAbortError
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
-from mirage.workspace.node.admission import (Refusal, admit, classified_words,
+from mirage.workspace.node.admission import (Refused, admit, classified_words,
                                              gate, redirect_paths,
                                              statement_redirects)
 from mirage.workspace.node.inner_lines import Word, inner_lines
@@ -55,29 +55,32 @@ def _unreadable(raw: str) -> Explanation:
         raw (str): the word as typed.
     """
     reason = UNREADABLE.format(raw=raw)
-    err, code = render_deny(raw, Deny(reason))
+    deny = Deny(reason)
+    err, code = render_deny(raw, deny)
     return Explanation(command=raw,
                        outcome=Outcome.DENY,
                        reason=reason,
                        exit_code=code,
-                       stderr=err.decode())
+                       stderr=err.decode(),
+                       refusal=refusal_of(deny))
 
 
 def _from_refusal(name: str, args: tuple[str, ...],
-                  refusal: Refusal) -> Explanation:
+                  refusal: Refused) -> Explanation:
     """The explanation of a head word the session cannot see.
 
     Args:
         name (str): the head word.
         args (tuple[str, ...]): the words after it.
-        refusal (Refusal): what the gate answered.
+        refusal (Refused): what the gate answered.
     """
     return Explanation(command=name,
                        argv=args,
                        outcome=Outcome.DENY,
                        source="commands.allow",
                        exit_code=refusal.exit_code,
-                       stderr=refusal.stderr.decode())
+                       stderr=refusal.stderr.decode(),
+                       refusal=refusal.refusal)
 
 
 def _explained(ctx: CommandContext, session: Session, registry: MountRegistry,
@@ -122,7 +125,8 @@ def _explained(ctx: CommandContext, session: Session, registry: MountRegistry,
                        matched_path=base.matched_path,
                        paths=base.paths,
                        exit_code=code,
-                       stderr=err.decode())
+                       stderr=err.decode(),
+                       refusal=refusal_of(action))
 
 
 async def explain_words(
@@ -169,7 +173,7 @@ async def explain_words(
                        agent_id,
                        redirects=redirect_paths(redirect_words, registry,
                                                 session.cwd))
-    if isinstance(gated, Refusal):
+    if isinstance(gated, Refused):
         return [_from_refusal(name, tuple(args), gated)]
     ctx, asked = gated
     out = [_explained(ctx, session, registry, asked)]
@@ -338,7 +342,7 @@ async def prejudge_line(
     namespace: Namespace | None,
     agent_id: str = "",
     cancel: asyncio.Event | None = None,
-) -> Refusal | None:
+) -> Refused | None:
     """Judge every command of a line before any of it runs, and refuse
     the whole line when a rule speaks about one.
 
@@ -438,7 +442,7 @@ async def prejudge_line(
                 # explanation is the command the redirects belong to.
                 redirects=targets if index == 0 else (),
                 cancel=cancel)
-            if isinstance(answered, Refusal):
+            if isinstance(answered, Refused):
                 return answered
             # The host answered this one inline. The rest of the line
             # has not been judged yet, so the scan goes on: stopping
@@ -490,7 +494,7 @@ async def _verdict_refuses(
                        namespace,
                        agent_id,
                        redirects=redirects)
-    if isinstance(gated, Refusal):
+    if isinstance(gated, Refused):
         return True
     ctx, asked = gated
     if not isinstance(asked, Ask):

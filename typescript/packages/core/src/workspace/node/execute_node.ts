@@ -405,6 +405,7 @@ export async function executeNode(
       reads: io.reads,
       writes: io.writes,
       cache: io.cache,
+      refusal: io.refusal,
     })
     execNode.exitCode = flipped.exitCode
     session.errexitImmune = true
@@ -761,6 +762,7 @@ export async function executeNode(
       reads: io.reads,
       writes: io.writes,
       cache: io.cache,
+      refusal: io.refusal,
     })
     execNode.exitCode = flipped.exitCode
     session.errexitImmune = true

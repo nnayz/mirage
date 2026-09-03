@@ -25,6 +25,7 @@ from deepagents.backends.protocol import (EditResult, ExecuteResponse,
                                           ReadResult, SandboxBackendProtocol,
                                           WriteResult)
 
+from mirage.agents.io_text import with_refusal
 from mirage.agents.langchain._convert import (io_to_execute_response,
                                               io_to_file_infos,
                                               io_to_grep_matches)
@@ -99,7 +100,7 @@ async def _command_error(
 ) -> str | None:
     if io.exit_code in success_exit_codes:
         return None
-    stderr = (await io.stderr_str()).strip()
+    stderr = with_refusal((await io.stderr_str()).strip(), io.refusal).strip()
     if stderr:
         return stderr
     return f"Command failed with exit code {io.exit_code}"

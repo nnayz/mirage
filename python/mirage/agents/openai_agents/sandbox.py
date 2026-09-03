@@ -25,6 +25,7 @@ from agents.sandbox.session.sandbox_session_state import SandboxSessionState
 from agents.sandbox.snapshot import NoopSnapshot, SnapshotBase, SnapshotSpec
 from agents.sandbox.types import ExecResult, User
 
+from mirage.agents.io_text import with_refusal_bytes
 from mirage.workspace.snapshot import apply_state_dict, read_tar
 from mirage.workspace.workspace import Workspace
 
@@ -51,7 +52,8 @@ class MirageSandboxSession(BaseSandboxSession):
         cmd_str = " ".join(str(c) for c in command)
         io_result = await self._ws.execute(cmd_str)
         stdout = await io_result.materialize_stdout()
-        stderr = await io_result.materialize_stderr()
+        stderr = with_refusal_bytes(await io_result.materialize_stderr(),
+                                    io_result.refusal)
         return ExecResult(
             exit_code=io_result.exit_code,
             stdout=stdout,

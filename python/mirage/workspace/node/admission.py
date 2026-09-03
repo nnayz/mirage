@@ -23,7 +23,7 @@ from mirage.context.session_context import session_path_allowed
 from mirage.io.types import ByteSource
 from mirage.policy import (Abandoned, AdmissionRules, Ask, CommandContext,
                            CommandRule, Deny, Pending, PolicyDenied, Scope,
-                           ask_rule, render_deny, render_pending)
+                           ask_rule, refusal_of, render_deny, render_pending)
 from mirage.policy.match import (Outcome, has_rules, io_refusal, reads_args,
                                  scopes_paths)
 from mirage.runtime.routing import command_nodes
@@ -32,7 +32,7 @@ from mirage.shell.helpers import (get_parts, get_redirects, get_text,
                                   literal_word, split_env_prefix)
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import RedirectKind
-from mirage.types import PathSpec
+from mirage.types import PathSpec, Refusal
 from mirage.utils.hidden import is_glob
 from mirage.utils.path import CycleError, resolve_path
 from mirage.workspace.abort import MirageAbortError
@@ -64,7 +64,7 @@ REDIRECT_CHAIN = frozenset({NT.LIST, NT.PIPELINE})
 
 
 @dataclass(frozen=True, slots=True)
-class Refusal:
+class Refused:
     """What the command plane prints when a line does not get to run.
 
     Args:
@@ -72,10 +72,14 @@ class Refusal:
         exit_code (int): 127 for a word the session cannot see, 126 for
             a whole-command refusal or an unanswered ask, the operand
             code (1, tar 2) for an operand-scoped refusal.
+        refusal (Refusal | None): the record the result carries
+            beside stderr; None on the 127 row, which must not say
+            the word names anything.
     """
 
     stderr: bytes
     exit_code: int
+    refusal: Refusal | None = None
 
 
 def _norm(virtual: str) -> str:
@@ -240,7 +244,7 @@ async def gate(
     stdin: ByteSource | None = None,
     redirects: Sequence[PathSpec] = (),
     defined_fn: bool = False,
-) -> Refusal | tuple[CommandContext, Deny | Ask | None]:
+) -> Refused | tuple[CommandContext, Deny | Ask | None]:
     """Everything the gate decides about one command before anything is
     spent on it: visibility, the classified context, and the policy
     chain's answer.
@@ -274,12 +278,12 @@ async def gate(
             False accordingly.
 
     Returns:
-        A Refusal when the session cannot see the head word, else the
+        A Refused when the session cannot see the head word, else the
         context and whatever the policy chain answered.
     """
     tool = (name in SHELL_NAMES) if defined_fn else is_tool(name, session)
     if tool and not listed(name, session):
-        return Refusal(f"{name}: command not found\n".encode(), 127)
+        return Refused(f"{name}: command not found\n".encode(), 127)
     tokens, program = program_tokens(registry, name, args, session.cwd)
     implied = (default_cwd_operand([name, *operands], name, registry,
                                    session.cwd, stdin)
@@ -316,7 +320,7 @@ async def admit(
     stdin: ByteSource | None = None,
     redirects: Sequence[PathSpec] = (),
     cancel: asyncio.Event | None = None,
-) -> Refusal | Admitted:
+) -> Refused | Admitted:
     """The command plane's admission of one command: visibility, then
     the policy chain, then the decision ledger.
 
@@ -353,7 +357,7 @@ async def admit(
     """
     gated = await gate(name, args, operands, session, registry, namespace,
                        agent_id, stdin, redirects)
-    if isinstance(gated, Refusal):
+    if isinstance(gated, Refused):
         return gated
     ctx, asked = gated
     # An Ask is the chain's answer only after every Deny had its say;
@@ -383,12 +387,13 @@ async def admit(
                         scoped=scopes_paths(rules, name))
     err, code = (render_pending(name, action)
                  if isinstance(action, Pending) else render_deny(name, action))
-    return Refusal(err, code)
+    return Refused(err, code, refusal_of(action))
 
 
-def _refuse(name: str, reason: str) -> Refusal:
-    err, code = render_deny(name, Deny(reason))
-    return Refusal(err, code)
+def _refuse(name: str, reason: str) -> Refused:
+    deny = Deny(reason)
+    err, code = render_deny(name, deny)
+    return Refused(err, code, refusal_of(deny))
 
 
 def _unreadable(raw: str) -> str:
@@ -479,7 +484,7 @@ async def _admit_words(
     rules: AdmissionRules | None,
     redirect_words: tuple[Word, ...] = (),
     cancel: asyncio.Event | None = None,
-) -> Refusal | None:
+) -> Refused | None:
     """Admit one command of a whole line on the words the gate read,
     then whatever lines the command runs in turn.
 
@@ -514,7 +519,7 @@ async def _admit_words(
                          agent_id,
                          redirects=redirects,
                          cancel=cancel)
-    if isinstance(action, Refusal):
+    if isinstance(action, Refused):
         return action
     if action.scoped:
         # The runtime walks and globs on its own, where no entry gate
@@ -563,7 +568,7 @@ async def admit_line(
     namespace: Namespace | None,
     agent_id: str = "",
     cancel: asyncio.Event | None = None,
-) -> Refusal | None:
+) -> Refused | None:
     """Admit every command of a line a runtime takes whole.
 
     A whole line is a command like any other, but the runtime does the

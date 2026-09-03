@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { ScriptSource } from '../runtime/routing/types.ts'
-import type { Limit, PathSpec, Producer } from '../types.ts'
+import type { Limit, PathSpec, Producer, Refusal } from '../types.ts'
 
 /**
  * The one registry question policy hooks may ask. MountRegistry
@@ -27,7 +27,8 @@ interface MountRootQuery {
 
 /**
  * What a command-plane refusal is about, which picks its voice. `command`
- * refuses the whole line: `<cmd>: policy denied: <reason>`, exit 126.
+ * refuses the whole line in bash's own words, `<cmd>: Permission denied`,
+ * exit 126, and the reason rides the result's `refusal` record instead.
  * `operand` refuses one operand and keeps the GNU voice `<cmd>: <reason>`
  * (the reason names the operand, as `rm: cannot remove 'x': ...` does),
  * exit 1, or the command's own fatal code where GNU differs (tar exits
@@ -65,6 +66,10 @@ export interface Deny {
   reason: string
   /** Whole command (the default) or one operand; ignored off the command plane. */
   scope?: DenyScope
+  /** The class name of the policy that spoke, stamped by the chain so no policy names itself. */
+  policy?: string
+  /** True when the chain refused on a policy's behalf because it raised. */
+  failed?: boolean
 }
 
 /**
@@ -486,4 +491,6 @@ export interface Explanation {
   readonly exitCode: number
   /** What the agent would read, empty to run. */
   readonly stderr: string
+  /** The record the refused result would carry, null when the line would run. */
+  readonly refusal: Refusal | null
 }
