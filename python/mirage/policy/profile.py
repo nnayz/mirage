@@ -554,17 +554,19 @@ class SessionProfile(BaseModel):
     hide, is read by anchor depth: the deeper entry wins, ties break by
     verb.
 
-    A profile may also state a ``policy``: a program defining
-    ``pre_command(ctx)`` (``preCommand`` in JavaScript), called at the
-    admission gate for every command a session under the profile runs.
-    It is handed the command's facts as ``ctx`` and answers with
-    ``return`` the way a coded Policy's hook does: allow (no opinion),
-    deny or ask, so it expresses the conditions a declarative rule
-    cannot; like every policy, it can only restrict, never grant past a
-    deny. A block naming the program and the engine it runs on
-    (``ProfilePolicy``), the shape a ``clis`` entry has. The document is
-    optional beside it: a profile stating only a policy hides nothing,
-    and the policy is its whole admission policy.
+    A profile may also state a ``policy``: a program defining the
+    admission hooks it answers at, the way a coded Policy overrides only
+    the hooks it cares about: ``pre_command(ctx)`` per command,
+    ``pre_ops(ctx)`` per VFS op, ``pre_session(ctx)`` per env write
+    (``preCommand``, ``preOps``, ``preSession`` in JavaScript). Each is
+    handed the door's facts as ``ctx`` and answers with ``return``:
+    allow (no opinion), deny, or at the command gate ask, so it
+    expresses the conditions a declarative rule cannot; like every
+    policy, it can only restrict, never grant past a deny. A block
+    naming the program and the engine it runs on (``ProfilePolicy``),
+    the shape a ``clis`` entry has. The document is optional beside it:
+    a profile stating only a policy hides nothing, and the policy is its
+    whole admission policy.
 
     Args:
         cwd (str | None): the session's working directory at creation.

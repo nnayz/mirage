@@ -3,9 +3,20 @@ import { PrefixResolver } from '../runtime/resolver.ts'
 import { ScriptSource } from '../runtime/routing/types.ts'
 import type { BridgeDispatchFn } from '../runtime/types.ts'
 import { ContentType, FileStat, FileType, PathSpec } from '../types.ts'
+import type { Policy } from './base.ts'
 import { DEFAULT_ASK_REASON, DEFAULT_DENY_REASON } from './constants.ts'
-import { ScriptPolicy, scriptAction, scriptContext } from './script.ts'
-import type { CommandContext, ProfileScript } from './types.ts'
+import { Policies } from './policies.ts'
+import {
+  ScriptPolicy,
+  definedHooks,
+  hookCall,
+  hookProbe,
+  opsScriptContext,
+  scriptAction,
+  scriptContext,
+  sessionScriptContext,
+} from './script.ts'
+import type { CommandContext, OpsContext, ProfileScript, SessionContext } from './types.ts'
 
 // A policy is a program defining the hook it answers at, the way a
 // coded Policy does, and it answers with return.
@@ -211,13 +222,13 @@ describe('ScriptPolicy', () => {
 
   it('fails closed on a program that defines no hook', async () => {
     // A verdict as a bare last expression was the old contract; a policy
-    // defines pre_command / preCommand, and a program without one is
-    // refused at the call rather than read for a value it never meant.
+    // defines the hooks it answers at, and a program defining none is
+    // refused at every door rather than read for a value it never meant.
     const policy = track(policyOf(entry('null')))
-    const action = await policy.preCommand(ctx())
-    expect(action).toMatchObject({ kind: 'deny' })
-    expect((action as { reason: string }).reason).toMatch(/profile 'release' policy failed/)
-    expect((action as { reason: string }).reason).toMatch(/preCommand/)
+    expect(await policy.preCommand(ctx())).toEqual({
+      kind: 'deny',
+      reason: "profile 'release' policy defines no hook: preCommand, preOps or preSession",
+    })
   })
 
   it('fails closed on an engine it cannot build', async () => {
@@ -266,4 +277,160 @@ describe('ScriptPolicy wiring', () => {
     const policy = track(policyOf(entry(READER_PY, 'monty', 'python')))
     expect(await policy.preCommand(ctx('cat'))).toBeNull()
   }, 60_000)
+})
+
+// A program at the op and session doors and nowhere else.
+const GATES = `\
+function preOps(ctx) {
+  const op = ctx.op
+  return op.write && op.path.startsWith('/scratch/frozen/') ? { deny: 'frozen by ' + ctx.profile } : null
+}
+function preSession(ctx) {
+  return ctx.write.key.startsWith('AWS_') ? 'deny' : null
+}
+`
+
+function opsCtx(op = 'write', virtual = '/scratch/frozen/f', write = true): OpsContext {
+  return { op, path: path(virtual), write, prefix: '/scratch', sessionId: 's' }
+}
+
+function sessionCtx(key = 'AWS_KEY'): SessionContext {
+  return { plane: 'env', verb: 'set', key, value: 'v', sessionId: 's' }
+}
+
+describe('the hooks a program defines', () => {
+  it("spells the call and the probe in the program's language", () => {
+    const py = new ScriptSource('x', 'python')
+    const js = new ScriptSource('x', 'js')
+    expect(hookCall(py, 'preOps')).toBe('pre_ops(ctx)')
+    expect(hookCall(js, 'preOps')).toBe('preOps(ctx)')
+    expect(hookProbe(py)).toContain('try:\n    pre_session\n')
+    expect(hookProbe(py).endsWith('_mirage_hooks')).toBe(true)
+    expect(hookProbe(js)).toContain('typeof preCommand')
+  })
+
+  it("reads the probe's answer as the Policy interface spells it", () => {
+    expect(definedHooks(new ScriptSource('x', 'python'), ['pre_ops'])).toEqual(new Set(['preOps']))
+    expect(definedHooks(new ScriptSource('x', 'js'), ['preCommand', 'preSession'])).toEqual(
+      new Set(['preCommand', 'preSession']),
+    )
+    expect(definedHooks(new ScriptSource('x', 'js'), [])).toEqual(new Set())
+  })
+
+  it.each([[null], ['pre_ops'], [['nope']], [[1]]])('refuses %j as a probe answer', (value) => {
+    expect(() => definedHooks(new ScriptSource('x', 'python'), value)).toThrow(
+      /hook probe answered/,
+    )
+  })
+})
+
+describe('opsScriptContext and sessionScriptContext', () => {
+  it('are the op and session contexts as data', () => {
+    expect(opsScriptContext('release', opsCtx(), ['/scratch/'])).toEqual({
+      profile: 'release',
+      op: { name: 'write', path: '/scratch/frozen/f', write: true, prefix: '/scratch' },
+      session: { id: 's' },
+      mounts: ['/scratch/'],
+    })
+    expect(sessionScriptContext('release', sessionCtx(), ['/scratch/'])).toEqual({
+      profile: 'release',
+      write: { plane: 'env', verb: 'set', key: 'AWS_KEY', value: 'v' },
+      session: { id: 's' },
+      mounts: ['/scratch/'],
+    })
+  })
+})
+
+describe('scriptAction at the op and session doors', () => {
+  it('answers allow or deny, never ask', () => {
+    // The op and session doors cannot wait on a host, so the vocabulary
+    // there is allow or deny, and an ask is a wrong answer.
+    for (const hook of ['preOps', 'preSession'] as const) {
+      expect(scriptAction({ deny: 'frozen' }, hook)).toEqual({ kind: 'deny', reason: 'frozen' })
+      expect(scriptAction('deny', hook)).toEqual({ kind: 'deny', reason: DEFAULT_DENY_REASON })
+      expect(scriptAction(null, hook)).toBeNull()
+      expect(() => scriptAction('ask', hook)).toThrow(/must answer allow or deny/)
+      expect(() => scriptAction({ ask: 'nod' }, hook)).toThrow(/must answer allow or deny/)
+    }
+  })
+})
+
+describe('ScriptPolicy at the op and session doors', () => {
+  it('a hook the program leaves out is silence', async () => {
+    const policy = track(policyOf(entry()))
+    expect(await policy.preOps(opsCtx())).toBeNull()
+    expect(await policy.preSession(sessionCtx())).toBeNull()
+    expect(await policy.preCommand(ctx('cat'))).toMatchObject({ kind: 'deny' })
+  })
+
+  it('judges an op with the deny it computed', async () => {
+    const policy = track(policyOf(entry(GATES)))
+    expect(await policy.preOps(opsCtx())).toEqual({ kind: 'deny', reason: 'frozen by release' })
+    expect(await policy.preOps(opsCtx('read', '/scratch/frozen/f', false))).toBeNull()
+    expect(await policy.preOps(opsCtx('write', '/scratch/open/f'))).toBeNull()
+    // No command hook: a command is silence, not a refusal.
+    expect(await policy.preCommand(ctx('cat'))).toBeNull()
+  })
+
+  it('judges an env write with the deny it computed', async () => {
+    const policy = track(policyOf(entry(GATES)))
+    expect(await policy.preSession(sessionCtx())).toEqual({
+      kind: 'deny',
+      reason: DEFAULT_DENY_REASON,
+    })
+    expect(await policy.preSession(sessionCtx('HOME'))).toBeNull()
+  })
+
+  it('fails closed on an ask from an op hook', async () => {
+    const policy = track(policyOf(entry("function preOps() { return 'ask' }")))
+    const action = await policy.preOps(opsCtx())
+    expect((action as { reason: string }).reason).toMatch(
+      /profile 'release' policy must answer allow or deny/,
+    )
+  })
+
+  it('fails closed at every door on a program that defines no hook', async () => {
+    const policy = track(policyOf(entry('null')))
+    const refused = {
+      kind: 'deny',
+      reason: "profile 'release' policy defines no hook: preCommand, preOps or preSession",
+    }
+    expect(await policy.preOps(opsCtx())).toEqual(refused)
+    expect(await policy.preSession(sessionCtx())).toEqual(refused)
+  })
+})
+
+describe('wantsFor', () => {
+  it('says which sessions a hook speaks for', async () => {
+    // The per-session refinement the secret fill asks: the door is
+    // defined for everyone, but speaks only for a session whose program
+    // defines the hook.
+    const policy = track(policyOf(entry()))
+    expect(await policy.wantsFor('preCommand', 's')).toBe(true)
+    expect(await policy.wantsFor('preSession', 's')).toBe(false)
+    expect(await policy.wantsFor('preOps', 's')).toBe(false)
+    expect(await policy.wantsFor('postOps', 's')).toBe(false)
+    expect(await track(policyOf(null)).wantsFor('preSession', 's')).toBe(false)
+  })
+
+  it('counts a program the door will refuse', async () => {
+    // No hook at all, or a probe that failed: the door refuses every
+    // write for this program, which is speaking.
+    expect(await track(policyOf(entry('null'))).wantsFor('preSession', 's')).toBe(true)
+    expect(
+      await track(policyOf(entry("throw new Error('boom')"))).wantsFor('preSession', 's'),
+    ).toBe(true)
+  })
+
+  it('refines Policies.wants per session', async () => {
+    const policies = new Policies([track(policyOf(entry()))])
+    expect(policies.wants('preSession')).toBe(true)
+    expect(await policies.wantsFor('preSession', 's')).toBe(false)
+    expect(await policies.wantsFor('preCommand', 's')).toBe(true)
+    // A coded policy speaks for every session and settles it.
+    const coded: Policy = { preSession: () => null }
+    expect(await new Policies([track(policyOf(entry())), coded]).wantsFor('preSession', 's')).toBe(
+      true,
+    )
+  })
 })

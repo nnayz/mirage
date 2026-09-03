@@ -17,6 +17,7 @@ import { Limit, type PathSpec, type Refusal } from '../types.ts'
 import type { Policy } from './base.ts'
 import { POLICY_DENIED_EXIT } from './constants.ts'
 import { PolicyDenied, PolicyError } from './errors.ts'
+import { isSessionScoped } from './mixin.ts'
 import {
   VALIDITY,
   type Ask,
@@ -226,6 +227,24 @@ export class Policies {
    */
   wants(hook: Hook): boolean {
     return this.wanted.has(hook)
+  }
+
+  /**
+   * True when some policy will speak at `hook` for this session. The
+   * per-session refinement of `wants`: a policy that defines the hook
+   * counts, unless it speaks per session (`SessionScoped`) and says this
+   * is not one of its. For a seam that pays ahead for a hook rather than
+   * gating on it: the secret fill drops its masks under a session-write
+   * gate, and a profile's policy at that door is one profile's, not
+   * every session's.
+   */
+  async wantsFor(hook: Hook, sessionId: string): Promise<boolean> {
+    for (const policy of this.policies) {
+      if (policy[hook] === undefined) continue
+      if (!isSessionScoped(policy)) return true
+      if (await policy.wantsFor(hook, sessionId)) return true
+    }
+    return false
   }
 
   private rescan(): void {

@@ -22,6 +22,7 @@ from mirage.commands.spec.usage import operand_exit_code
 from mirage.policy.base import Policy
 from mirage.policy.constants import POLICY_DENIED_EXIT
 from mirage.policy.errors import PolicyDenied, PolicyError
+from mirage.policy.mixin import SessionScopedMixin
 from mirage.policy.types import (VALIDITY, Ask, CommandContext, Deny,
                                  DenyScope, ExecuteResultContext, OpsContext,
                                  OpsResultContext, Pending, SessionContext)
@@ -294,6 +295,31 @@ class Policies:
             hook (str): hook name (pre_command, pre_ops, post_ops).
         """
         return hook in self._wanted
+
+    async def wants_for(self, hook: str, session_id: str) -> bool:
+        """True when some policy will speak at ``hook`` for this session.
+
+        The per-session refinement of ``wants``: a policy that overrides
+        the hook counts, unless it speaks per session
+        (``SessionScopedMixin``) and says this is not one of its. For
+        a seam that pays ahead for a hook rather than gating on it: the
+        secret fill drops its masks under a session-write gate, and a
+        profile's policy at that door is one profile's, not every
+        session's.
+
+        Args:
+            hook (str): hook name (pre_command, pre_ops, pre_session).
+            session_id (str): the session, empty when none is bound.
+        """
+        base = getattr(Policy, hook)
+        for policy in self._policies:
+            if getattr(type(policy), hook) is base:
+                continue
+            if not isinstance(policy, SessionScopedMixin):
+                return True
+            if await policy.wants_for(hook, session_id):
+                return True
+        return False
 
     def _rescan(self) -> None:
         wanted = set()

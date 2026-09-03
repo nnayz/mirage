@@ -133,11 +133,13 @@ export interface SessionProfile {
   readonly vars?: VarsBlock | null
   readonly commands?: CommandsBlock | null
   /**
-   * The profile's policy: a program defining `pre_command(ctx)`
-   * (`preCommand` in JavaScript), called at the admission gate for
-   * every command a session under the profile runs, and answering with
-   * `return` the way a coded Policy's hook does: null or 'allow' for no
-   * opinion, 'deny' / {deny: reason}, 'ask' / {ask: reason}. A block
+   * The profile's policy: a program defining the admission hooks it
+   * answers at, the way a coded Policy defines only the hooks it cares
+   * about: `preCommand(ctx)` per command, `preOps(ctx)` per VFS op,
+   * `preSession(ctx)` per env write (`pre_command`, `pre_ops`,
+   * `pre_session` in python). Each is handed the door's facts as `ctx`
+   * and answers with `return`: null or 'allow' for no opinion, 'deny' /
+   * {deny: reason}, and at the command gate 'ask' / {ask: reason}. A block
    * naming the program and the engine it runs on, the shape a `clis`
    * entry has. The document is optional beside it: a profile stating
    * only a policy hides nothing, and the policy is its whole admission

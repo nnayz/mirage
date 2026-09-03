@@ -315,8 +315,9 @@ export interface SessionCommandsQuery {
  * One profile's policy, as a session carries it: the program, the
  * engine it runs on, and the profile it speaks for. Compiled off the
  * profile's policy block beside the admission rules; `ScriptPolicy`
- * calls its `pre_command(ctx)` per command with the command's facts,
- * and the hook returns allow (no opinion), deny or ask. `profile` is
+ * calls the admission hooks it defines (`preCommand`, `preOps`,
+ * `preSession`) with the door's facts, and a hook returns allow (no
+ * opinion), deny, or at the command gate ask. `profile` is
  * the profile's name, which the policy reads as `ctx.profile`; empty
  * for a profile document passed to `createSession` without a name.
  */
@@ -453,6 +454,9 @@ export const VALIDITY: Readonly<
   postExecute: new Set(['limit']),
   preSession: new Set(['deny']),
 }
+
+/** The name of one Policy hook, as the interface spells it. */
+export type PolicyHook = keyof typeof VALIDITY
 
 /**
  * What one command of a line would do, without doing it.

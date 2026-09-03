@@ -276,3 +276,89 @@ describe('profile policies', () => {
     }
   })
 })
+
+// A program at the op and session doors and nowhere else: writes under
+// /data/frozen and AWS_* variables are refused, and no command is judged.
+const GATES = `\
+function preOps(ctx) {
+  const op = ctx.op
+  return op.write && op.path.startsWith('/data/frozen/') ? { deny: 'frozen by ' + ctx.profile } : null
+}
+function preSession(ctx) {
+  return ctx.write.key.startsWith('AWS_') ? { deny: 'credentials are set by the operator' } : null
+}
+`
+
+// The content judge with an op hook beside it: its own reads have to
+// pass the door its pre_ops guards.
+const READER_AND_GATE_PY = `${READER_PY}
+def pre_ops(ctx):
+    op = ctx['op']
+    if op['write'] and op['path'].startswith('/data/frozen/'):
+        return {'deny': 'frozen'}
+    return None
+`
+
+describe('profile policies at the op and session doors', () => {
+  it('judges the op door with the facts of the op', async () => {
+    const ws = await build(scripted(GATES))
+    try {
+      await ws.execute('mkdir -p /data/frozen && echo keep > /data/frozen/k')
+      ws.createSession('s', { profile: 'release' })
+      // No command hook, so a command is silence; a read is not a write.
+      expect((await ws.execute('echo hi', { sessionId: 's' })).exitCode).toBe(0)
+      const read = await ws.execute('cat /data/frozen/k', { sessionId: 's' })
+      expect(read.exitCode).toBe(0)
+      expect(read.stdoutText).toBe('keep\n')
+      const refused = await ws.execute('echo x > /data/frozen/f', { sessionId: 's' })
+      expect(refused.exitCode).toBe(1)
+      expect(refused.stderrText).toContain('Permission denied')
+      const removed = await ws.execute('rm /data/frozen/k', { sessionId: 's' })
+      expect(removed.exitCode).toBe(1)
+      expect(removed.stderrText).toContain('Permission denied')
+      expect((await ws.execute('cat /data/frozen/k')).stdoutText).toBe('keep\n')
+      // Another session is not judged by it.
+      expect((await ws.execute('echo x > /data/frozen/f')).exitCode).toBe(0)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('judges the session door with the facts of the write', async () => {
+    const ws = await build(scripted(GATES))
+    try {
+      ws.createSession('s', { profile: 'release' })
+      const refused = await ws.execute('export AWS_SECRET=x', { sessionId: 's' })
+      expect(refused.exitCode).toBe(1)
+      expect(refused.stderrText).toBe('credentials are set by the operator\n')
+      const landed = await ws.execute('export SAFE=1 && echo $SAFE', { sessionId: 's' })
+      expect(landed.exitCode).toBe(0)
+      expect(landed.stdoutText).toBe('1\n')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it("a policy's own read passes the door its op hook guards", async () => {
+    // preCommand opens the operand through the workspace's door while
+    // preOps stands at it: the read is the policy's own and is let
+    // through rather than re-entering the evaluation waiting on it, so
+    // the content verdict lands and the op hook still refuses a write.
+    const ws = await build(scripted(READER_AND_GATE_PY, 'monty', 'python'))
+    try {
+      await ws.execute(
+        "mkdir -p /data/in && printf 'subject: invoice\\n\\na payload\\n' > /data/in/mail.txt && echo plain > /data/in/note.txt",
+      )
+      ws.createSession('s', { profile: 'release' })
+      const held = await ws.execute('cat /data/in/mail.txt', { sessionId: 's' })
+      expect(held.exitCode).toBe(126)
+      expect(held.refusal).toMatchObject({ kind: 'pending', reason: 'sign-off on payload' })
+      expect((await ws.execute('cat /data/in/note.txt', { sessionId: 's' })).exitCode).toBe(0)
+      const refused = await ws.execute('echo x > /data/frozen/f', { sessionId: 's' })
+      expect(refused.exitCode).toBe(1)
+      expect(refused.stderrText).toContain('Permission denied')
+    } finally {
+      await ws.close()
+    }
+  }, 120000)
+})

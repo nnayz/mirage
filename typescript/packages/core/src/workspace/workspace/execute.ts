@@ -371,7 +371,7 @@ async function runParsedLine(
   // spend. A deny only the value gate can see still follows the fetch,
   // because expansion is what consumes the values. A SecretsError
   // folds like any failed line: the line exits 1 and never runs.
-  const writesGated = env.registry.policies.wants('preSession')
+  const writesGated = await env.registry.policies.wantsFor('preSession', effectiveSession.sessionId)
   const fillManaged = async (
     nodes: TSNodeLike[],
     whole: boolean,

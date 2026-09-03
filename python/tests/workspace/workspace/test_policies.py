@@ -1143,8 +1143,8 @@ def test_the_old_script_and_runtime_keys_are_told_the_new_block():
 @pytest.mark.asyncio
 async def test_a_policy_defining_no_hook_fails_closed():
     # A verdict as a bare last expression was the old contract; a policy
-    # defines pre_command, and a program without one is refused at the
-    # call rather than read for a value it never meant.
+    # defines the hooks it answers at, and a program defining none is
+    # refused at every door rather than read for a value it never meant.
     ws = Workspace({"/data/": RAMResource()},
                    mode=MountMode.WRITE,
                    profiles=_scripted(source="None"))
@@ -1153,8 +1153,9 @@ async def test_a_policy_defining_no_hook_fails_closed():
         refused = await ws.execute("echo hi", session_id="s")
         assert refused.exit_code == 126
         assert refused.refusal is not None
-        assert "profile 'release' policy failed" in refused.refusal.reason
-        assert "pre_command" in refused.refusal.reason
+        assert refused.refusal.reason == (
+            "profile 'release' policy defines no hook: pre_command, pre_ops "
+            "or pre_session")
     finally:
         await ws.close()
 
@@ -1168,5 +1169,104 @@ async def test_an_inline_document_may_not_add_a_policy():
                 "s",
                 permissions=SessionProfile(policy=ProfilePolicy(
                     script=ScriptSource(JUDGE), runtime="monty")))
+    finally:
+        await ws.close()
+
+
+# A program at the op and session doors and nowhere else: writes under
+# /data/frozen are refused, so is an AWS_* variable, and a command is
+# never judged.
+GATES = """\
+def pre_ops(ctx):
+    op = ctx['op']
+    if op['write'] and op['path'].startswith('/data/frozen/'):
+        return {'deny': 'frozen by ' + ctx['profile']}
+    return None
+
+def pre_session(ctx):
+    if ctx['write']['key'].startswith('AWS_'):
+        return {'deny': 'credentials are set by the operator'}
+    return None
+"""
+
+# The content judge with an op hook beside it: its own reads have to
+# pass the door its pre_ops guards.
+READER_AND_GATE = READER + """
+def pre_ops(ctx):
+    op = ctx['op']
+    if op['write'] and op['path'].startswith('/data/frozen/'):
+        return {'deny': 'frozen'}
+    return None
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_profile_policy_judges_the_op_door():
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(GATES))
+    try:
+        await ws.execute("mkdir -p /data/frozen && echo keep > /data/frozen/k")
+        ws.create_session("s", profile="release")
+        # No command hook, so a command is silence; a read is not a write.
+        assert (await ws.execute("echo hi", session_id="s")).exit_code == 0
+        read = await ws.execute("cat /data/frozen/k", session_id="s")
+        assert read.exit_code == 0
+        assert read.stdout == b"keep\n"
+        refused = await ws.execute("echo x > /data/frozen/f", session_id="s")
+        assert refused.exit_code == 1
+        assert b"Permission denied" in refused.stderr
+        removed = await ws.execute("rm /data/frozen/k", session_id="s")
+        assert removed.exit_code == 1
+        assert b"Permission denied" in removed.stderr
+        assert (await ws.execute("cat /data/frozen/k")).stdout == b"keep\n"
+        # Another session is not judged by it.
+        assert (await ws.execute("echo x > /data/frozen/f")).exit_code == 0
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_profile_policy_judges_the_session_door():
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(GATES))
+    try:
+        ws.create_session("s", profile="release")
+        refused = await ws.execute("export AWS_SECRET=x", session_id="s")
+        assert refused.exit_code == 1
+        assert refused.stderr == b"credentials are set by the operator\n"
+        landed = await ws.execute("export SAFE=1 && echo $SAFE",
+                                  session_id="s")
+        assert landed.exit_code == 0
+        assert landed.stdout == b"1\n"
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_policys_own_read_passes_the_door_its_op_hook_guards():
+    # pre_command opens the operand through the workspace's door while
+    # pre_ops stands at it: the read is the policy's own and is let
+    # through rather than re-entering the evaluation waiting on it, so
+    # the content verdict lands and the op hook still refuses a write.
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(READER_AND_GATE))
+    try:
+        await ws.execute("mkdir -p /data/in && printf 'subject: invoice\\n\\n"
+                         "a payload\\n' > /data/in/mail.txt && "
+                         "echo plain > /data/in/note.txt")
+        ws.create_session("s", profile="release")
+        held = await ws.execute("cat /data/in/mail.txt", session_id="s")
+        assert held.exit_code == 126
+        assert held.refusal is not None
+        assert held.refusal.kind == "pending"
+        assert held.refusal.reason == "sign-off on payload"
+        assert (await ws.execute("cat /data/in/note.txt",
+                                 session_id="s")).exit_code == 0
+        refused = await ws.execute("echo x > /data/frozen/f", session_id="s")
+        assert refused.exit_code == 1
+        assert b"Permission denied" in refused.stderr
     finally:
         await ws.close()
