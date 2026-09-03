@@ -21,7 +21,7 @@ import type { MountResolver } from '../runtime/resolver.ts'
 import type { ScriptSource } from '../runtime/routing/types.ts'
 import { evalWithCtx, scriptEngine } from '../runtime/script.ts'
 import type { BridgeDispatchFn, EvalValue } from '../runtime/types.ts'
-import { createAsyncContext } from '../utils/async_context.ts'
+import { asyncContextIsolatesTasks, createAsyncContext } from '../utils/async_context.ts'
 import type { Policy } from './base.ts'
 import {
   DEFAULT_ASK_REASON,
@@ -58,11 +58,39 @@ export const HOOKS: Readonly<Record<ScriptHook, string>> = {
 
 const SCRIPT_HOOKS = Object.keys(HOOKS) as readonly ScriptHook[]
 
+/** One op the policy's own engine has in flight: what it asked, of which path. */
+interface PolicyRead {
+  op: string
+  virtual: string
+}
+
 // Bound for the duration of one op the policy's own engine dispatches,
 // so the policy's `preOps` lets the read through: the policy is the one
 // asking, and judging its own read would re-enter the evaluation that is
 // waiting on it.
-const policyReads = createAsyncContext<boolean>()
+const policyReads = createAsyncContext<PolicyRead>()
+
+/**
+ * Whether `ctx` is an op the policy's own engine dispatched.
+ *
+ * On an isolating runtime the store is this task's alone, so a bound
+ * frame is the answer. The fallback storage (a browser with no
+ * `AsyncLocalStorage`) holds every concurrently live read in one stack,
+ * and trusting its top would exempt whatever op another task dispatches
+ * while a policy read is in flight; there the op has to match a read
+ * the engine actually issued, by name and by the path the bridge
+ * spelled, which is the spelling the dispatcher gates it under. What
+ * one stack cannot tell apart is another task's identical op on that
+ * same path inside the window, the narrowest exemption it can offer. A
+ * read the dispatcher gates under a followed link's name misses the
+ * match and is judged, which fails closed rather than open.
+ */
+function isPolicyRead(ctx: OpsContext): boolean {
+  if (asyncContextIsolatesTasks) return policyReads.getStore() !== undefined
+  return policyReads
+    .liveStores()
+    .some((read) => read.op === ctx.op && read.virtual === ctx.path.virtual)
+}
 
 /**
  * What a profile's script is told about one command: the
@@ -319,7 +347,7 @@ export class ScriptPolicy implements Policy, SessionScoped {
   }
 
   async preOps(ctx: OpsContext): Promise<Action | null> {
-    if (policyReads.getStore() === true) return null
+    if (isPolicyRead(ctx)) return null
     return this.judge('preOps', ctx.sessionId ?? '', (entry) =>
       opsScriptContext(entry.profile, ctx, this.mounts()),
     )
@@ -399,13 +427,16 @@ export class ScriptPolicy implements Policy, SessionScoped {
 
   /**
    * The hooks one profile's program defines, probed on its first
-   * judgment and remembered by program text.
+   * judgment and remembered by program text and language: the probe
+   * asks in the program's own spelling, so one text read as two
+   * languages is two programs.
    */
   private async hooksOf(entry: ProfileScript): Promise<ReadonlySet<ScriptHook>> {
-    let defined = this.defined.get(entry.script.source)
+    const key = `${entry.script.language}\n${entry.script.source}`
+    let defined = this.defined.get(key)
     if (defined === undefined) {
       defined = definedHooks(entry.script, await this.evaluate(entry, hookProbe(entry.script), {}))
-      this.defined.set(entry.script.source, defined)
+      this.defined.set(key, defined)
     }
     return defined
   }
@@ -447,7 +478,9 @@ export class ScriptPolicy implements Policy, SessionScoped {
  */
 function reading(bridge: BridgeDispatchFn): BridgeDispatchFn {
   return (op, path, bytes, dst, attrs) =>
-    Promise.resolve(policyReads.run(true, () => bridge(op, path, bytes, dst, attrs)))
+    Promise.resolve(
+      policyReads.run({ op, virtual: path }, () => bridge(op, path, bytes, dst, attrs)),
+    )
 }
 
 /** The fail-closed refusal: one wording however the policy broke. */

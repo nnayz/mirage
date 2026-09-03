@@ -422,6 +422,24 @@ describe('wantsFor', () => {
     ).toBe(true)
   })
 
+  it('remembers the hook set per language', async () => {
+    // One text, two programs: the probe asks in each language's own
+    // spelling, so what it found in one says nothing about the other.
+    // `pre_command = 1` binds the python hook's name and no JavaScript
+    // hook's, so the js profile fails closed at every door and the
+    // python one speaks at the command door alone.
+    const text = 'pre_command = 1'
+    const scripts: Record<string, ProfileScript> = {
+      j: { profile: 'j', script: new ScriptSource(text, 'js'), runtime: 'quickjs' },
+      p: { profile: 'p', script: new ScriptSource(text, 'python'), runtime: 'monty' },
+    }
+    const policy = track(
+      new ScriptPolicy({ scriptOf: (id) => scripts[id] ?? null }, () => ['/repo/']),
+    )
+    expect(await policy.wantsFor('preSession', 'j')).toBe(true)
+    expect(await policy.wantsFor('preSession', 'p')).toBe(false)
+  }, 60_000)
+
   it('refines Policies.wants per session', async () => {
     const policies = new Policies([track(policyOf(entry()))])
     expect(policies.wants('preSession')).toBe(true)

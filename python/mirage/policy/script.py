@@ -218,8 +218,7 @@ def defined_hooks(script: ScriptSource, value: EvalValue) -> frozenset[str]:
     spelled = {hook_name(script, hook): hook for hook in HOOKS}
     if isinstance(value, list):
         names = [
-            name for name in value
-            if isinstance(name, str) and name in spelled
+            name for name in value if isinstance(name, str) and name in spelled
         ]
         if len(names) == len(value):
             return frozenset(spelled[name] for name in names)
@@ -341,7 +340,7 @@ class ScriptPolicy(Policy, SessionScopedMixin):
         self._dispatch = dispatch
         self._resolver = resolver
         self._engines: dict[str, Runtime] = {}
-        self._defined: dict[str, frozenset[str]] = {}
+        self._defined: dict[tuple[str, str], frozenset[str]] = {}
         self._lock = asyncio.Lock()
 
     async def pre_command(self, ctx: CommandContext) -> Action | None:
@@ -432,16 +431,19 @@ class ScriptPolicy(Policy, SessionScopedMixin):
 
     async def _hooks_of(self, entry: ProfileScript) -> frozenset[str]:
         """The hooks one profile's program defines, probed on its first
-        judgment and remembered by program text.
+        judgment and remembered by program text and language: the probe
+        asks in the program's own spelling, so one text read as two
+        languages is two programs.
 
         Args:
             entry (ProfileScript): the session's policy.
         """
-        defined = self._defined.get(entry.script.source)
+        key = (entry.script.language, entry.script.source)
+        defined = self._defined.get(key)
         if defined is None:
             value = await self._evaluate(entry, hook_probe(entry.script), {})
             defined = defined_hooks(entry.script, value)
-            self._defined[entry.script.source] = defined
+            self._defined[key] = defined
         return defined
 
     async def _evaluate(self, entry: ProfileScript, tail: str,

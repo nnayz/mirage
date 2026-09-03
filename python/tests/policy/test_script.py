@@ -115,6 +115,16 @@ class OneScript:
         return self.entry
 
 
+class ScriptsBySession:
+    """A sessions query holding one script per session."""
+
+    def __init__(self, entries: dict[str, ProfileScript]) -> None:
+        self.entries = entries
+
+    def script_of(self, session_id: str) -> ProfileScript | None:
+        return self.entries.get(session_id)
+
+
 @pytest.fixture(autouse=True)
 def _reset_built():
     FakeEngine.built = []
@@ -564,6 +574,29 @@ async def test_the_probe_runs_once_per_program():
 
 
 @pytest.mark.asyncio
+async def test_the_hook_set_is_remembered_per_language():
+    # One text, two programs: the probe asks in each language's own
+    # spelling, so what it found in one says nothing about the other.
+    # Here the js probe finds no hook and the python probe finds one.
+    text = "pre_command = 1"
+    policy = ScriptPolicy(
+        ScriptsBySession({
+            "j":
+            ProfileScript(profile="j",
+                          script=ScriptSource(text, language="js"),
+                          runtime="quickjs"),
+            "p":
+            ProfileScript(profile="p",
+                          script=ScriptSource(text),
+                          runtime="monty"),
+        }), _mounts)
+    policy._engines["quickjs"] = FakeEngine(None, hooks=())
+    policy._engines["monty"] = FakeEngine(None, hooks=("pre_command", ))
+    assert await policy.wants_for("pre_session", "j") is True
+    assert await policy.wants_for("pre_session", "p") is False
+
+
+@pytest.mark.asyncio
 async def test_the_policys_own_read_is_not_judged_by_its_op_hook():
     # The mark the reading door raises is what pre_ops reads first, so a
     # read the engine issues never re-enters the evaluation waiting on
@@ -589,15 +622,14 @@ async def test_wants_for_says_which_sessions_a_hook_speaks_for():
     assert await policy.wants_for("pre_session", "s") is False
     assert await policy.wants_for("pre_ops", "s") is False
     assert await policy.wants_for("post_ops", "s") is False
-    assert await ScriptPolicy(OneScript(None), _mounts).wants_for(
-        "pre_session", "s") is False
+    assert await ScriptPolicy(OneScript(None),
+                              _mounts).wants_for("pre_session", "s") is False
 
 
 @pytest.mark.asyncio
 async def test_wants_for_counts_a_program_the_door_will_refuse():
     # No hook at all, or a probe that failed: the door refuses every
     # write for this program, which is speaking.
-    assert await _policy(None, hooks=()).wants_for("pre_session",
-                                                   "s") is True
+    assert await _policy(None, hooks=()).wants_for("pre_session", "s") is True
     broken = _policy(error=EvalError("boom"))
     assert await broken.wants_for("pre_session", "s") is True
