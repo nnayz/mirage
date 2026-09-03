@@ -3,7 +3,8 @@ import asyncio
 import pytest
 
 from mirage.policy.constants import DEFAULT_ASK_REASON, DEFAULT_DENY_REASON
-from mirage.policy.script import ScriptPolicy, script_action, script_context
+from mirage.policy.script import (ScriptPolicy, hook_call, script_action,
+                                  script_context)
 from mirage.policy.types import (Ask, CommandContext, Deny, DenyScope,
                                  ProfileScript)
 from mirage.runtime.errors import EvalError
@@ -222,12 +223,19 @@ async def test_a_session_without_a_script_is_not_judged():
 
 
 @pytest.mark.asyncio
-async def test_the_script_is_shown_the_commands_facts():
+async def test_the_policy_is_shown_the_commands_facts_and_its_hook_is_called():
     policy = _policy(None)
     assert await policy.pre_command(_ctx()) is None
     engine = FakeEngine.built[0]
-    assert engine.code == "SOURCE"
+    # The program whole, then the call to the hook it defines, so its
+    # return is the value the evaluator hands back.
+    assert engine.code == "SOURCE\n\npre_command(ctx)\n"
     assert engine.seen == {"ctx": script_context("release", _ctx(), _mounts())}
+
+
+def test_the_hook_is_called_in_the_programs_own_language():
+    assert hook_call(ScriptSource("x")) == "pre_command(ctx)"
+    assert hook_call(ScriptSource("x", language="js")) == "preCommand(ctx)"
 
 
 @pytest.mark.asyncio
@@ -265,7 +273,7 @@ async def test_a_script_that_raised_fails_closed():
     # existed to judge, so every failure arm refuses instead.
     policy = _policy(error=EvalError("boom"))
     action = await policy.pre_command(_ctx())
-    assert action == Deny("profile 'release' script failed: boom")
+    assert action == Deny("profile 'release' policy failed: boom")
 
 
 @pytest.mark.asyncio
@@ -273,7 +281,7 @@ async def test_a_syntax_error_is_named_as_one():
     policy = _policy(error=EvalError("bad token", syntax=True))
     action = await policy.pre_command(_ctx())
     assert isinstance(action, Deny)
-    assert "profile 'release' script syntax error" in action.reason
+    assert "profile 'release' policy syntax error" in action.reason
 
 
 @pytest.mark.asyncio
@@ -283,7 +291,7 @@ async def test_a_script_that_timed_out_fails_closed(monkeypatch):
     policy = _policy(None, delay=0.2)
     action = await policy.pre_command(_ctx())
     assert isinstance(action, Deny)
-    assert "profile 'release' script timed out" in action.reason
+    assert "profile 'release' policy timed out" in action.reason
 
 
 @pytest.mark.asyncio
@@ -291,7 +299,7 @@ async def test_a_wrong_answer_shape_fails_closed():
     policy = _policy([1, 2])
     action = await policy.pre_command(_ctx())
     assert isinstance(action, Deny)
-    assert "profile 'release' script must answer" in action.reason
+    assert "profile 'release' policy must answer" in action.reason
 
 
 def _no_engine(script: ScriptSource, runtime: str) -> FakeEngine:
@@ -304,7 +312,7 @@ async def test_an_engine_it_cannot_build_fails_closed(monkeypatch):
     policy = ScriptPolicy(OneScript(_entry("ghost")), _mounts)
     action = await policy.pre_command(_ctx())
     assert isinstance(action, Deny)
-    assert action.reason == "profile 'release' script names runtime " \
+    assert action.reason == "profile 'release' policy names runtime " \
                             "'ghost': nope"
 
 

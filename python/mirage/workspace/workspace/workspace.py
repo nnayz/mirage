@@ -209,8 +209,8 @@ class Workspace:
         # built-ins the registry seeds: the profile's admission rules
         # (PermissionsPolicy, reading each session's compiled rules
         # from the manager by the id the door puts in the context), the
-        # profile's script (ScriptPolicy, evaluated per command through
-        # the same manager), then Policy instances, then anything added
+        # profile's policy (ScriptPolicy, calling its hook per command
+        # through the same manager), then Policy instances, then anything added
         # later through ws.policies.add(). The route policy
         # (route_policy=) is the line-level counterpart until it is
         # absorbed as a hook.
@@ -961,7 +961,7 @@ class Workspace:
         return ""
 
     def _mount_prefixes(self) -> list[str]:
-        """The mount prefixes a profile script reads as
+        """The mount prefixes a profile policy reads as
         ``ctx["mounts"]``, read per evaluation so a later mount shows.
         """
         return [entry.prefix for entry in self._registry.mounts()]

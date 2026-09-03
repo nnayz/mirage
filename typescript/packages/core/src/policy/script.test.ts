@@ -7,10 +7,16 @@ import { DEFAULT_ASK_REASON, DEFAULT_DENY_REASON } from './constants.ts'
 import { ScriptPolicy, scriptAction, scriptContext } from './script.ts'
 import type { CommandContext, ProfileScript } from './types.ts'
 
+// A policy is a program defining the hook it answers at, the way a
+// coded Policy does, and it answers with return.
 const JUDGE = `\
-const c = ctx.command
-const sealed = c.name === 'cat' && c.paths.some((p) => p.startsWith('/repo/sealed/'))
-sealed ? { deny: 'sealed by ' + ctx.profile } : c.name === 'shred' ? { ask: 'sign-off' } : null
+function preCommand(ctx) {
+  const c = ctx.command
+  if (c.name === 'cat' && c.paths.some((p) => p.startsWith('/repo/sealed/'))) {
+    return { deny: 'sealed by ' + ctx.profile }
+  }
+  return c.name === 'shred' ? { ask: 'sign-off' } : null
+}
 `
 
 function path(virtual: string): PathSpec {
@@ -39,17 +45,17 @@ function ctx(command = 'cat', sessionId = 's'): CommandContext {
 }
 
 // A python judge that reads what the operand holds, not what it is
-// called: the shape a content policy takes when it is a script.
+// called: the shape a content policy takes when it is a program.
 const READER_PY = `\
-verdict = None
-for p in ctx['command']['paths']:
-    try:
-        body = open(p).read()
-    except OSError:
-        continue
-    if 'payload' in body:
-        verdict = {'ask': 'sign-off on payload'}
-verdict
+def pre_command(ctx):
+    for p in ctx['command']['paths']:
+        try:
+            body = open(p).read()
+        except OSError:
+            continue
+        if 'payload' in body:
+            return {'ask': 'sign-off on payload'}
+    return None
 `
 
 function entry(
@@ -191,23 +197,34 @@ describe('ScriptPolicy', () => {
   it('fails closed when the script throws', async () => {
     // Silence on failure would run exactly the commands the script
     // existed to judge, so every failure arm refuses instead.
-    const policy = track(policyOf(entry("(() => { throw new Error('boom') })()")))
+    const policy = track(policyOf(entry("function preCommand() { throw new Error('boom') }")))
     const action = await policy.preCommand(ctx())
     expect(action).toMatchObject({ kind: 'deny' })
-    expect((action as { reason: string }).reason).toMatch(/profile 'release' script failed/)
+    expect((action as { reason: string }).reason).toMatch(/profile 'release' policy failed/)
   })
 
   it('fails closed on a wrong answer shape', async () => {
-    const policy = track(policyOf(entry('[1, 2]')))
+    const policy = track(policyOf(entry('function preCommand() { return [1, 2] }')))
     const action = await policy.preCommand(ctx())
-    expect((action as { reason: string }).reason).toMatch(/profile 'release' script must answer/)
+    expect((action as { reason: string }).reason).toMatch(/profile 'release' policy must answer/)
+  })
+
+  it('fails closed on a program that defines no hook', async () => {
+    // A verdict as a bare last expression was the old contract; a policy
+    // defines pre_command / preCommand, and a program without one is
+    // refused at the call rather than read for a value it never meant.
+    const policy = track(policyOf(entry('null')))
+    const action = await policy.preCommand(ctx())
+    expect(action).toMatchObject({ kind: 'deny' })
+    expect((action as { reason: string }).reason).toMatch(/profile 'release' policy failed/)
+    expect((action as { reason: string }).reason).toMatch(/preCommand/)
   })
 
   it('fails closed on an engine it cannot build', async () => {
     const policy = track(policyOf(entry(JUDGE, 'ghost')))
     const action = await policy.preCommand(ctx())
     expect((action as { reason: string }).reason).toMatch(
-      /profile 'release' script names runtime 'ghost'/,
+      /profile 'release' policy names runtime 'ghost'/,
     )
   })
 
@@ -242,8 +259,8 @@ describe('ScriptPolicy wiring', () => {
     })
   }, 60_000)
 
-  it('a bare policy has no door, and its script reads no file', async () => {
-    // Unwired, the engine sees no mount: the open misses, the script's
+  it('a bare policy has no door, and its program reads no file', async () => {
+    // Unwired, the engine sees no mount: the open misses, the policy's
     // own except arm runs, and nothing is judged on content it never
     // saw. The workspace is what supplies the doors.
     const policy = track(policyOf(entry(READER_PY, 'monty', 'python')))

@@ -1029,30 +1029,33 @@ def test_shared_acceptance_fixture_is_accepted(fixture: str):
         load_config(case["config"])
 
 
-def test_profile_script_path_rebases_on_the_config_dir(tmp_path, monkeypatch):
-    # `script: roles/x.py` means "next to the config file", the same
+def test_profile_policy_path_rebases_on_the_config_dir(tmp_path, monkeypatch):
+    # `policy: roles/x.py` means "next to the config file", the same
     # build-context rule the cli path form follows; without rebasing it
     # resolves against the process cwd and only works by luck.
     (tmp_path / "roles").mkdir()
-    (tmp_path / "roles" / "x.py").write_text("None\n")
+    (tmp_path / "roles" /
+     "x.py").write_text("def pre_command(ctx):\n    return None\n")
     cfg_file = tmp_path / "ws.yaml"
     cfg_file.write_text("""\
 mounts:
   /data:
     resource: ram
 profiles:
-  release: {script: roles/x.py, runtime: monty}
+  release: {policy: {script: roles/x.py, runtime: monty}}
 """)
     monkeypatch.chdir(tmp_path.parent)
     cfg = load_config(cfg_file)
     release = cfg.to_workspace_kwargs()["profiles"]["release"]
-    assert isinstance(release.script, ScriptSource)
-    assert release.script.source == "None\n"
-    assert release.runtime == "monty"
+    assert release.policy is not None
+    assert isinstance(release.policy.script, ScriptSource)
+    assert release.policy.script.source == \
+        "def pre_command(ctx):\n    return None\n"
+    assert release.policy.runtime == "monty"
 
 
-def test_profile_script_states_its_runtime(tmp_path):
-    # There is no default engine: a script the config does not pin to an
+def test_profile_policy_states_its_runtime(tmp_path):
+    # There is no default engine: a policy the config does not pin to an
     # engine is refused at load, not guessed at the gate.
     (tmp_path / "roles").mkdir()
     (tmp_path / "roles" / "x.py").write_text("None\n")
@@ -1062,9 +1065,22 @@ mounts:
   /data:
     resource: ram
 profiles:
-  release: {script: roles/x.py}
+  release: {policy: {script: roles/x.py}}
 """)
-    with pytest.raises(ValueError, match="set runtime beside script"):
+    with pytest.raises(ValueError, match="runtime"):
+        load_config(cfg_file)
+
+
+def test_a_profile_written_with_script_is_told_where_the_keys_went(tmp_path):
+    cfg_file = tmp_path / "ws.yaml"
+    cfg_file.write_text("""\
+mounts:
+  /data:
+    resource: ram
+profiles:
+  release: {script: roles/x.py, runtime: monty}
+""")
+    with pytest.raises(ValueError, match="now one policy block"):
         load_config(cfg_file)
 
 

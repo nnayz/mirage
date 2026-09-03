@@ -385,6 +385,24 @@ def _load_script_source(value: str) -> ScriptSource:
                         module=path.suffix == ".mjs")
 
 
+def _load_profile_policy(profile: SessionProfile) -> SessionProfile:
+    """Embed a profile's path-form policy program as source.
+
+    Args:
+        profile (SessionProfile): the profile as validated; returned
+            as is when it states no policy or already carries source.
+    """
+    policy = profile.policy
+    if policy is None or not isinstance(policy.script, str):
+        return profile
+    return profile.model_copy(
+        update={
+            "policy":
+            policy.model_copy(
+                update={"script": _load_script_source(policy.script)})
+        })
+
+
 def _absolutize_scripts(raw: dict[str, Any], base: Path) -> None:
     """Resolve relative script paths against the config file's dir.
 
@@ -423,16 +441,19 @@ def _absolutize_scripts(raw: dict[str, Any], base: Path) -> None:
     profiles = raw.get("profiles")
     if isinstance(profiles, dict):
         for block in profiles.values():
-            if isinstance(block, dict):
-                _absolutize_script_key(block, base)
+            # A profile's policy block carries its program the way a
+            # clis entry does, so its script rebases the same way.
+            policy = block.get("policy") if isinstance(block, dict) else None
+            if isinstance(policy, dict):
+                _absolutize_script_key(policy, base)
 
 
 def _absolutize_script_key(entry: dict[str, Any], base: Path) -> None:
     """Rebase one mapping's relative ``script`` path onto ``base``.
 
     Args:
-        entry (dict[str, Any]): a ``runtimes`` or ``clis`` mapping
-            entry, mutated in place.
+        entry (dict[str, Any]): a ``runtimes``, ``clis`` or profile
+            ``policy`` mapping entry, mutated in place.
         base (Path): directory containing the config file.
     """
     script = entry.get("script")
@@ -677,11 +698,7 @@ class WorkspaceConfig(BaseModel):
             kwargs["route_policy"] = _load_script_source(self.route_policy)
         if self.profiles is not None:
             kwargs["profiles"] = {
-                name:
-                (profile if profile.script is None else profile.model_copy(
-                    update={
-                        "script": _load_script_source(str(profile.script))
-                    }))
+                name: _load_profile_policy(profile)
                 for name, profile in self.profiles.items()
             }
         if self.profile is not None:

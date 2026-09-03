@@ -2772,9 +2772,9 @@ async def open_consistency(
 
 
 def scripted_profiles(profiles: dict | None) -> dict | None:
-    """Wrap a profile's inline script source the way the config door does.
+    """Wrap a profile's inline policy source the way the config door does.
 
-    A target is JSON, so it carries a profile's script as source rather
+    A target is JSON, so it carries a profile's policy as source rather
     than as the path a YAML config would name. Loading is the config
     layer's job everywhere else, so the battery does that one step here
     and hands the workspace what code would pass.
@@ -2786,12 +2786,12 @@ def scripted_profiles(profiles: dict | None) -> dict | None:
         return profiles
     out: dict = {}
     for name, doc in profiles.items():
-        script = doc.get("script") if isinstance(doc, dict) else None
-        if isinstance(script, dict):
+        policy = doc.get("policy") if isinstance(doc, dict) else None
+        if isinstance(policy, dict):
             doc = {
-                **doc, "script":
-                ScriptSource(script["source"],
-                             language=script.get("language", "python"))
+                **doc, "policy":
+                ScriptSource(policy["source"],
+                             language=policy.get("language", "python"))
             }
         out[name] = doc
     return out

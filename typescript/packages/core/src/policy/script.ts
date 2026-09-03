@@ -18,6 +18,7 @@ import { EvalError } from '../runtime/errors.ts'
 import { LanguageRuntime } from '../runtime/language.ts'
 import type { Evaluator } from '../runtime/mixin.ts'
 import type { MountResolver } from '../runtime/resolver.ts'
+import type { ScriptSource } from '../runtime/routing/types.ts'
 import { evalWithCtx, scriptEngine } from '../runtime/script.ts'
 import type { BridgeDispatchFn, EvalValue } from '../runtime/types.ts'
 import type { Policy } from './base.ts'
@@ -72,7 +73,7 @@ export function scriptContext(
 }
 
 /**
- * The policy answer a script's last expression states.
+ * The policy answer a policy's hook returns.
  *
  * The vocabulary is the `preCommand` hook's own, spelled as data: null
  * or `'allow'` is no opinion (the command runs unless another rule
@@ -82,7 +83,7 @@ export function scriptContext(
  * reasons, the same ones a rule stating no reason gets.
  *
  * Throws a plain Error whose message is a clause about "script", for
- * the caller to prefix with whose script it is.
+ * the caller to prefix with whose policy it is.
  */
 export function scriptAction(value: EvalValue): Deny | Ask | null {
   if (value === null || value === 'allow') return null
@@ -107,15 +108,15 @@ export function scriptAction(value: EvalValue): Deny | Ask | null {
 }
 
 /**
- * The workspace's file doors, for the engine a profile script runs on.
+ * The workspace's file doors, for the engine a profile policy runs on.
  *
- * A script judges a line before it runs, and some judgments are about
+ * A policy judges a line before it runs, and some judgments are about
  * what a file holds rather than what it is called. The engine is
  * attached with these exactly as `Runtimes` attaches an agent's, so
- * the script's `open()` reads the mounts through the same door an
- * agent's program would, and a read from a script clears the op door
- * like any other. The workspace supplies them; a bare policy (outside
- * a workspace) has none, and its scripts see no file.
+ * the policy's `open()` reads the mounts through the same door an
+ * agent's program would, and a read from a policy clears the op door
+ * like any other. The workspace supplies them; a bare ScriptPolicy
+ * (outside a workspace) has none, and its programs see no file.
  */
 export interface ScriptWiring {
   bridge: () => BridgeDispatchFn
@@ -123,25 +124,40 @@ export interface ScriptWiring {
 }
 
 /**
- * Each profile's script, enforced at the admission gate.
+ * The call that runs a policy's hook, in its language's own spelling.
+ *
+ * A policy program defines the hook it answers at, the way a coded
+ * Policy does: `pre_command(ctx)` in python, `preCommand(ctx)` in
+ * JavaScript, returning the verdict. The program is evaluated whole,
+ * with this call appended as its last expression, so the definitions
+ * run and the call's return is what the evaluator hands back. A program
+ * defining no hook fails at the call (a NameError), and fails closed.
+ */
+export function hookCall(script: ScriptSource): string {
+  return script.language === 'js' ? 'preCommand(ctx)' : 'pre_command(ctx)'
+}
+
+/**
+ * Each profile's policy, enforced at the admission gate.
  *
  * The scripted twin of `PermissionsPolicy`, registered right after it:
  * where that policy evaluates the document's declarative rules, this
- * one evaluates the profile's program, per command, with the same facts
- * (`scriptContext`). It reads the session's script through the narrow
- * `SessionScriptsQuery` by the session id the door put in the context,
- * so a session whose profile states no script costs one lookup and
- * nothing else.
+ * one calls the profile's policy program, per command, with the same
+ * facts (`scriptContext`). It reads the session's policy through the
+ * narrow `SessionScriptsQuery` by the session id the door put in the
+ * context, so a session whose profile states no policy costs one lookup
+ * and nothing else.
  *
  * The facts name the paths; the engine can open them. It is wired to
  * the workspace's files the way an agent's runtime is (`ScriptWiring`),
- * so a script may read what an operand holds and answer for its
+ * so a policy may read what an operand holds and answer for its
  * content, not only its name.
  *
- * Every failure fails closed: a script that threw, timed out, answered
- * with the wrong shape, or names an engine that cannot be built refuses
- * the command with a reason naming the profile. Silence on failure
- * would run exactly the commands the script existed to judge.
+ * Every failure fails closed: a policy that threw, timed out, answered
+ * with the wrong shape, defines no hook, or names an engine that cannot
+ * be built refuses the command with a reason naming the profile.
+ * Silence on failure would run exactly the commands the policy existed
+ * to judge.
  *
  * Engines are built lazily on the first command that needs one, shared
  * per engine name, and closed by the workspace's own close.
@@ -178,14 +194,14 @@ export class ScriptPolicy implements Policy {
       if (err instanceof EvalError) {
         return failed(entry, `${err.syntax ? 'syntax error' : 'failed'}: ${err.message}`)
       }
-      // scriptEngine's refusal (the engine cannot be built) is already
-      // a clause about "script".
-      return failed(entry, err instanceof Error ? err.message : String(err), '')
+      // scriptEngine's refusal (the engine cannot be built) is a clause
+      // about "script"; the profile's word for it is policy.
+      return failed(entry, clause(err))
     }
     try {
       return scriptAction(value)
     } catch (err) {
-      return failed(entry, err instanceof Error ? err.message : String(err), '')
+      return failed(entry, clause(err))
     }
   }
 
@@ -196,7 +212,7 @@ export class ScriptPolicy implements Policy {
     for (const engine of engines) await engine.close()
   }
 
-  /** One command through one profile's script, serialized. */
+  /** One command through one profile's policy, serialized. */
   private async evaluate(entry: ProfileScript, ctx: CommandContext): Promise<EvalValue> {
     const run = this.queue.then(async () => {
       let engine = this.engines.get(entry.runtime)
@@ -211,11 +227,11 @@ export class ScriptPolicy implements Policy {
         this.engines.set(entry.runtime, engine)
       }
       return evalWithCtx(
-        entry.script.source,
+        `${entry.script.source}\n\n${hookCall(entry.script)}\n`,
         scriptContext(entry.profile, ctx, this.mounts()),
         engine,
         SCRIPT_EVAL_TIMEOUT_SECONDS,
-        `profile '${entry.profile}' script`,
+        `profile '${entry.profile}' policy`,
       )
     })
     this.queue = run.catch(() => undefined)
@@ -223,7 +239,17 @@ export class ScriptPolicy implements Policy {
   }
 }
 
-/** The fail-closed refusal: one wording however the script broke. */
-function failed(entry: ProfileScript, detail: string, prefix = 'script '): Deny {
-  return { kind: 'deny', reason: `profile '${entry.profile}' ${prefix}${detail}` }
+/** The fail-closed refusal: one wording however the policy broke. */
+function failed(entry: ProfileScript, detail: string): Deny {
+  return { kind: 'deny', reason: `profile '${entry.profile}' policy ${detail}` }
+}
+
+/**
+ * An error's message as the clause after "policy": the engine door and
+ * the answer reader both speak of "script", which is the program's
+ * generic name, and the profile's word for its program is policy.
+ */
+function clause(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err)
+  return message.replace(/^script /, '')
 }

@@ -312,13 +312,13 @@ export interface SessionCommandsQuery {
 }
 
 /**
- * One profile's script, as a session carries it: the program, the
- * engine it runs on, and the profile it speaks for. Compiled off
- * `SessionProfile.script` beside the admission rules, and evaluated per
- * command by `ScriptPolicy` with the command's facts as `ctx`; its
- * answer is allow (no opinion), deny or ask. `profile` is the
- * profile's name, which the script reads as `ctx.profile`; empty for a
- * profile document passed to `createSession` without a name.
+ * One profile's policy, as a session carries it: the program, the
+ * engine it runs on, and the profile it speaks for. Compiled off the
+ * profile's policy block beside the admission rules; `ScriptPolicy`
+ * calls its `pre_command(ctx)` per command with the command's facts,
+ * and the hook returns allow (no opinion), deny or ask. `profile` is
+ * the profile's name, which the policy reads as `ctx.profile`; empty
+ * for a profile document passed to `createSession` without a name.
  */
 export interface ProfileScript {
   readonly profile: string

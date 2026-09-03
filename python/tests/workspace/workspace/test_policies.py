@@ -21,7 +21,7 @@ from mirage.commands.errors import LimitExceededError
 from mirage.io import IOResult
 from mirage.policy import (CommandRule, ExecuteResultContext, OpsContext,
                            OpsResultContext, PolicyError)
-from mirage.policy.profile import SessionProfile
+from mirage.policy.profile import ProfilePolicy, SessionProfile
 from mirage.resource.ram import RAMResource
 from mirage.runtime.types import ScriptSource
 from mirage.types import Limit, MountMode, OnExceed, Refusal
@@ -864,49 +864,49 @@ async def test_a_bare_name_under_deny_refuses_with_the_default_reason():
 
 
 # A per-command judge: deny cat under /data/sealed/ with a computed
-# reason, take shred to the approval door, stay silent otherwise.
+# reason, take shred to the approval door, stay silent otherwise. A
+# policy defines the hook it answers at, and answers with return.
 JUDGE = """\
-c = ctx['command']
-hit = False
-for p in c['paths']:
-    if p.startswith('/data/sealed/'):
-        hit = True
-verdict = None
-if c['name'] == 'cat' and hit:
-    verdict = {'deny': 'sealed by ' + ctx['profile']}
-if c['name'] == 'shred':
-    verdict = {'ask': 'sign-off'}
-verdict
+def pre_command(ctx):
+    c = ctx['command']
+    for p in c['paths']:
+        if c['name'] == 'cat' and p.startswith('/data/sealed/'):
+            return {'deny': 'sealed by ' + ctx['profile']}
+    if c['name'] == 'shred':
+        return {'ask': 'sign-off'}
+    return None
 """
 
 # A judge that reads what the operand holds, not what it is called:
-# the shape a content policy takes when it is a script.
+# the shape a content policy takes when it is a program.
 READER = """\
-verdict = None
-for p in ctx['command']['paths']:
-    try:
-        body = open(p).read()
-    except OSError:
-        continue
-    if 'payload' in body:
-        verdict = {'ask': 'sign-off on payload'}
-verdict
+def pre_command(ctx):
+    for p in ctx['command']['paths']:
+        try:
+            body = open(p).read()
+        except OSError:
+            continue
+        if 'payload' in body:
+            return {'ask': 'sign-off on payload'}
+    return None
 """
 
 
 def _scripted(source: str = JUDGE,
               runtime: str = "monty") -> dict[str, dict[str, object]]:
-    """One scripted profile named release: the per-command program and
-    nothing else, so what runs is purely the script's decision.
+    """One profile named release with a policy and nothing else, so
+    what runs is purely the policy's decision.
 
     Args:
-        source (str): the program evaluated per command.
+        source (str): the policy program called per command.
         runtime (str): the engine it runs on.
     """
     return {
         "release": {
-            "script": ScriptSource(source),
-            "runtime": runtime,
+            "policy": {
+                "script": ScriptSource(source),
+                "runtime": runtime,
+            },
         }
     }
 
@@ -1079,16 +1079,18 @@ async def test_a_profile_script_runs_in_a_world_with_no_evaluator():
 async def test_a_broken_script_fails_closed_per_command():
     # Silence on failure would run exactly the commands the script
     # existed to judge.
-    ws = Workspace({"/data/": RAMResource()},
-                   mode=MountMode.WRITE,
-                   profiles=_scripted(source="raise ValueError('boom')"))
+    ws = Workspace(
+        {"/data/": RAMResource()},
+        mode=MountMode.WRITE,
+        profiles=_scripted(
+            source="def pre_command(ctx):\n    raise ValueError('boom')"))
     try:
         ws.create_session("s", profile="release")
         refused = await ws.execute("echo hi", session_id="s")
         assert refused.exit_code == 126
         assert refused.stderr == b"echo: Permission denied\n"
         assert refused.refusal is not None
-        assert "profile 'release' script failed" in refused.refusal.reason
+        assert "profile 'release' policy failed" in refused.refusal.reason
         assert (await ws.execute("echo hi")).exit_code == 0
     finally:
         await ws.close()
@@ -1111,22 +1113,60 @@ async def test_an_engine_that_cannot_evaluate_fails_closed():
 
 
 @pytest.mark.asyncio
-async def test_a_profile_script_states_its_runtime():
-    with pytest.raises(ValueError, match="set runtime beside script"):
+async def test_a_profile_policy_states_its_runtime():
+    with pytest.raises(ValueError, match="runtime"):
+        Workspace(
+            {"/data/": RAMResource()},
+            mode=MountMode.WRITE,
+            profiles={"release": {
+                "policy": {
+                    "script": ScriptSource(JUDGE)
+                }
+            }})
+
+
+def test_the_old_script_and_runtime_keys_are_told_the_new_block():
+    # Shipped first as `script` with `runtime` beside it, a word for
+    # what the file is rather than what it does and an engine that read
+    # as the profile's own; the refusal says where they went.
+    with pytest.raises(ValueError, match="now one policy block"):
         Workspace({"/data/": RAMResource()},
                   mode=MountMode.WRITE,
-                  profiles={"release": {
-                      "script": ScriptSource(JUDGE)
-                  }})
+                  profiles={
+                      "release": {
+                          "script": ScriptSource(JUDGE),
+                          "runtime": "monty",
+                      }
+                  })
 
 
 @pytest.mark.asyncio
-async def test_an_inline_document_may_not_add_a_script():
+async def test_a_policy_defining_no_hook_fails_closed():
+    # A verdict as a bare last expression was the old contract; a policy
+    # defines pre_command, and a program without one is refused at the
+    # call rather than read for a value it never meant.
+    ws = Workspace({"/data/": RAMResource()},
+                   mode=MountMode.WRITE,
+                   profiles=_scripted(source="None"))
+    try:
+        ws.create_session("s", profile="release")
+        refused = await ws.execute("echo hi", session_id="s")
+        assert refused.exit_code == 126
+        assert refused.refusal is not None
+        assert "profile 'release' policy failed" in refused.refusal.reason
+        assert "pre_command" in refused.refusal.reason
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_an_inline_document_may_not_add_a_policy():
     ws = Workspace({"/data/": RAMResource()}, mode=MountMode.WRITE)
     try:
-        with pytest.raises(PolicyError, match="not a script"):
-            ws.create_session("s",
-                              permissions=SessionProfile(
-                                  script=ScriptSource(JUDGE), runtime="monty"))
+        with pytest.raises(PolicyError, match="not a policy"):
+            ws.create_session(
+                "s",
+                permissions=SessionProfile(policy=ProfilePolicy(
+                    script=ScriptSource(JUDGE), runtime="monty")))
     finally:
         await ws.close()

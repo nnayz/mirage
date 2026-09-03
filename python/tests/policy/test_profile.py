@@ -2046,38 +2046,58 @@ def test_a_misspelled_document_field_fails_at_construction():
         ws.create_session("x", permissions={"command": {"deny": []}})
 
 
-def test_a_script_alone_is_a_whole_profile():
-    # The document is optional beside a script: nothing is hidden, and
-    # the script is the profile's whole admission policy.
+def test_a_policy_alone_is_a_whole_profile():
+    # The document is optional beside a policy: nothing is hidden, and
+    # the policy is the profile's whole admission policy.
     profile = SessionProfile.model_validate({
-        "script": ScriptSource("None"),
-        "runtime": "monty",
+        "policy": {
+            "script": ScriptSource("None"),
+            "runtime": "monty",
+        },
     })
-    assert isinstance(profile.script, ScriptSource)
-    assert profile.runtime == "monty"
+    assert profile.policy is not None
+    assert isinstance(profile.policy.script, ScriptSource)
+    assert profile.policy.runtime == "monty"
     assert profile.commands is None
 
 
-def test_a_script_rides_beside_the_document():
+def test_a_policy_rides_beside_the_document():
     profile = SessionProfile.model_validate({
         "commands": {
             "allow": ["ls"]
         },
-        "script": ScriptSource("None"),
-        "runtime": "monty",
+        "policy": {
+            "script": ScriptSource("None"),
+            "runtime": "monty",
+        },
     })
-    assert isinstance(profile.script, ScriptSource)
-    assert profile.runtime == "monty"
+    assert profile.policy is not None
+    assert isinstance(profile.policy.script, ScriptSource)
     assert profile.commands is not None
 
 
-def test_a_script_without_a_runtime_is_refused():
-    # There is no default engine, so a script that names none is a
+def test_a_policy_without_a_runtime_is_refused():
+    # There is no default engine, so a policy that names none is a
     # config error, not a guess.
-    with pytest.raises(ValidationError, match="set runtime beside script"):
-        SessionProfile.model_validate({"script": ScriptSource("None")})
+    with pytest.raises(ValidationError, match="runtime"):
+        SessionProfile.model_validate(
+            {"policy": {
+                "script": ScriptSource("None")
+            }})
 
 
-def test_a_runtime_without_a_script_is_refused():
-    with pytest.raises(ValidationError, match="states no script"):
+def test_a_policy_is_a_block_not_a_path():
+    with pytest.raises(ValidationError):
+        SessionProfile.model_validate({"policy": "roles/x.py"})
+
+
+def test_the_old_script_and_runtime_keys_are_told_where_they_went():
+    # Shipped first as `script` with `runtime` beside it; the refusal
+    # says where they went.
+    with pytest.raises(ValidationError, match="now one policy block"):
+        SessionProfile.model_validate({
+            "script": ScriptSource("None"),
+            "runtime": "monty",
+        })
+    with pytest.raises(ValidationError, match="now one policy block"):
         SessionProfile.model_validate({"runtime": "monty"})

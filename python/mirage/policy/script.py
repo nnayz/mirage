@@ -27,14 +27,14 @@ from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.mixin import EvaluatorMixin
 from mirage.runtime.resolver import MountResolver
 from mirage.runtime.script import eval_with_ctx, script_engine
-from mirage.runtime.types import DispatchFn, EvalValue
+from mirage.runtime.types import DispatchFn, EvalValue, ScriptSource
 
 logger = logging.getLogger(__name__)
 
 
 def script_context(profile: str, ctx: CommandContext,
                    mounts: Sequence[str]) -> dict[str, EvalValue]:
-    """What a profile's script is told about one command: the
+    """What a profile's policy is told about one command: the
     ``CommandContext`` the coded hooks read, as plain data.
 
     The same facts on both hosts, JSON-shaped because the script runs
@@ -70,8 +70,27 @@ def script_context(profile: str, ctx: CommandContext,
     }
 
 
+def hook_call(script: ScriptSource) -> str:
+    """The call that runs a policy's hook, in its language's own
+    spelling.
+
+    A policy program defines the hook it answers at, the way a coded
+    Policy does: ``pre_command(ctx)`` in python, ``preCommand(ctx)`` in
+    JavaScript, returning the verdict. The program is evaluated whole,
+    with this call appended as its last expression, so the definitions
+    run and the call's return is what the evaluator hands back. A
+    program defining no hook fails at the call (a NameError), and fails
+    closed.
+
+    Args:
+        script (ScriptSource): the policy program, carrying its
+            language.
+    """
+    return "preCommand(ctx)" if script.language == "js" else "pre_command(ctx)"
+
+
 def script_action(value: EvalValue) -> Deny | Ask | None:
-    """The policy answer a script's last expression states.
+    """The policy answer a policy's hook returns.
 
     The vocabulary is the ``pre_command`` hook's own, spelled as data:
     ``None`` or ``'allow'`` is no opinion (the command runs unless
@@ -87,7 +106,7 @@ def script_action(value: EvalValue) -> Deny | Ask | None:
     Raises:
         ValueError: the value is none of those shapes. The message is a
             clause about "script", for the caller to prefix with whose
-            script it is.
+            policy it is.
     """
     if value is None or value == "allow":
         return None
@@ -105,28 +124,28 @@ def script_action(value: EvalValue) -> Deny | Ask | None:
 
 
 class ScriptPolicy(Policy):
-    """Each profile's script, enforced at the admission gate.
+    """Each profile's policy, enforced at the admission gate.
 
     The scripted twin of ``PermissionsPolicy``, registered right after
     it: where that policy evaluates the document's declarative rules,
-    this one evaluates the profile's program, per command, with the
-    same facts (``script_context``). It reads the session's script
+    this one calls the profile's policy program, per command, with the
+    same facts (``script_context``). It reads the session's policy
     through the narrow ``SessionScriptsQuery`` by the session id the
     door put in the context, so a session whose profile states no
-    script costs one lookup and nothing else.
+    policy costs one lookup and nothing else.
 
-    Every failure fails closed: a script that raised, timed out,
-    answered with the wrong shape, or names an engine that cannot be
-    built refuses the command with a reason naming the profile, and is
-    logged. Silence on failure would run exactly the commands the
-    script existed to judge.
+    Every failure fails closed: a policy that raised, timed out,
+    answered with the wrong shape, defines no hook, or names an engine
+    that cannot be built refuses the command with a reason naming the
+    profile, and is logged. Silence on failure would run exactly the
+    commands the policy existed to judge.
 
     The facts name the paths; the engine can open them. It is wired to
     the workspace's files the way an agent's runtime is (``dispatch``
     and ``resolver``, attached before its first evaluation exactly as
-    ``Runtimes`` attaches an agent's engine), so a script may read what
+    ``Runtimes`` attaches an agent's engine), so a policy may read what
     an operand holds and answer for its content, not only its name. A
-    read from a script clears the op door like any other.
+    read from a policy clears the op door like any other.
 
     Engines are built lazily on the first command that needs one,
     shared per engine name, and closed by the workspace's own close.
@@ -140,9 +159,9 @@ class ScriptPolicy(Policy):
             prefixes, read per evaluation so a mount added after
             construction is visible to the script.
         dispatch (DispatchFn | None): the workspace's op dispatch, the
-            door a script's ``open()`` reads the mounts through; None
-            for a policy outside a workspace, whose scripts see no
-            file.
+            door a policy's ``open()`` reads the mounts through; None
+            for a ScriptPolicy outside a workspace, whose programs see
+            no file.
         resolver (MountResolver | None): the live mount routing table
             the dispatch is attached with. Travels with ``dispatch``:
             one without the other is refused.
@@ -181,11 +200,11 @@ class ScriptPolicy(Policy):
             return self._failed(entry, f"{arm}: {exc}")
         except ValueError as exc:
             # script_engine's refusal: the engine cannot be built.
-            return self._failed(entry, str(exc), prefix="")
+            return self._failed(entry, _clause(exc))
         try:
             return script_action(value)
         except ValueError as exc:
-            return self._failed(entry, str(exc), prefix="")
+            return self._failed(entry, _clause(exc))
 
     async def close(self) -> None:
         """Close every engine a script was evaluated on."""
@@ -196,7 +215,7 @@ class ScriptPolicy(Policy):
 
     async def _evaluate(self, entry: ProfileScript,
                         ctx: CommandContext) -> EvalValue:
-        """One command through one profile's script, serialized.
+        """One command through one profile's policy, serialized.
 
         Args:
             entry (ProfileScript): the session's script.
@@ -218,22 +237,32 @@ class ScriptPolicy(Policy):
             # this narrows a fact already established.
             assert isinstance(engine, EvaluatorMixin)
             return await eval_with_ctx(
-                entry.script.source,
+                f"{entry.script.source}\n\n{hook_call(entry.script)}\n",
                 script_context(entry.profile, ctx, self._mounts()), engine,
                 SCRIPT_EVAL_TIMEOUT_SECONDS)
 
-    def _failed(self,
-                entry: ProfileScript,
-                detail: str,
-                prefix: str = "script ") -> Deny:
+    def _failed(self, entry: ProfileScript, detail: str) -> Deny:
         """The fail-closed refusal: one wording, logged.
 
         Args:
-            entry (ProfileScript): the script that failed.
-            detail (str): what went wrong, already a clause about
-                "script" when ``prefix`` is empty.
-            prefix (str): the words before ``detail``.
+            entry (ProfileScript): the policy that failed.
+            detail (str): what went wrong, as the clause after
+                "policy".
         """
-        reason = f"profile {entry.profile!r} {prefix}{detail}"
+        reason = f"profile {entry.profile!r} policy {detail}"
         logger.error("%s", reason)
         return Deny(reason)
+
+
+def _clause(exc: Exception) -> str:
+    """An error's message as the clause after "policy": the engine door
+    and the answer reader both speak of "script", which is the
+    program's generic name, and the profile's word for its program is
+    policy.
+
+    Args:
+        exc (Exception): the refusal.
+    """
+    message = str(exc)
+    return message[len("script "):] if message.startswith(
+        "script ") else message

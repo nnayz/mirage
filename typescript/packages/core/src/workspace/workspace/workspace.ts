@@ -79,7 +79,11 @@ import { DEFAULT_PROFILE } from '../session/constants.ts'
 import { SessionManager } from '../session/manager.ts'
 import type { WorkspaceFields, WorkspaceStateStore } from '../store/base.ts'
 import { varsFromEntries, type Session } from '../session/session.ts'
-import { parseProfileMounts, type SessionProfile } from '../../policy/profile.ts'
+import {
+  parseProfileMounts,
+  parseProfilePolicy,
+  type SessionProfile,
+} from '../../policy/profile.ts'
 import { applyProfile, compileProfile, resolveProfile, withInline } from '../session/resolve.ts'
 import { ScriptPolicy } from '../../policy/script.ts'
 import { newSessionId, newWorkspaceId } from '../../utils/ids.ts'
@@ -261,32 +265,32 @@ export class Workspace {
     // does not pass that door, and the python host refuses the same
     // profiles at construction.
     for (const [name, profile] of Object.entries(this.profiles)) {
-      if (profile.script != null && profile.runtime == null) {
+      // A typed caller does not pass the parser, so this door repeats
+      // its two checks: the old keys are told where they went, and a
+      // policy block is whole.
+      const legacy = profile as { script?: unknown; runtime?: unknown }
+      if (legacy.script !== undefined || legacy.runtime !== undefined) {
         throw new PolicyError(
-          `profile '${name}': a profile script states the engine it runs on; ` +
-            `set runtime beside script`,
+          `profile '${name}': script and runtime are now one policy block, ` +
+            `policy: {script: <file>, runtime: <engine>}; its program defines ` +
+            `pre_command(ctx) and answers with return`,
         )
       }
-      if (profile.script == null && profile.runtime != null) {
-        throw new PolicyError(
-          `profile '${name}': runtime names the engine a script runs on, ` +
-            `and this profile states no script`,
-        )
-      }
+      if (profile.policy != null) parseProfilePolicy(profile.policy, `profile '${name}' policy`)
     }
     // Admission policies, consulted in registration order after the
     // built-ins the registry seeds: the document's command tiers
     // (PermissionsPolicy, reading each session's compiled layers from
     // the manager by the id the door puts in the context), the
-    // profile's script (ScriptPolicy, evaluated per command through the
-    // same manager), then Policy instances, then anything added later
+    // profile's policy (ScriptPolicy, calling its hook per command through
+    // the same manager), then Policy instances, then anything added later
     // through ws.policies.add(). The runtime policy (policy option) is
     // the line-level counterpart until it is absorbed as a hook.
     this.registry.policies.add(new PermissionsPolicy(this.sessionManager))
     this.scriptPolicy = new ScriptPolicy(
       this.sessionManager,
       () => this.mounts().map((entry) => entry.prefix),
-      // The doors the runtime world attaches, so a profile script reads
+      // The doors the runtime world attaches, so a profile policy reads
       // the mounts an agent's program would, and through the same gate.
       { bridge: () => this.buildWorkspaceBridge(), resolver: sandboxResolver },
     )

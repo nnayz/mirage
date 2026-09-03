@@ -114,8 +114,8 @@ to read one whole into an archive or copy) and `OutputCapPolicy` (the
 per-command output caps, fed the per-mount overrides). The workspace
 follows with the profile pair — `PermissionsPolicy`, reading each
 session's compiled [profile](/home/permissions), and `ScriptPolicy` for
-profile scripts — then `policies=` in list order, then anything added
-later through `ws.policies.add()`.
+profile policies, the `policy:` file a profile names — then `policies=`
+in list order, then anything added later through `ws.policies.add()`.
 
 A policy that raises does not fail open: the loop answers a Deny naming
 the policy and the error is logged.
