@@ -307,3 +307,16 @@ filesystems, one line per rule interaction:
 [typescript](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/permissions.ts).
 Its printed table is pinned in CI, so the behaviors this page describes
 are the behaviors the build enforces.
+
+The policy example puts a coded `Policy` beside a profile's `policy`
+block in code, then loads the same block from a document:
+[policy.py](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/policy.py),
+[policy.ts](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/policy.ts);
+[workspace.yaml](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/workspace.yaml)
+with its program in
+[guard.py](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/guard.py),
+loaded by
+[policy_yaml.py](https://github.com/strukto-ai/mirage/blob/main/examples/python/permissions/policy_yaml.py)
+and
+[policy_yaml.ts](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/permissions/policy_yaml.ts).
+Both tables are pinned the same way.

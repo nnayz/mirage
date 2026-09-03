@@ -176,6 +176,10 @@ jobs:
           # https://github.com/strukto-ai/mirage/actions/runs/33043622744 while
           # every other example passed, so it runs on its own.
           run integ/truth/python/ram_python.json
+          # The policy examples boot monty too, one engine per judged line,
+          # so they stay out of the parallel batch for the same reason.
+          run integ/truth/policy.json
+          run integ/truth/policy_yaml.json
 
           # These four share one redis server, so they stay serial: running
           # them together would have them racing on the same keyspace.
