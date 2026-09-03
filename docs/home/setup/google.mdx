@@ -11,7 +11,10 @@ The Google resources use OAuth2 with a refresh token to authenticate against:
 - **Google Drive API v3** - lists documents, reads metadata
 - **Google Docs API v1** - reads/writes document content
 
-Authentication requires three values: `client_id`, `client_secret`, and `refresh_token`.
+Authentication takes either a pre-minted `access_token` (a token, or a provider
+callable that returns one, for a caller that already owns the OAuth dance) or the
+refresh-token grant: `client_id`, `client_secret`, and `refresh_token`. The steps
+below obtain the latter.
 
 ## Setup
 

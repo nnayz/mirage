@@ -89,6 +89,16 @@ jobs:
       - name: Spec parity
         run: ./python/.venv/bin/python scripts/check_spec_parity.py
 
+      # One snake_case config block through both registries' doors. The
+      # shell-line battery never crosses them: its runners construct every
+      # mount by hand in each language's own idiom.
+      - name: Config door parity (python)
+        run: ./python/.venv/bin/python integ/config/run.py
+
+      - name: Config door parity (typescript)
+        working-directory: integ
+        run: pnpm exec tsx config/run.ts
+
       - name: Width table drift
         run: |
           ./python/.venv/bin/python scripts/gen_width_table.py

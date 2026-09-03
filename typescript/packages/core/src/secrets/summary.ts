@@ -64,6 +64,9 @@ export function errorSummary(error: z.ZodError): string {
 
 function issueDetail(issue: z.core.$ZodIssue): string {
   const path = issue.path.map(String).join('.')
-  const where = path !== '' ? path : issue.code === 'unrecognized_keys' ? issue.keys.join(', ') : ''
+  // A model-level refinement (one credential of two, one drive target of
+  // four) carries no path; python's `error_summary` reports it as `config`.
+  const where =
+    path !== '' ? path : issue.code === 'unrecognized_keys' ? issue.keys.join(', ') : 'config'
   return `${where}: ${issue.code}`
 }

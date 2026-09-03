@@ -142,6 +142,19 @@ describe('browser resource registry', () => {
     }
   })
 
+  // The browser door validates too: a wrong-typed field is refused with the
+  // field and the code, the same line the node registry and python's
+  // `build_resource` produce.
+  it('refuses a wrong-typed config, naming field and code', async () => {
+    const provider = (): Promise<string> => Promise.resolve('https://example.com/signed')
+    await expect(
+      buildResource('s3', { bucket: 123, presignedUrlProvider: provider }),
+    ).rejects.toThrow(/^s3: bucket: invalid_type$/)
+    await expect(buildResource('gcs', { bucket: 'b', presignedUrlProvider: 'x' })).rejects.toThrow(
+      /^gcs: presignedUrlProvider: /,
+    )
+  })
+
   it('builds RAM with no config', async () => {
     const r = await buildResource('ram', {})
     expect(r.kind).toBe('ram')

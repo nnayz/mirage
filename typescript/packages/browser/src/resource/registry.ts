@@ -15,9 +15,8 @@
 import { resolveConfigSecrets } from '@struktoai/mirage-core/secrets/sources'
 import type { ResolvedSource } from '@struktoai/mirage-core/secrets/types'
 import type { Resource } from '@struktoai/mirage-core/resource/base'
-import type { ChromaConfig } from '@struktoai/mirage-core/resource/chroma/config'
-import type { DifyConfig } from '@struktoai/mirage-core/resource/dify/config'
-import type { QdrantConfig } from '@struktoai/mirage-core/resource/qdrant/config'
+import { z } from '@struktoai/mirage-core/resource/secrets'
+import { errorSummary } from '@struktoai/mirage-core/secrets/summary'
 import type { RedisResourceOptions } from './redis/redis.ts'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
@@ -157,15 +156,18 @@ const REGISTRY: Record<string, ResourceFactory> = {
   },
   chroma: async (config) => {
     const { ChromaResource } = await import('@struktoai/mirage-core/resource/chroma/chroma')
-    return new ChromaResource(normalizeFields(config) as unknown as ChromaConfig)
+    const { normalizeChromaConfig } = await import('@struktoai/mirage-core/resource/chroma/config')
+    return new ChromaResource(normalizeChromaConfig(config))
   },
   dify: async (config) => {
     const { DifyResource } = await import('@struktoai/mirage-core/resource/dify/dify')
-    return new DifyResource(normalizeFields(config) as unknown as DifyConfig)
+    const { normalizeDifyConfig } = await import('@struktoai/mirage-core/resource/dify/config')
+    return new DifyResource(normalizeDifyConfig(config))
   },
   qdrant: async (config) => {
     const { QdrantResource } = await import('@struktoai/mirage-core/resource/qdrant/qdrant')
-    return new QdrantResource(normalizeFields(config) as unknown as QdrantConfig)
+    const { normalizeQdrantConfig } = await import('@struktoai/mirage-core/resource/qdrant/config')
+    return new QdrantResource(normalizeQdrantConfig(config))
   },
   redis: async (config) => {
     const { RedisResource } = await import('./redis/redis.ts')
@@ -295,7 +297,17 @@ export async function buildResource(
       `unknown resource ${JSON.stringify(name)}; known: ${knownResources().join(', ')}`,
     )
   }
-  const built = await factory(resolved)
+  let built: Resource
+  try {
+    built = await factory(resolved)
+  } catch (err) {
+    // A mount config is where a fetched credential lands, and the create
+    // route answers this message as its 400 detail: zod's own rendering
+    // would hand the refused value straight back. Field and code only, the
+    // way python's `build_resource` reports its config class.
+    if (err instanceof z.ZodError) throw new Error(`${name}: ${errorSummary(err)}`)
+    throw err
+  }
   recordResourceRef(built, name)
   return built
 }

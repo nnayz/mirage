@@ -87,6 +87,15 @@ describe('errorSummary', () => {
     )
   })
 
+  it('reports a model-level refinement as config, like python', () => {
+    const OneOfTwo = z
+      .object({ a: z.string().optional(), b: z.string().optional() })
+      .refine((v) => v.a !== undefined || v.b !== undefined, { message: 'needs a or b' })
+    const parsed = OneOfTwo.safeParse({})
+    if (parsed.success) throw new Error('expected a refusal')
+    expect(errorSummary(parsed.error)).toBe('config: custom')
+  })
+
   it('names the keys of an unrecognized-keys issue', () => {
     expect(errorSummary(refusal({ port: 1, extra: 1 }))).toBe('extra: unrecognized_keys')
   })

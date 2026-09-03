@@ -15,10 +15,8 @@
 import { resolveConfigSecrets } from '@struktoai/mirage-core/secrets/sources'
 import type { ResolvedSource } from '@struktoai/mirage-core/secrets/types'
 import type { Resource } from '@struktoai/mirage-core/resource/base'
-import type { ChromaConfig } from '@struktoai/mirage-core/resource/chroma/config'
-import type { DifyConfig } from '@struktoai/mirage-core/resource/dify/config'
-import type { LanceDBConfig } from '@struktoai/mirage-core/resource/lancedb/config'
-import type { QdrantConfig } from '@struktoai/mirage-core/resource/qdrant/config'
+import { z } from '@struktoai/mirage-core/resource/secrets'
+import { errorSummary } from '@struktoai/mirage-core/secrets/summary'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import { recordResourceRef } from '@struktoai/mirage-core/resource/base'
@@ -174,19 +172,24 @@ const REGISTRY: Record<string, ResourceFactory> = {
   },
   chroma: async (config) => {
     const { ChromaResource } = await import('@struktoai/mirage-core/resource/chroma/chroma')
-    return new ChromaResource(normalizeFields(config) as unknown as ChromaConfig)
+    const { normalizeChromaConfig } = await import('@struktoai/mirage-core/resource/chroma/config')
+    return new ChromaResource(normalizeChromaConfig(config))
   },
   dify: async (config) => {
     const { DifyResource } = await import('@struktoai/mirage-core/resource/dify/dify')
-    return new DifyResource(normalizeFields(config) as unknown as DifyConfig)
+    const { normalizeDifyConfig } = await import('@struktoai/mirage-core/resource/dify/config')
+    return new DifyResource(normalizeDifyConfig(config))
   },
   qdrant: async (config) => {
     const { QdrantResource } = await import('@struktoai/mirage-core/resource/qdrant/qdrant')
-    return new QdrantResource(normalizeFields(config) as unknown as QdrantConfig)
+    const { normalizeQdrantConfig } = await import('@struktoai/mirage-core/resource/qdrant/config')
+    return new QdrantResource(normalizeQdrantConfig(config))
   },
   lancedb: async (config) => {
     const { LanceDBResource } = await import('./lancedb/lancedb.ts')
-    return new LanceDBResource(normalizeFields(config) as unknown as LanceDBConfig)
+    const { normalizeLanceDBConfig } =
+      await import('@struktoai/mirage-core/resource/lancedb/config')
+    return new LanceDBResource(normalizeLanceDBConfig(config))
   },
   slack: async (config) => {
     const { SlackResource } = await import('./slack/slack.ts')
@@ -411,12 +414,22 @@ export async function buildResource(
   // does no I/O.
   const resolved = await resolveConfigSecrets(config, sources, `mounts.${name}.config`)
   const factory = REGISTRY[name] ?? CUSTOM[name]
-  const built =
-    factory !== undefined
-      ? await factory(resolved)
-      : name.includes(':')
-        ? await buildFromRef(name, resolved)
-        : null
+  let built: Resource | null
+  try {
+    built =
+      factory !== undefined
+        ? await factory(resolved)
+        : name.includes(':')
+          ? await buildFromRef(name, resolved)
+          : null
+  } catch (err) {
+    // A mount config is where a fetched credential lands, and the create
+    // route answers this message as its 400 detail: zod's own rendering
+    // would hand the refused value straight back. Field and code only, the
+    // way python's `build_resource` reports its config class.
+    if (err instanceof z.ZodError) throw new Error(`${name}: ${errorSummary(err)}`)
+    throw err
+  }
   if (built === null) {
     throw new Error(
       `unknown resource ${JSON.stringify(name)}; known: ${knownResources().join(', ')}`,
