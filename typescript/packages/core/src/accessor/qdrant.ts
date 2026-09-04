@@ -150,8 +150,9 @@ export class QdrantAccessor extends Accessor {
     filters: Record<string, string>,
     limit: number,
     prefix = '',
+    basename = false,
   ): Promise<string[]> {
-    const keep = prefix === '' ? undefined : valuePrefixTest(column, prefix)
+    const keep = prefix === '' ? undefined : valuePrefixTest(column, prefix, basename)
     const points = await this.scrollFiltered(table, filters, limit, keep)
     const values = new Set<string>()
     for (const point of points) {

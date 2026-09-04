@@ -208,3 +208,16 @@ def capped() -> FakeAccessor:
                      id_field="id",
                      text_field="name",
                      max_rows=WIDE_CAP), WideQdrantClient())
+
+
+@pytest.fixture
+def basename_capped() -> FakeAccessor:
+    client = WideQdrantClient()
+    for point in client.points:
+        point.payload["source"] = f"s3://docs/other-{point.id}.pdf"
+    client.points[-1].payload["source"] = "s3://archive/target-late.pdf"
+    return FakeAccessor(
+        QdrantConfig(collection=COLLECTION,
+                     group_by=["source"],
+                     basename_fields=["source"],
+                     max_rows=WIDE_CAP), client)

@@ -123,7 +123,14 @@ async function resolvedFilters(
       resolved[column] = value
       continue
     }
-    const values = await accessor.distinct(table, column, resolved, accessor.config.maxRows)
+    const values = await accessor.distinct(
+      table,
+      column,
+      resolved,
+      accessor.config.maxRows,
+      value,
+      true,
+    )
     const matches = values.filter((raw) => groupName(raw, true) === value)
     if (matches.length === 0) return null
     if (matches.length > 1) {
@@ -147,13 +154,13 @@ async function children(accessor: QdrantAccessor, match: ScopeMatch): Promise<Li
   if (depth < config.groupBy.length) {
     const displayPrefix = globPrefix(pattern)
     const basename = config.basenameFields.includes(config.groupBy[depth] ?? '')
-    const groupPrefix = basename ? '' : displayPrefix
     const names = await accessor.distinct(
       table,
       config.groupBy[depth] ?? '',
       filters,
       config.maxRows,
-      groupPrefix,
+      displayPrefix,
+      basename,
     )
     const listing: DirListing = {
       entries: names

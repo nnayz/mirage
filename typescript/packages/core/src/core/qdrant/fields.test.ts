@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { resolveQdrantConfig } from '../../resource/qdrant/config.ts'
+import { byteLength, NAME_MAX_BYTES } from '../../utils/sanitize.ts'
 import { fieldValue, groupName, pointIdFromStem, rowStem, withoutField } from './fields.ts'
 
 describe('qdrant payload fields', () => {
@@ -38,6 +39,27 @@ describe('qdrant payload fields', () => {
     expect(stem).toBe('004__17')
     expect(pointIdFromStem(stem, config)).toBe('17')
     expect(pointIdFromStem('18', config)).toBe('18')
+  })
+
+  it('reads a dotted id field as the literal synthetic key', () => {
+    const config = resolveQdrantConfig({ idField: 'meta.id', nameField: 'title' })
+    const stem = rowStem({ 'meta.id': 17, title: 'report' }, config)
+    expect(stem).toBe('report__17')
+    expect(pointIdFromStem(stem, config)).toBe('17')
+  })
+
+  it('reserves room for every enabled file suffix', () => {
+    const config = resolveQdrantConfig({
+      nameField: 'title',
+      textField: 'text',
+      blobField: 'blob',
+      blobExt: 'very-long-extension',
+    })
+    const stem = rowStem({ id: 17, title: '界'.repeat(200) }, config)
+    for (const suffix of ['.json', '.txt', '.very-long-extension']) {
+      expect(byteLength(`${stem}${suffix}`)).toBeLessThanOrEqual(NAME_MAX_BYTES)
+    }
+    expect(pointIdFromStem(stem, config)).toBe('17')
   })
 
   it('removes nested render-only fields without mutating the row', () => {

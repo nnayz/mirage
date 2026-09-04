@@ -21,7 +21,7 @@ from qdrant_client import models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from mirage.accessor.qdrant import QdrantAccessor
-from mirage.core.qdrant.fields import field_value, row_stem
+from mirage.core.qdrant.fields import field_value, group_name, row_stem
 
 logger = logging.getLogger(__name__)
 
@@ -79,17 +79,21 @@ def id_prefix_test(prefix: str) -> PointTest:
     return keep
 
 
-def value_prefix_test(column: str, prefix: str) -> PointTest:
+def value_prefix_test(column: str,
+                      prefix: str,
+                      basename: bool = False) -> PointTest:
     """Keep points whose payload value starts with a literal prefix.
 
     Args:
         column (str): the payload field the group level is named from.
         prefix (str): the literal prefix a group glob asked for.
+        basename (bool): compare against the rendered path basename.
     """
 
     def keep(point: Any) -> bool:
         value = field_value(point.payload or {}, column)
-        return value is not None and str(value).startswith(prefix)
+        return value is not None and group_name(
+            value, basename=basename).startswith(prefix)
 
     return keep
 
@@ -176,8 +180,9 @@ async def distinct_values(accessor: QdrantAccessor,
                           column: str,
                           filters: dict[str, str],
                           limit: int,
-                          prefix: str = "") -> list[str]:
-    keep = value_prefix_test(column, prefix) if prefix else None
+                          prefix: str = "",
+                          basename: bool = False) -> list[str]:
+    keep = value_prefix_test(column, prefix, basename) if prefix else None
     points = await _scroll_all(accessor, table, filters, limit, keep)
     values = {
         str(value)

@@ -205,6 +205,37 @@ describe('qdrant readdir narrows a capped listing', () => {
     expect(seen.prefix).toBe('')
   })
 
+  it('passes a rendered basename prefix into the capped scan', async () => {
+    const seen: { prefix?: string; basename?: boolean } = {}
+    const acc = {
+      config: resolveQdrantConfig({
+        collection: 'wide',
+        groupBy: ['source'],
+        basenameFields: ['source'],
+        maxRows: CAP,
+      }),
+      tableExists: () => Promise.resolve(true),
+      distinct: (
+        _table: string,
+        _column: string,
+        _filters: Record<string, string>,
+        _limit: number,
+        prefix: string,
+        basename: boolean,
+      ) => {
+        seen.prefix = prefix
+        seen.basename = basename
+        const values = Array.from({ length: WIDE }, (_, i) => `s3://docs/other-${String(i)}.pdf`)
+        values.push('s3://archive/target-late.pdf')
+        return Promise.resolve(
+          values.filter((value) => (value.split('/').pop() ?? '').startsWith(prefix)).slice(0, CAP),
+        )
+      },
+    } as unknown as QdrantAccessor
+    await expect(readdir(acc, globbed('/', 'target*'))).resolves.toEqual(['/target-late.pdf'])
+    expect(seen).toEqual({ prefix: 'target', basename: true })
+  })
+
   it('does not cache a narrowed listing as the directory', async () => {
     const seen: { prefix: string | undefined } = { prefix: undefined }
     const acc = cappedAccessor(seen)

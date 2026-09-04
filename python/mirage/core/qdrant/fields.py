@@ -17,7 +17,7 @@ from typing import Any
 
 from mirage.resource.qdrant.config import QdrantConfig
 from mirage.utils.naming import fit_id_name, parse_id_name
-from mirage.utils.sanitize import path_safe_name
+from mirage.utils.sanitize import byte_len, path_safe_name
 
 
 def field_value(row: Mapping[str, Any], field: str | None) -> Any:
@@ -92,11 +92,22 @@ def group_value(name: str) -> str:
 
 def row_stem(row: Mapping[str, Any], config: QdrantConfig) -> str:
     """Return the stable, human-readable stem for a point's files."""
-    point_id = str(field_value(row, config.id_field))
+    # The point id is synthetic rather than payload data: _point_to_row stores
+    # it under the configured key verbatim, even when that key contains dots.
+    # Reading it through field_value would mistake a dotted id_field for a
+    # nested payload path.
+    point_id = str(row.get(config.id_field))
     label = field_value(row, config.name_field)
     if label is None:
         return point_id
-    return fit_id_name(path_safe_name(str(label)), point_id)
+    suffixes = [".json"]
+    if config.text_field:
+        suffixes.append(".txt")
+    if config.blob_field:
+        suffixes.append(f".{config.blob_ext}")
+    longest_suffix = max(suffixes, key=byte_len)
+    fitted = fit_id_name(path_safe_name(str(label)), point_id, longest_suffix)
+    return fitted[:-len(longest_suffix)]
 
 
 def point_id_from_stem(stem: str, config: QdrantConfig) -> str:

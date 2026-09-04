@@ -125,7 +125,7 @@ async def _resolved_filters(accessor: QdrantAccessor, table: str,
             resolved[column] = value
             continue
         values = await distinct_values(accessor, table, column, resolved,
-                                       accessor.config.max_rows)
+                                       accessor.config.max_rows, value, True)
         matches = [
             raw for raw in values if group_name(raw, basename=True) == value
         ]
@@ -153,9 +153,9 @@ async def _children(accessor: QdrantAccessor,
     if depth < len(config.group_by):
         display_prefix = glob_prefix(pattern)
         basename = config.group_by[depth] in config.basename_fields
-        prefix = "" if basename else display_prefix
         names = await distinct_values(accessor, table, config.group_by[depth],
-                                      filters, config.max_rows, prefix)
+                                      filters, config.max_rows, display_prefix,
+                                      basename)
         rendered = [group_name(name, basename=basename) for name in names]
         if display_prefix:
             rendered = [

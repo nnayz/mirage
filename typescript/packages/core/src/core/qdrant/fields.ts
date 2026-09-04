@@ -14,7 +14,7 @@
 
 import type { QdrantConfigResolved } from '../../resource/qdrant/config.ts'
 import { fitIdName, parseIdName } from '../../utils/naming.ts'
-import { pathSafeName } from '../../utils/sanitize.ts'
+import { byteLength, pathSafeName } from '../../utils/sanitize.ts'
 import type { QdrantRow } from './client.ts'
 
 /** Read a Qdrant payload field, including `metadata.source`-style nested keys. */
@@ -74,10 +74,21 @@ export function groupValue(name: string): string {
 
 /** Return the stable, human-readable stem for a point's files. */
 export function rowStem(row: QdrantRow, config: QdrantConfigResolved): string {
-  const pointId = String(fieldValue(row, config.idField) as string | number | bigint | boolean)
+  // The point id is synthetic rather than payload data: pointToRow stores it
+  // under the configured key verbatim, even when that key contains dots.
+  const pointId = String(row[config.idField] as string | number | bigint | boolean)
   const label = fieldValue(row, config.nameField)
   if (label === undefined || label === null) return pointId
-  return fitIdName(pathSafeName(String(label as string | number | boolean | bigint)), pointId)
+  const suffixes = ['.json']
+  if (config.textField !== null && config.textField !== '') suffixes.push('.txt')
+  if (config.blobField !== null && config.blobField !== '') suffixes.push(`.${config.blobExt}`)
+  const longestSuffix = suffixes.reduce((a, b) => (byteLength(a) >= byteLength(b) ? a : b))
+  const fitted = fitIdName(
+    pathSafeName(String(label as string | number | boolean | bigint)),
+    pointId,
+    longestSuffix,
+  )
+  return fitted.slice(0, -longestSuffix.length)
 }
 
 /** Recover the opaque Qdrant point id from a VFS file stem. */
