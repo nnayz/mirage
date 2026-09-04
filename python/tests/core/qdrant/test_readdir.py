@@ -106,3 +106,28 @@ async def test_a_narrowed_listing_is_not_cached_as_the_directory(capped):
     assert listing.entries is None
     plain = await readdir(capped, _ps("/all"), index)
     assert _ids(plain) == {"1", "2", "3", "4", "5"}
+
+
+@pytest.mark.asyncio
+async def test_document_lineage_uses_nested_fields_and_source_basename(
+        lineage):
+    root = await readdir(lineage, _ps("/"))
+    assert _names(root) == {"refund-2026.pdf"}
+    document = await readdir(lineage, _ps("/refund-2026.pdf"))
+    assert _names(document) == {"004__1.json", "004__1.txt"}
+
+
+@pytest.mark.asyncio
+async def test_basename_collision_is_refused(lineage):
+    from types import SimpleNamespace
+
+    client = await lineage.client()
+    client.points[0].payload["metadata"]["source"] = "s3://a/report.pdf"
+    client.points.append(
+        SimpleNamespace(id=2,
+                        payload={"metadata": {
+                            "source": "s3://b/report.pdf"
+                        }}))
+
+    with pytest.raises(ValueError, match="path collision"):
+        await readdir(lineage, _ps("/"))

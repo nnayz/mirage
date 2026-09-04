@@ -100,6 +100,44 @@ describe('qdrant readdir sizes', () => {
   })
 })
 
+describe('qdrant document lineage', () => {
+  const lineageConfig = resolveQdrantConfig({
+    collection: 'docs',
+    groupBy: ['metadata.source'],
+    basenameFields: ['metadata.source'],
+    nameField: 'metadata.page',
+    textField: 'page_content',
+  })
+  const lineageRow: QdrantRow = {
+    id: 17,
+    page_content: 'Refunds are processed within 14 days',
+    metadata: { source: 's3://docs/policies/refund-2026.pdf', page: '004' },
+  }
+  const lineageAccessor = {
+    config: lineageConfig,
+    tableExists: () => Promise.resolve(true),
+    distinct: (
+      _table: string,
+      _column: string,
+      filters: Record<string, string>,
+    ): Promise<string[]> =>
+      Promise.resolve(
+        Object.keys(filters).length === 0
+          ? ['s3://docs/policies/refund-2026.pdf']
+          : ['s3://docs/policies/refund-2026.pdf'],
+      ),
+    rowsMatching: () => Promise.resolve([lineageRow]),
+  } as unknown as QdrantAccessor
+
+  it('lists a source basename then meaningful chunk files', async () => {
+    await expect(readdir(lineageAccessor, spec('/'))).resolves.toEqual(['/refund-2026.pdf'])
+    await expect(readdir(lineageAccessor, spec('/refund-2026.pdf'))).resolves.toEqual([
+      '/refund-2026.pdf/004__17.json',
+      '/refund-2026.pdf/004__17.txt',
+    ])
+  })
+})
+
 const CAP = 5
 const WIDE = 40
 
